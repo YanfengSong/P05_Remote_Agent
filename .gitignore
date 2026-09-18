@@ -6,3 +6,7 @@ coverage/
 .DS_Store
 Thumbs.db
 .p05/
+
+# Vendored tunnel-client binaries (fetched via scripts/fetch-tunnel-client.ps1, never committed)
+/tunnel-client-*/
+/vendor/

@@ -1,0 +1,15 @@
+# P05 Remote Agent — text normalization
+* text=auto
+
+# Scripts
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+
+# Binaries
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.pdf binary
