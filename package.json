@@ -9,6 +9,9 @@
     "dev": "tsx src/index.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "smoke:downstream": "npm run build && node dist/test/downstream-smoke.js",
+    "test:policy": "npm run build && node dist/test/policy-profiles.js",
+    "test:exposure": "npm run build && node dist/test/profile-exposure.js",
+    "test": "npm run test:policy && npm run test:exposure && npm run smoke:downstream",
     "inspect": "npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js",
     "start:http": "npm run build && npx -y supergateway@4.0.0-rc.1 --stdio \"node --env-file-if-exists=.env dist/index.js\" --outputTransport streamableHttp --port 8765 --streamableHttpPath /mcp --healthEndpoint /healthz"
   },
