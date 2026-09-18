@@ -22,16 +22,24 @@ Completed:
   registration, dangerous tools behind local unlock flags, unknown profile aborts
   startup;
 - **protected-path policy**: `.git`, `.p05`, `.env`/credentials and key material are
-  refused even inside an allowed root.
+  refused even inside an allowed root;
+- **path resolution hardening**: UNC / `\\?\` / drive-relative / alternate-data-stream
+  spellings refused, trailing dots and spaces canonicalised before protected-name
+  matching, and the resolved real path re-checked so a symlink or junction inside a
+  root cannot escape it.
 
 Validation:
 
 - `npm install`: pass;
 - `npm run build`: pass;
 - `npm run check`: pass;
-- `npm run test:policy`: `POLICY_PROFILES_OK` (73 checks);
-- `npm run test:exposure`: `PROFILE_EXPOSURE_OK` (79 checks);
+- `npm run test:policy`: `POLICY_PROFILES_OK` (83 checks);
+- `npm run test:exposure`: `PROFILE_EXPOSURE_OK` (88 checks);
 - `npm run smoke:downstream`: `DOWNSTREAM_SMOKE_OK`.
+
+Known residual risks (documented in `docs/architecture/TOOL-PROFILES.md`): hard links
+are invisible to `realpath`, and a TOCTOU window exists between the path check and the
+file operation.
 
 ## Architecture decision
 

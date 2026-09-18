@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { assertAccessiblePath } from "../security.js";
 
 export async function readTextFile(filePath: string): Promise<string> {
-  const safePath = assertAccessiblePath(filePath, "read");
+  const safePath = await assertAccessiblePath(filePath, "read");
   const stat = await fs.stat(safePath);
   if (!stat.isFile()) throw new Error("Path is not a file.");
   if (stat.size > config.maxReadBytes) {
@@ -14,7 +14,7 @@ export async function readTextFile(filePath: string): Promise<string> {
 }
 
 export async function writeTextFile(filePath: string, content: string): Promise<string> {
-  const safePath = assertAccessiblePath(filePath, "write");
+  const safePath = await assertAccessiblePath(filePath, "write");
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > config.maxWriteBytes) {
     throw new Error(`Content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
@@ -25,7 +25,7 @@ export async function writeTextFile(filePath: string, content: string): Promise<
 }
 
 export async function listDirectory(dirPath: string): Promise<string[]> {
-  const safePath = assertAccessiblePath(dirPath, "read");
+  const safePath = await assertAccessiblePath(dirPath, "read");
   const entries = await fs.readdir(safePath, { withFileTypes: true });
   return entries.map((entry) => `${entry.isDirectory() ? "[DIR]" : "[FILE]"} ${entry.name}`);
 }

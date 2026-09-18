@@ -7,7 +7,7 @@
  *
  * Run: npm run test:exposure
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -238,6 +238,110 @@ for (const scenario of scenarios) {
   } finally {
     await session.client.close().catch(() => undefined);
     await fs.rm(PROBE_DIR, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+// ---------------------------------------------------------------- path hardening on the real filesystem
+{
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "full", P05_ENABLE_FS_WRITE: "1" }));
+  const outsideTarget = path.join(path.parse(ROOT).root, "_p05_junction_target");
+  const outlink = path.join(ROOT, "_p05_junction_probe");
+  const gitlink = path.join(ROOT, "_p05_git_junction");
+  const gitDir = path.join(ROOT, "P05_Remote_Agent", ".git");
+
+  const mklink = (link: string, target: string) => execFileSync("cmd", ["/c", "mklink", "/J", link, target], { stdio: "pipe" });
+  // rmdir (not rm -r) removes the reparse point only; a recursive delete would walk into the target.
+  const unlink = (link: string) => { try { execFileSync("cmd", ["/c", "rmdir", link], { stdio: "pipe" }); } catch { /* not present */ } };
+  const shortPathOf = (target: string): string => {
+    try {
+      const output = execFileSync("powershell.exe", [
+        "-NoProfile", "-Command",
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${target}').ShortPath`
+      ]).toString().trim();
+      return output;
+    } catch {
+      return "";
+    }
+  };
+
+  try {
+    unlink(outlink);
+    unlink(gitlink);
+    await fs.rm(outsideTarget, { recursive: true, force: true });
+    await fs.mkdir(outsideTarget, { recursive: true });
+    await fs.writeFile(path.join(outsideTarget, "outside.txt"), "outside-root", "utf8");
+
+    // 1. A junction inside the allowed root that points outside it.
+    mklink(outlink, outsideTarget);
+    const readOut = await outcome(() =>
+      session.client.callTool({ name: "fs_read", arguments: { path: path.join(outlink, "outside.txt") } })
+    );
+    check(
+      "junction: read through a link that leaves the allowed root is refused",
+      readOut.failed && readOut.message.includes("outside allowed roots"),
+      readOut.message.slice(0, 200)
+    );
+
+    const writeOut = await outcome(() =>
+      session.client.callTool({ name: "fs_write", arguments: { path: path.join(outlink, "planted.txt"), content: "x" } })
+    );
+    check("junction: write through a link that leaves the allowed root is refused", writeOut.failed, writeOut.message.slice(0, 200));
+    check("junction: nothing was planted outside the root", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
+
+    // 2. A junction inside the allowed root that lands on a protected path.
+    mklink(gitlink, gitDir);
+    const writeGit = await outcome(() =>
+      session.client.callTool({ name: "fs_write", arguments: { path: path.join(gitlink, "hooks", "pre-commit"), content: "x" } })
+    );
+    check("junction: write through a link landing on .git is refused", writeGit.failed, writeGit.message.slice(0, 200));
+
+    // 3. Trailing dot on the .git segment (Windows strips it, so it names the same directory).
+    const dotted = path.join(ROOT, "P05_Remote_Agent", ".git.", "hooks", "pre-commit");
+    const dottedResult = await outcome(() =>
+      session.client.callTool({ name: "fs_write", arguments: { path: dotted, content: "x" } })
+    );
+    check("trailing-dot .git spelling is refused", dottedResult.failed, dottedResult.message.slice(0, 200));
+    check("trailing-dot write created no hook file", !(await pathExists(path.join(gitDir, "hooks", "pre-commit"))));
+
+    // 4. Alternate data stream.
+    const adsResult = await outcome(() =>
+      session.client.callTool({
+        name: "fs_write",
+        arguments: { path: path.join(ROOT, "_p05_profile_probe", "probe.txt:evil"), content: "x" }
+      })
+    );
+    check("alternate data stream is refused", adsResult.failed, adsResult.message.slice(0, 200));
+
+    // 5. Extended-length prefix.
+    const extendedResult = await outcome(() =>
+      session.client.callTool({
+        name: "fs_read",
+        arguments: { path: "\\\\?\\" + path.join(ROOT, "P05_Remote_Agent", "README.md") }
+      })
+    );
+    check("extended-length path prefix is refused", extendedResult.failed, extendedResult.message.slice(0, 200));
+
+    // 6. Short (8.3) name for .git, when the volume generates them.
+    const shortGit = shortPathOf(gitDir);
+    const shortBase = shortGit ? path.basename(shortGit) : "";
+    if (shortBase && shortBase !== ".git") {
+      const shortResult = await outcome(() =>
+        session.client.callTool({
+          name: "fs_write",
+          arguments: { path: path.join(path.dirname(shortGit), shortBase, "hooks", "pre-commit"), content: "x" }
+        })
+      );
+      check(`short-name ${shortBase} spelling is refused`, shortResult.failed, shortResult.message.slice(0, 200));
+      console.log(`ok  short-name probe used "${shortBase}" for .git`);
+    } else {
+      console.log("note  8.3 short names are unavailable on this volume; short-name probe skipped");
+    }
+  } finally {
+    unlink(outlink);
+    unlink(gitlink);
+    check("junction cleanup left the link target intact", await pathExists(path.join(outsideTarget, "outside.txt")));
+    await fs.rm(outsideTarget, { recursive: true, force: true }).catch(() => undefined);
+    await session.client.close().catch(() => undefined);
   }
 }
 

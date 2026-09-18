@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
 
@@ -16,6 +17,38 @@ export function assertAllowedPath(input: string): string {
   if (!allowed) throw new Error(`Path is outside allowed roots: ${resolved}`);
   return resolved;
 }
+
+/**
+ * Reject path spellings whose meaning a string comparison cannot reason about.
+ *
+ * These are not style preferences: each one changes which file the OS actually
+ * touches while leaving the string looking harmless, which is exactly how a path
+ * policy gets bypassed.
+ */
+function shapeProblem(input: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+
+  if (/^\\\\/.test(input) || /^\/\//.test(input)) {
+    return "UNC and extended-length (\\\\?\\) paths are not supported by this policy";
+  }
+  if (/^[a-zA-Z]:(?![\\/])/.test(input)) {
+    return "drive-relative paths (e.g. F:foo) are not supported";
+  }
+  const afterDrive = /^[a-zA-Z]:/.test(input) ? input.slice(2) : input;
+  if (afterDrive.includes(":")) {
+    return "alternate data streams (name:stream) are not supported";
+  }
+  return undefined;
+}
+
+/** Resolve a path after rejecting spellings the policy will not evaluate. */
+export function assertPathShape(input: string, access: Access): string {
+  const problem = shapeProblem(input);
+  if (problem) throw new Error(`Path refused for ${access}: ${input} (${problem}).`);
+  return path.resolve(input);
+}
+
+export type Access = "read" | "write";
 
 /**
  * Paths that stay off-limits even when they sit inside an allowed root.
@@ -45,12 +78,21 @@ const allowedEnvTemplates = new Set([".env.example", ".env.sample", ".env.templa
 
 const protectedExtensions = new Set([".pem", ".pfx", ".p12"]);
 
-function protectionReason(resolvedPath: string): string | undefined {
-  const segments = resolvedPath.split(path.sep).filter(Boolean);
-  const protectedSegment = segments.find((segment) => protectedPathSegments.has(segment.toLowerCase()));
+/**
+ * Windows strips trailing dots and spaces from a path component, so `.git.` and
+ * `.git ` name the same directory as `.git`. Compare on the stripped form or the
+ * protected-name match is trivially bypassed.
+ */
+function canonicalSegment(segment: string): string {
+  return segment.replace(/[. ]+$/, "").toLowerCase();
+}
+
+export function protectionReason(resolvedPath: string): string | undefined {
+  const segments = resolvedPath.split(path.sep).filter(Boolean).map(canonicalSegment);
+  const protectedSegment = segments.find((segment) => protectedPathSegments.has(segment));
   if (protectedSegment) return `path segment "${protectedSegment}" is protected`;
 
-  const base = path.basename(resolvedPath).toLowerCase();
+  const base = canonicalSegment(path.basename(resolvedPath));
   if (allowedEnvTemplates.has(base)) return undefined;
   if (protectedBasenames.has(base) || base.startsWith(".env.")) return `"${base}" may hold secrets`;
   if (protectedExtensions.has(path.extname(base))) return `"${path.extname(base)}" may hold private keys`;
@@ -59,19 +101,54 @@ function protectionReason(resolvedPath: string): string | undefined {
 }
 
 /**
- * Guard for the filesystem tools: allowed root first, then the protected-path list.
- * Read and write share one list today; if write-side approval is added later, the
- * divergence belongs here.
+ * Real path of `target`, resolving symlinks, NTFS junctions and short (8.3) names.
+ * If the leaf does not exist yet, the nearest existing ancestor is resolved and the
+ * remaining segments are re-appended, so a write to a new file still gets a real
+ * parent directory checked.
  */
-export function assertAccessiblePath(input: string, access: "read" | "write"): string {
-  const resolved = assertAllowedPath(input);
-  const reason = protectionReason(resolved);
-  if (reason) {
-    throw new Error(`Path refused for ${access}: ${resolved} (${reason}).`);
+async function resolveRealPath(target: string): Promise<string> {
+  let current = target;
+  const pending: string[] = [];
+
+  for (;;) {
+    try {
+      const real = await fs.realpath(current);
+      return pending.length === 0 ? real : path.join(real, ...pending.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return target; // nothing on this path exists
+      pending.push(path.basename(current));
+      current = parent;
+    }
   }
-  return resolved;
 }
 
+/**
+ * Guard for the filesystem tools: path shape, allowed root, protected paths, and
+ * the resolved real path.
+ *
+ * The real-path pass is what stops an escape through a symlink or junction that
+ * already exists inside an allowed root: the string looks local, the target is not.
+ * Residual risk: a hard link inside the tree (realpath cannot see those) and the
+ * TOCTOU window between this check and the caller's open().
+ */
+export async function assertAccessiblePath(input: string, access: Access): Promise<string> {
+  const resolved = assertAllowedPath(assertPathShape(input, access));
+
+  const directReason = protectionReason(resolved);
+  if (directReason) throw new Error(`Path refused for ${access}: ${resolved} (${directReason}).`);
+
+  const real = await resolveRealPath(resolved);
+  if (normalizeForCompare(real) !== normalizeForCompare(resolved)) {
+    assertAllowedPath(real); // a link must still land inside the allowed roots
+    const realReason = protectionReason(real); // ...and must not land on a protected path
+    if (realReason) {
+      throw new Error(`Path refused for ${access}: ${resolved} resolves to ${real} (${realReason}).`);
+    }
+  }
+
+  return resolved;
+}
 
 const blockedCommandPatterns = [
   /\bformat\b/i, /\bdiskpart\b/i, /\bshutdown\b/i, /\breboot\b/i,

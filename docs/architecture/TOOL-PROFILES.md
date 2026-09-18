@@ -77,6 +77,39 @@ Resulting surfaces:
 Read and write currently share one list; a write-side approval step would be a
 divergence inside `assertAccessiblePath`.
 
+## Path resolution
+
+A path policy that only compares strings is bypassable, because several spellings
+change which file the OS actually touches while still looking local. Every `fs_*`
+path therefore passes four checks, in order:
+
+1. **shape** — UNC and `\\?\` extended-length paths, drive-relative forms
+   (`F:foo`) and alternate data streams (`name:stream`) are refused outright: the
+   policy cannot reason about them, so it declines them instead of guessing.
+2. **allowed root** — the resolved path must sit inside a configured root.
+3. **protected names** — matched after trimming trailing dots and spaces, because
+   Windows strips those, so `.git.` and `.git ` name the same directory as `.git`.
+4. **real path** — the path is re-resolved through symlinks, NTFS junctions and
+   8.3 short names (walking up to the nearest existing ancestor for a file that
+   does not exist yet). If the real path differs from the requested one, it must
+   *also* be inside the allowed roots and *also* be free of protected names.
+
+Step 4 is what closes the escape this policy originally missed: a symlink or
+junction that already exists inside an allowed root — `node_modules/.bin`-style
+links are ordinary — could point outside it, and the string check saw nothing
+wrong.
+
+Residual risk, accepted and documented rather than papered over:
+
+- **hard links** — `realpath` cannot see them; a pre-existing hard link inside a
+  root pointing at another file on the same volume is not detected. Refusing every
+  multi-linked file was rejected because legitimate toolchains (pnpm stores) rely
+  on them;
+- **TOCTOU** — a small window exists between this check and the caller's open();
+- **`shell_run`'s `cwd`** still uses the string-only check, and 8.3 short names are
+  not generated on the volumes in use here; both are noted rather than defended,
+  since `shell_run` is a full-execution unlock by design.
+
 ## Operating it
 
 ```powershell
@@ -107,15 +140,27 @@ Every server start writes one line to **stderr** (stdout is the JSON-RPC channel
 ## Verifying
 
 ```powershell
-npm run test:policy     # gate, catalog invariants, protected paths (no transport)
+npm run test:policy     # gate, catalog invariants, path shape and protected names (no transport)
 npm run test:exposure   # spawns the real server per profile and asserts tools/list
 npm test                # both + the downstream smoke test
 ```
 
 `test:exposure` asserts, for every profile combination, the exact `tools/list` set,
 that `policy_info` agrees, that every suppressed tool is genuinely uncallable, that
-`full` without unlocks grants nothing, that an unlocked `shell_run` really executes,
-and that a `.git/hooks` write is refused *and* does not create the file.
+`full` without unlocks grants nothing, and that an unlocked `shell_run` really
+executes.
+
+It then builds real escape attempts on disk and asserts each is refused, and that
+nothing was written where it should not be:
+
+- a junction inside the allowed root pointing outside it — read and write refused,
+  and no file planted in the target;
+- a junction inside the allowed root pointing at `.git` — write refused;
+- `.git.` (trailing dot) — refused, and no `pre-commit` appears in `.git/hooks`;
+- an alternate data stream (`probe.txt:evil`) — refused;
+- a `\\?\` extended-length path — refused;
+- an 8.3 short name for `.git`, when the volume generates one (this volume does
+  not, so the probe reports a skip rather than a pass).
 
 ## What this policy does NOT do
 
@@ -126,5 +171,7 @@ and that a `.git/hooks` write is refused *and* does not create the file.
   `mcp_call_tool` is equivalent to unlocking whatever the downstream server can do.
 - It has no approval prompt and no structured audit log yet. Both are later V0.3
   items; until they exist, keep the daemon on `safe` or `dev`.
+- Path hardening cannot see **hard links**, and there is a **TOCTOU** window between
+  the check and the file operation (see "Path resolution").
 - `P05_TOOL_PROFILE` is unrelated to `tunnel-client`'s own "profile" concept, which
   names a tunnel-client configuration file. Do not conflate the two.

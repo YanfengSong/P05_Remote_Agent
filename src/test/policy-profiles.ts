@@ -112,27 +112,38 @@ check("gate: assertExposed passes for an exposed tool", (() => { safeGate.assert
 
 // ---------------------------------------------------------------- protected paths
 process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
-const { assertAccessiblePath } = await import("../security.js");
+const { assertAllowedPath, assertPathShape, protectionReason } = await import("../security.js");
 const root = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
 const p = (...parts: string[]) => [root, ...parts].join(process.platform === "win32" ? "\\" : "/");
 
-check("path: ordinary source file is allowed", Boolean(assertAccessiblePath(p("P05_Remote_Agent", "src", "index.ts"), "read")));
-check("path: outside allowed roots is refused", (() => {
-  try { assertAccessiblePath(process.platform === "win32" ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts", "read"); return false; }
-  catch (error) { return String(error).includes("outside allowed roots"); }
-})());
-throws("path: .env read is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".env"), "read"), "may hold secrets");
-throws("path: .env.local read is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".env.local"), "read"), "may hold secrets");
-check("path: .env.example template stays readable", Boolean(assertAccessiblePath(p("P05_Remote_Agent", ".env.example"), "read")));
-throws("path: .git/hooks write is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".git", "hooks", "pre-commit"), "write"), "protected");
-throws("path: .git/config write is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".git", "config"), "write"), "protected");
-throws("path: .p05 state write is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".p05", "device.json"), "write"), "protected");
-throws("path: .npmrc write is refused", () => assertAccessiblePath(p("P05_Remote_Agent", ".npmrc"), "write"), "may hold secrets");
-throws("path: private key write is refused", () => assertAccessiblePath(p("certs", "server.pem"), "write"), "private keys");
-check("path: nested .git is caught", (() => {
-  try { assertAccessiblePath(p("other-repo", ".git", "config"), "read"); return false; }
-  catch { return true; }
-})());
+check("path: ordinary source file is unprotected", protectionReason(p("P05_Remote_Agent", "src", "index.ts")) === undefined);
+check("path: allowed root accepts an in-tree file", Boolean(assertAllowedPath(p("P05_Remote_Agent", "src", "index.ts"))));
+throws(
+  "path: outside allowed roots is refused",
+  () => assertAllowedPath(process.platform === "win32" ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts"),
+  "outside allowed roots"
+);
+
+check("path: .env is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env"))?.includes("secrets")));
+check("path: .env.local is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env.local"))?.includes("secrets")));
+check("path: trailing dot on .env does not evade", Boolean(protectionReason(p("P05_Remote_Agent", ".env."))?.includes("secrets")));
+check("path: .env.example template stays readable", protectionReason(p("P05_Remote_Agent", ".env.example")) === undefined);
+check("path: .env.sample template stays readable", protectionReason(p("P05_Remote_Agent", ".env.sample")) === undefined);
+check("path: .git segment is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".git", "config"))?.includes("protected")));
+check("path: trailing dot on .git does not evade", Boolean(protectionReason(p("P05_Remote_Agent", ".git.", "hooks"))?.includes("protected")));
+check("path: trailing space on .git does not evade", Boolean(protectionReason(p("P05_Remote_Agent", ".git ", "hooks"))?.includes("protected")));
+check("path: nested .git is caught", Boolean(protectionReason(p("other-repo", ".git", "config"))?.includes("protected")));
+check("path: .p05 state is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".p05", "device.json"))?.includes("protected")));
+check("path: .npmrc is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".npmrc"))?.includes("secrets")));
+check("path: private key is protected", Boolean(protectionReason(p("certs", "server.pem"))?.includes("private keys")));
+check("path: an ordinary dotted filename is not over-blocked", protectionReason(p("P05_Remote_Agent", "docs", "v1.2.3.md")) === undefined);
+
+// Windows spellings that change which file is touched while looking harmless.
+throws("path: alternate data stream is refused", () => assertPathShape("F:\\a\\b.txt:evil", "write"), "alternate data streams");
+throws("path: extended-length prefix is refused", () => assertPathShape("\\\\?\\F:\\Project_Git\\x", "read"), "UNC");
+throws("path: UNC share is refused", () => assertPathShape("\\\\server\\share\\x", "read"), "UNC");
+throws("path: drive-relative path is refused", () => assertPathShape("F:foo", "read"), "drive-relative");
+check("path: an ordinary absolute path is accepted", Boolean(assertPathShape("F:\\Project_Git\\x", "read")));
 
 // ---------------------------------------------------------------- already-declared spec lookup
 check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
