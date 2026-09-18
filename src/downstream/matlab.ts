@@ -10,14 +10,25 @@ function parseArgs(raw?: string): string[] {
   return value;
 }
 
+/**
+ * MATLAB is an opt-in per machine: the executable path and the MATLAB root differ
+ * everywhere, so there is no default of either. Enabling it requires an explicit
+ * MATLAB_MCP_ENABLED=true plus a command, and a machine without MATLAB simply shows
+ * `enabled: false` in `mcp_status` instead of failing to start.
+ */
 export const matlabDefinition: DownstreamDefinition = {
   id: "matlab",
   label: "MathWorks MATLAB MCP Server",
-  enabled: (process.env.MATLAB_MCP_ENABLED ?? "true").toLowerCase() === "true",
+  enabled: (process.env.MATLAB_MCP_ENABLED ?? "false").toLowerCase() === "true",
   command: process.env.MATLAB_MCP_COMMAND?.trim(),
   args: parseArgs(process.env.MATLAB_MCP_ARGS_JSON),
   cwd: process.env.MATLAB_MCP_CWD ?? config.defaultCwd,
-  env: {
-    WINDIR: process.env.WINDIR ?? "C:\\Windows"
-  }
+  // Taken from the environment rather than assumed: an inherited WINDIR is what a spawned
+  // helper actually needs, and a hardcoded C:\Windows would be wrong on a non-system drive.
+  env: windowsRootEnv()
 };
+
+function windowsRootEnv(): Record<string, string> {
+  const root = process.env.WINDIR ?? process.env.SystemRoot;
+  return root ? { WINDIR: root } : {};
+}

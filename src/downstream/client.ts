@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { VERSION } from "../version.js";
 import type { DownstreamDefinition, DownstreamStatus, DownstreamTool } from "./types.js";
 
 function inheritedEnv(extra?: Record<string, string>): Record<string, string> {
@@ -8,6 +9,36 @@ function inheritedEnv(extra?: Record<string, string>): Record<string, string> {
   );
   return { ...env, ...extra };
 }
+
+/**
+ * A connect failure ends up in a response the remote can read (`mcp_status.lastError`,
+ * and the error text of `mcp_list_tools` / `mcp_call_tool`), and a raw spawn error carries
+ * the absolute command path. Classify it into a short category instead, and keep the
+ * real message on the operator's stderr.
+ *
+ * The classification is deliberately coarse: the transport reports a child that never
+ * started as "Connection closed" rather than ENOENT (observed on Windows against a
+ * missing executable), so the ENOENT/EACCES branches only fire when the underlying error
+ * does survive. The contract is "a short category with no path in it", not a precise
+ * diagnosis.
+ */
+function describeConnectError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/ENOENT/i.test(message)) return "command not found";
+  if (/EACCES|EPERM/i.test(message)) return "access denied";
+  if (/timed?\s?out|ETIMEDOUT/i.test(message)) return "timed out";
+  if (/ECONNREFUSED/i.test(message)) return "connection refused";
+  return "connection failed";
+}
+
+/** The categories above; exported so the exposure test asserts the same closed set. */
+export const CONNECT_ERROR_CATEGORIES = [
+  "command not found",
+  "access denied",
+  "timed out",
+  "connection refused",
+  "connection failed"
+] as const;
 
 export class DownstreamMcpClient {
   private client?: Client;
@@ -33,7 +64,7 @@ export class DownstreamMcpClient {
     if (!this.definition.enabled) throw new Error(`${this.definition.id} is disabled.`);
     if (!this.definition.command) throw new Error(`${this.definition.id} command is not configured.`);
 
-    const client = new Client({ name: "p05-remote-agent", version: "0.2.0" });
+    const client = new Client({ name: "p05-remote-agent", version: VERSION });
     const transport = new StdioClientTransport({
       command: this.definition.command,
       args: this.definition.args ?? [],
@@ -48,9 +79,12 @@ export class DownstreamMcpClient {
       this.connected = true;
       this.lastError = undefined;
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      const detail = error instanceof Error ? error.message : String(error);
+      // The operator gets the real error; the remote gets the short category.
+      console.error(`[p05] downstream "${this.definition.id}" connect failed: ${detail}`);
       await client.close().catch(() => undefined);
-      throw error;
+      this.lastError = describeConnectError(error);
+      throw new Error(this.lastError);
     }
   }
 

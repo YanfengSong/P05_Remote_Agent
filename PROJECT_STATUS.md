@@ -8,9 +8,10 @@ TASK at a time and stops.
 
 ## Current baseline
 
-Version: V0.3 — TASK-001 Tool Profile Safety and TASK-002 Local Startup complete  
-Branch: `feat/remote-agent-v03`  
-Canonical repository: `YanfengSong/P05_Remote_Agent`  
+Version: 0.3.0 (stage V0.3) — TASK-001 Tool Profile Safety, TASK-002 Local Startup and
+the pre-merge review fixes are complete
+Branch: `feat/remote-agent-v03`, pushed to `origin/feat/remote-agent-v03`
+Canonical repository: `YanfengSong/P05_Remote_Agent`
 Validated on Windows with Node.js 22.23.1.
 
 Milestones:
@@ -49,7 +50,8 @@ Fixed along the way:
   `-` is not a word boundary, so it never matched. The pattern is corrected and now
   asserted by a test. The wider command-policy rework remains TASK-009.
 - default allowed root was `D:\Project_Git;D:\Project_Boonray`; neither exists on this
-  machine. Set to `F:\Project_Git`.
+  machine. It pointed at nothing, and was replaced first by `F:\Project_Git` and then
+  removed entirely (see the pre-merge review fixes below: there is no default root now).
 - the fs tools now refuse `.git` writes, which would otherwise become code execution on
   the next git operation, and re-check the resolved real path so a symlink or junction
   inside an allowed root cannot escape it.
@@ -59,9 +61,10 @@ Validation:
 ```text
 npm run check           pass (tsc --noEmit)
 npm run build           pass
-npm run test:policy     POLICY_PROFILES_OK (142 checks)
-npm run test:exposure   PROFILE_EXPOSURE_OK (92 checks)
+npm run test:policy     POLICY_PROFILES_OK (145 checks)
+npm run test:exposure   PROFILE_EXPOSURE_OK (100 checks)
 npm run smoke:downstream DOWNSTREAM_SMOKE_OK
+scripts/verify.ps1      VERIFY_OK (5 steps, 9s)
 ```
 
 TASK-001 DoD, verified end to end: with `P05_TOOL_PROFILE=discovery`, `tools/list`
@@ -74,9 +77,12 @@ Deviations from the plan, deliberate and recorded:
   and `developer` includes `apply_patch`, `process_*`, `batch_execute`. None of these
   exist yet (TASK-004/005/006/007), so they are recorded in `PLANNED_TOOLS` and are not
   exposed. The profiles expose the implemented subset only.
-- `mcp_call_tool` is placed in `developer` to match the plan's "approved downstream MCP
-  wrappers"; the word *approved* is the TASK-012 approval model, which does not exist
-  yet, so today the profile value alone is the gate. Flagged as a risk below.
+- `mcp_call_tool` is a generic downstream proxy and sits at `full`, not `developer`, even
+  though the plan's profile sketch mentions downstream MCP under `developer`. Plan
+  section 3 lists `mcp_call_tool` under 禁止一开始暴露 together with `shell_run`, and the
+  plan's "approved downstream MCP wrappers" wording is the TASK-012 approval model, which
+  does not exist. Until the purpose-built wrappers land (TASK-013), `developer` therefore
+  has no route to the downstream server at all. See ADR-0005.
 
 ## TASK-002 — Local Startup Standardization
 
@@ -95,7 +101,7 @@ Implemented:
 Validation:
 
 ```text
-scripts/verify.ps1                  VERIFY_OK (5 steps, 8s)
+scripts/verify.ps1                  VERIFY_OK (5 steps, 9s)
 scripts/start-local.ps1 -Probe      banner correct, /healthz 200 on a free port,
                                     port released afterwards
 busy port                            refused with the owning PID and start time
@@ -107,6 +113,23 @@ over HTTP (real MCP client)          tools/list -> device_info, ping
 
 The HTTP result is the shape the plan's section 7 expects from ChatGPT, so the local
 half of that acceptance path is already proven; only the tunnel itself is missing.
+
+Note: now that there is no default allowed root, a `start-local` run needs
+`REMOTE_AGENT_ALLOWED_ROOTS` set (in `.env` or the environment) before the gateway will
+start. That is intended, and asserted by `test:exposure`.
+
+## Pre-merge review fixes (2026-09-18)
+
+A review of `feat/remote-agent-v03` before merging to `main` raised five points. All five
+are fixed; each has a test. See ADR-0005.
+
+| Point | Fix | Asserted by |
+|---|---|---|
+| Machine-specific defaults: `DEFAULT_ROOTS = ["F:\\Project_Git"]` in `src/config.ts`, and `D:\Tools\...` / `D:\Program Files\MATLAB\R2024b` in `.env.example` | `REMOTE_AGENT_ALLOWED_ROOTS` is required — unset aborts startup exactly like empty; `.env.example` carries no path; the MATLAB downstream is opt-in with no default command/args/root; downstream `WINDIR` is inherited instead of assumed; test fixtures derive their root from the repository location | `test:policy` (unset roots refused), `test:exposure` (unset roots exit non-zero) |
+| `mcp_call_tool` (generic proxy) sat at `developer` | moved to `full`, next to `shell_run`; `mcp_status` / `mcp_list_tools` stay at `developer` | `test:policy` (matrix), `test:exposure` (`developer` list no longer contains it) |
+| Successful responses leaked resolved absolute paths | `fs_write` returns bytes and the handler echoes the caller's own `path`; `shell_run` no longer echoes the working directory (the caller's `cwd` is echoed only if it supplied one); `mcp_status.lastError` and downstream error text carry a short category instead of the raw spawn error (real message kept on stderr) | `test:exposure` (relative write echoes the input; no default cwd disclosure; downstream status/error free of the command path) |
+| `PROJECT_STATUS.md` claimed the branch had never been pushed | this file now records the pushed branch, and the workspace section no longer claims a default root | review of this document |
+| Version drift: `0.2.0` in `package.json` / `config.ts` / client, `0.1.0` in mock and test client, documents saying V0.3 | single `src/version.ts` (`0.3.0`) used by the server identity, the downstream client and the mock; `package.json` aligned | `test:policy` (package.json matches `src/version.ts`) |
 
 ## Security hardening — adversarial review findings
 
@@ -151,8 +174,9 @@ Deferred with reasons (see ADR-0004):
 - `shell_run` is not a sandbox and is reachable at `full`. Do not run `full` on any
   daemon reachable by a remote client before TASK-010 (audit) and TASK-012 (approval).
   Its `cwd` is now guarded, but the command it runs is not confined.
-- `mcp_call_tool` at `developer` reaches downstream MCP capability, i.e. MATLAB code
-  evaluation, without any approval step.
+- `mcp_call_tool` at `full` reaches downstream MCP capability, i.e. MATLAB code
+  evaluation, without any approval step. It is no longer reachable from `developer`,
+  which removes the ordinary case; the TASK-013 wrappers are the narrower path.
 - Path hardening cannot see hard links (reproduced as a read of `.env` and a private key
   through a pre-existing hard link), and a TOCTOU window remains between the path check and
   the file operation.
@@ -160,20 +184,30 @@ Deferred with reasons (see ADR-0004):
   `tsconfig.json`, `package-lock.json`, `node_modules/**`, `dist/**`) — that is deliberate,
   since writing them is equivalent to executing code; it needs a local action or the
   TASK-012 approval path.
+- Response hygiene is a closed list, not a guarantee: file contents and downstream tool
+  output are still passed through verbatim.
 - No structured audit log yet.
 
 ## Workspace
 
-Working tree: `F:\Project_Git\P05_Remote_Agent`  
-Allowed roots default to `F:\Project_Git`. The legacy `D:` path is not used by this
-project.
+Working tree: `F:\Project_Git\P05_Remote_Agent`
+There is no default allowed root. `REMOTE_AGENT_ALLOWED_ROOTS` must be set for this
+machine (in `.env` or the environment) or the server refuses to start; on this machine it
+points at `F:\Project_Git`. The legacy `D:` path is not used by this project.
 
 ## Open items for the user
 
-- `feat/remote-agent-v03` has not been pushed: neither WSL git nor the Windows git has a
-  credential helper, so the push stops for credentials rather than hunting for a token.
+- `feat/remote-agent-v03` is pushed to `origin`. WSL git has no credential helper and no
+  `gh` CLI, but the Windows git (`D:\Program Files\Git\cmd\git.exe`, GCM installed) pushes
+  from WSL without a manual login: `GIT_TERMINAL_PROMPT=1 "<windows git>" -C
+  "F:\Project_Git\P05_Remote_Agent" push -u origin <branch>`. Note that a first anonymous
+  `ls-remote` succeeding proves nothing about credentials (the repository is public).
 - A node process started 2026-09-18 19:48 is still listening on 127.0.0.1:8765 (a
   gateway from the earlier V0.3-B verification). `start-local.ps1` now refuses that port
   until it is stopped, and probes must use a free port.
 - `docs/roadmap/` and `docs/deployment/` plan documents arrived on `main` during
   TASK-001 (commits `7d05c6c`, `fafac2a`); this branch is rebased onto them.
+- The repository is **public**, and the governing plan document it carries contains the
+  machine's hostname and device id. Both are identifiers rather than credentials, but the
+  visibility should be a deliberate choice before any real secret or internal path is
+  added.

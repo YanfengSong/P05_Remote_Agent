@@ -38,8 +38,15 @@ Cumulative: each profile contains everything below it.
 |---|---|---|
 | *(unset)* / `discovery` | `device_info`, `ping` | read |
 | `readonly` | + `fs_read`, `fs_list` | read |
-| `developer` | + `fs_write`, `mcp_status`, `mcp_list_tools`, `mcp_call_tool` | write, execute |
-| `full` | + `shell_run` | execute |
+| `developer` | + `fs_write`, `mcp_status`, `mcp_list_tools` | write, read |
+| `full` | + `mcp_call_tool`, `shell_run` | execute |
+
+`mcp_call_tool` is the generic downstream proxy: through it, the entire surface of a
+configured downstream server becomes reachable, and for MATLAB that surface includes
+arbitrary code evaluation. Plan section 3 lists it under 禁止一开始暴露 ("never expose
+initially") together with `shell_run`, so it sits at `full`. The narrower, purpose-built
+downstream wrappers that the plan puts in `developer` are a TASK-013 deliverable; until
+they exist, `developer` deliberately has no way to reach the downstream server.
 
 The plan assigns more tools to these profiles than exist today. They are recorded in
 `PLANNED_TOOLS` and become exposable only when implemented, so the profile decision is
@@ -52,6 +59,44 @@ not re-litigated later:
 
 Consequence: the `readonly` profile is only complete after TASK-004 and TASK-005. Until
 then it exposes the read-only tools that exist.
+
+## Machine-neutral configuration
+
+Nothing in the code or in `.env.example` names a machine-specific path, and there is no
+default allowed root.
+
+- `REMOTE_AGENT_ALLOWED_ROOTS` is **required**. An unset value aborts startup with a
+  non-zero exit code, exactly like a set-but-empty one. A built-in root would name one
+  developer's drive and then either refuse everything or free a directory nobody chose
+  on every other machine; rules 3.4 (fail closed) and section 8.1 require the operator to
+  state the roots.
+- The MATLAB downstream is **opt-in** (`MATLAB_MCP_ENABLED=false` by default) and has no
+  default command, args or MATLAB root: those paths differ per installation. A machine
+  without MATLAB reports `enabled: false` in `mcp_status` instead of failing.
+- The downstream child's `WINDIR` is inherited from the environment rather than assumed
+  to be `C:\Windows`.
+- Test fixtures derive the allowed root from the repository's own location instead of a
+  hardcoded drive, so the suite is runnable from any checkout.
+
+See ADR-0005.
+
+## Response hygiene
+
+Everything a tool returns to a remote client is treated as publishable, so no successful
+response may carry a resolved absolute path:
+
+| Tool | What changed |
+|---|---|
+| `fs_write` | returns the byte count; the caller's own `path` argument is echoed back, never the resolved path. A relative path resolves against the server's working directory, so the old response disclosed that directory. |
+| `shell_run` | returns stdout/stderr only. The resolved working directory is not echoed — when the caller omits `cwd` it is the configured default, a machine path. The caller's own `cwd` is echoed when it supplied one. |
+| `mcp_status` | `lastError` is a short category (`command not found`, `access denied`, `timed out`, …). The raw spawn error contains the absolute command path. |
+| `mcp_list_tools`, `mcp_call_tool` | the same category replaces a raw connect failure in the error text; the operator still gets the real message on stderr. |
+| `fs_read`, `fs_list`, `device_info`, `ping` | already carried no path. |
+
+Refusal messages follow the same rule (below). This is a closed-list rule, not a
+guarantee about content: file *contents* and downstream tool *output* are passed through
+verbatim, so a file or a MATLAB result can still contain paths. That is inherent to the
+operation and is why `mcp_call_tool` sits at `full`.
 
 ## Protected paths
 
@@ -126,14 +171,20 @@ Residual risk, accepted and documented rather than papered over:
 ## Operating it
 
 ```powershell
+# required first: state the roots this agent may touch (there is no default)
+#   .env:  REMOTE_AGENT_ALLOWED_ROOTS=<absolute path>[;<absolute path>]
+
 # default read-only discovery surface
 npm start
 
 # read-only working surface
 #   .env:  P05_TOOL_PROFILE=readonly
 
-# development surface (file writes, downstream MCP)
+# development surface (file writes, downstream MCP read/list)
 #   .env:  P05_TOOL_PROFILE=developer
+
+# highest surface: adds shell_run and the generic downstream proxy
+#   .env:  P05_TOOL_PROFILE=full
 ```
 
 Every server start writes one line to **stderr** (stdout is the JSON-RPC channel):
@@ -176,15 +227,24 @@ nothing was written where it should not be:
   so the probe reports a skip rather than a pass);
 - refusals must not contain the link target, the working directory or the allowed root.
 
+Response hygiene and configuration are asserted too:
+
+- a relative `fs_write` echoes the caller's own path and not the resolved one;
+- `shell_run` without `cwd` does not disclose the default working directory;
+- `mcp_status` and a downstream connect failure stay free of the configured command path;
+- an unset `REMOTE_AGENT_ALLOWED_ROOTS` exits non-zero, as does an empty one;
+- `package.json` and `src/version.ts` carry the same version.
+
 ## What this policy does NOT do
 
 - It does not sandbox `shell_run`. Once `full` is active, a command can read other
   drives, the registry and network shares. There is still only the small destructive
   command blocklist, and TASK-009 is where command policy is properly reworked.
-- It does not cover the downstream proxy's own capability surface: `mcp_call_tool`
-  grants whatever the downstream server can do. Its placement in `developer` follows
-  the plan's "approved downstream MCP wrappers"; TASK-012 (approval model) is the
-  intended gate for that wording.
+- It does not constrain the downstream proxy's capability surface: `mcp_call_tool`
+  grants whatever the downstream server can do, which is why it sits at `full`.
+  TASK-012 (approval model) and TASK-013 (purpose-built wrappers) own the narrower path.
+- It does not sanitise file contents or downstream output — those are passed through
+  verbatim by design (see Response hygiene).
 - It has no approval prompt and no structured audit log yet (TASK-010/TASK-012).
 - Path hardening cannot see hard links, and a TOCTOU window remains.
 - `P05_TOOL_PROFILE` is unrelated to `tunnel-client`'s own "profile" concept, which

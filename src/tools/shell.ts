@@ -5,11 +5,19 @@ import { assertAccessiblePath, assertPathShape, assertSafeCommand } from "../sec
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Returns stdout/stderr only.
+ *
+ * The resolved working directory is deliberately not returned: when the caller omits
+ * `cwd` it is `config.defaultCwd`, an absolute machine path, and a successful response
+ * that echoed it would hand the remote the agent's own working directory. The caller
+ * echoes its own `cwd` argument instead when it supplied one.
+ */
 export async function runPowerShell(
   command: string,
   cwd = config.defaultCwd,
   timeoutMs = config.shellTimeoutMs
-): Promise<{ stdout: string; stderr: string; cwd: string }> {
+): Promise<{ stdout: string; stderr: string }> {
   assertSafeCommand(command);
   // The working directory goes through the same guard as the fs tools. A string-only
   // check let a junction in the allowed root run the command outside it, which the
@@ -28,7 +36,7 @@ export async function runPowerShell(
         maxBuffer: 4 * 1024 * 1024
       }
     );
-    return { stdout, stderr, cwd: safeCwd };
+    return { stdout, stderr };
   } catch (error: any) {
     const stdout = error?.stdout ?? "";
     const stderr = error?.stderr ?? error?.message ?? String(error);

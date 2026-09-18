@@ -33,9 +33,11 @@ serveStdio(() => {
   exposer.expose("fs_write", {
     description: "Create or replace a UTF-8 text file inside configured allowed roots.",
     inputSchema: z.object({ path: z.string().min(1), content: z.string() })
-  }, async ({ path, content }) => ({
-    content: [{ type: "text", text: "Wrote " + await writeTextFile(path, content) }]
-  }));
+  }, async ({ path: targetPath, content }) => {
+    const { bytes } = await writeTextFile(targetPath, content);
+    // Echo the caller's own path: the resolved path is a machine path that stays local.
+    return { content: [{ type: "text", text: `Wrote ${bytes} bytes to ${targetPath}` }] };
+  });
 
   exposer.expose("fs_list", {
     description: "List direct children of a directory inside configured allowed roots.",
@@ -53,8 +55,11 @@ serveStdio(() => {
     })
   }, async ({ command, cwd, timeoutMs }) => {
     const result = await runPowerShell(command, cwd, timeoutMs);
+    // The caller's own cwd is echoed when supplied; the default working directory is a
+    // machine path and is never disclosed.
+    const header = cwd ? `cwd: ${cwd}\n` : "";
     return { content: [{ type: "text", text:
-      "cwd: " + result.cwd + "\nSTDOUT:\n" + result.stdout + "\nSTDERR:\n" + result.stderr
+      header + "STDOUT:\n" + result.stdout + "\nSTDERR:\n" + result.stderr
     }] };
   });
 

@@ -35,7 +35,13 @@ export async function readTextFile(filePath: string): Promise<string> {
   }
 }
 
-export async function writeTextFile(filePath: string, content: string): Promise<string> {
+/**
+ * Returns the byte count only, never the path: the caller echoes its own input back to
+ * the remote instead. A successful response used to carry `safePath`, which disclosed
+ * the resolved absolute path (and with it the working directory) whenever the caller
+ * asked for a relative path, or a junction was resolved to its target.
+ */
+export async function writeTextFile(filePath: string, content: string): Promise<{ bytes: number }> {
   const safePath = await assertAccessiblePath(filePath, "write");
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > config.maxWriteBytes) {
@@ -47,9 +53,13 @@ export async function writeTextFile(filePath: string, content: string): Promise<
   } catch (error) {
     throw describeError(error, "Could not write the file.");
   }
-  return safePath;
+  return { bytes };
 }
 
+/**
+ * Entry names only — the caller supplied the directory, so echoing its own string back
+ * discloses nothing, while a resolved path would.
+ */
 export async function listDirectory(dirPath: string): Promise<string[]> {
   const safePath = await assertAccessiblePath(dirPath, "read");
   try {

@@ -80,9 +80,14 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
   },
   {
     name: "mcp_call_tool",
-    minProfile: "developer",
+    // A generic proxy: whatever the downstream server can do becomes reachable, and for
+    // MATLAB that means arbitrary code evaluation. Plan section 3 lists it under "禁止
+    // 一开始暴露" (never expose initially) alongside shell_run, so it sits at `full`
+    // rather than `developer`. Per-task approved wrappers (TASK-013) are the intended
+    // way to give `developer` a narrower downstream surface.
+    minProfile: "full",
     risk: "execute",
-    summary: "Call one tool on a downstream MCP server (the plan's approved downstream MCP wrappers)."
+    summary: "Call an arbitrary tool on a downstream MCP server (generic escape hatch)."
   },
   {
     name: "shell_run",

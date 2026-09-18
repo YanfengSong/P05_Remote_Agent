@@ -12,7 +12,7 @@ P05 Remote Agent provides one stable MCP entry point for:
 
 The project intentionally avoids becoming a full enterprise MCP platform. It borrows proven patterns from existing open-source gateways while keeping the runtime small enough for a single Windows engineering workstation.
 
-## Current status: V0.3 — TASK-001 tool profile safety, TASK-002 local startup
+## Current status: 0.3.0 (stage V0.3) — TASK-001 tool profile safety, TASK-002 local startup, pre-merge review fixes
 
 Governing plan: [docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md) (Chinese) and
 [docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md) (English).
@@ -22,7 +22,7 @@ Implemented:
 - controlled `fs_read`, `fs_write`, `fs_list`, `shell_run`;
 - downstream MCP Client abstraction;
 - downstream registry;
-- MATLAB MCP configuration adapter;
+- MATLAB MCP configuration adapter (opt-in, no default path);
 - generic `mcp_status`, `mcp_list_tools`, `mcp_call_tool`;
 - mock downstream MCP and smoke test;
 - **tool profile layer** (`P05_TOOL_PROFILE`): four profiles, tools registered only
@@ -32,6 +32,14 @@ Implemented:
 - **path resolution hardening**: UNC / `\\?\` / drive-relative / alternate-data-stream
   spellings refused, trailing dots and spaces canonicalised, and the resolved real path
   re-checked so a symlink or junction inside a root cannot escape it;
+- **no machine-specific defaults**: there is no built-in allowed root (an unset
+  `REMOTE_AGENT_ALLOWED_ROOTS` aborts startup), and the MATLAB downstream is opt-in with
+  no default command, args or MATLAB root, so the repository is portable and
+  `.env.example` is publishable;
+- **response hygiene**: no successful response carries a resolved absolute path —
+  `fs_write` echoes the caller's own path, `shell_run` never echoes the default working
+  directory, and downstream failures are reported as short categories rather than raw
+  spawn errors;
 - **unified local startup**: `scripts/start-local.ps1` checks the toolchain, builds,
   resolves the profile, refuses a busy port and prints the device/profile/MCP/health
   banner before starting the gateway;
@@ -42,6 +50,8 @@ Next (per the plan; stop after each task):
 - TASK-004 read-only file tools (`fs_search`) and TASK-005 Git tool layer, which
   complete the `readonly` profile;
 - TASK-006/007 process manager and batch execution for the `developer` profile;
+- TASK-013 purpose-built downstream wrappers, which are what gives `developer` a
+  narrower route to MATLAB than the generic proxy;
 - TASK-010 audit log, TASK-012 approval model.
 
 ## Tool exposure
@@ -54,21 +64,24 @@ active profile is never advertised, so a remote client cannot discover it throug
 |---|---|
 | *(unset)* / `discovery` | `device_info`, `ping` |
 | `readonly` | discovery + `fs_read`, `fs_list` |
-| `developer` | readonly + `fs_write`, `mcp_status`, `mcp_list_tools`, `mcp_call_tool` |
-| `full` | developer + `shell_run` |
+| `developer` | readonly + `fs_write`, `mcp_status`, `mcp_list_tools` |
+| `full` | developer + `mcp_call_tool`, `shell_run` |
 
 `discovery` is the default and `full` must never be the default. An unknown
 `P05_TOOL_PROFILE` aborts startup instead of falling back — see
-[tool exposure policy](docs/architecture/TOOL-PROFILES.md) and
-[ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md).
+[tool exposure policy](docs/architecture/TOOL-PROFILES.md),
+[ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md) and
+[ADR-0005](docs/adr/ADR-0005-machine-neutral-config-and-response-hygiene.md).
 
 The plan assigns more tools to these profiles than exist today (`fs_search`, `git_*`,
 `apply_patch`, `process_*`, `batch_execute`). They are recorded in
 `PLANNED_TOOLS` and are exposed only once implemented — see TASK-004 onwards.
 
-`shell_run` is **not** a sandbox — it constrains the working directory, not the
-command. It stays in `full` and must stay hidden from any remotely reachable daemon
-until the audit log and approval model (TASK-010/TASK-012) exist.
+`shell_run` and `mcp_call_tool` are **not** constrained capabilities: the first runs an
+unconfined command (it constrains the working directory, not the command), the second
+pipes straight through to whatever a downstream server implements, which for MATLAB
+includes code evaluation. Both stay in `full` and must stay hidden from any remotely
+reachable daemon until the audit log and approval model (TASK-010/TASK-012) exist.
 
 ## Architecture
 
@@ -98,6 +111,8 @@ See:
 - [ADR-0001](docs/adr/ADR-0001-gateway-architecture.md)
 - [ADR-0002](docs/adr/ADR-0002-repository-source-of-truth.md)
 - [ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md)
+- [ADR-0004](docs/adr/ADR-0004-path-policy-fails-closed.md)
+- [ADR-0005](docs/adr/ADR-0005-machine-neutral-config-and-response-hygiene.md)
 
 ## Development
 
@@ -112,9 +127,9 @@ npm run test:exposure    # spawns the server per profile, asserts tools/list
 npm start                # stdio server
 ```
 
-Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine — the
-example ships empty on purpose, and an empty value aborts startup rather than falling
-back.
+Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine. There is
+no default root: an unset value aborts startup, and so does an explicitly empty one —
+the example ships empty on purpose.
 
 ### Local startup
 

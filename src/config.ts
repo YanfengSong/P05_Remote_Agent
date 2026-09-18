@@ -1,13 +1,5 @@
 import path from "node:path";
-
-/**
- * Default roots are only a fallback for an unset variable. A variable that IS set
- * but carries no usable entry is a configuration error and aborts startup: rules 3.4
- * (fail closed) and section 8.1 both require the operator to state the roots, and a
- * silent fallback would confine the agent to whatever directory it happened to start
- * in.
- */
-const DEFAULT_ROOTS = ["F:\\Project_Git"];
+import { VERSION } from "./version.js";
 
 /**
  * Read an environment variable as an own property only.
@@ -27,15 +19,30 @@ function parseEntries(raw: string): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+/**
+ * There is deliberately no default root.
+ *
+ * A built-in root would be a machine-specific default: it names one developer's drive,
+ * so on every other machine it either refuses everything or frees a directory nobody
+ * chose. Rules 3.4 (fail closed) and section 8.1 of the execution plan require the
+ * operator to state the roots, so an unset variable aborts startup exactly like a set
+ * but unusable one.
+ */
 export function parseAllowedRoots(raw: string | undefined): string[] {
-  if (raw === undefined) return DEFAULT_ROOTS.map((root) => path.resolve(root));
+  if (raw === undefined) {
+    throw new Error(
+      "REMOTE_AGENT_ALLOWED_ROOTS is not set. This agent ships no default root: state the " +
+        "absolute root(s) it may touch, semicolon-separated " +
+        "(for example C:\\Projects). Refusing to start without an explicit allowed root."
+    );
+  }
 
   const entries = parseEntries(raw);
   if (entries.length === 0) {
     throw new Error(
       "REMOTE_AGENT_ALLOWED_ROOTS is set but contains no usable path. " +
         `Set it to the absolute root(s) this agent may touch, semicolon-separated ` +
-        `(for example F:\\Project_Git). Refusing to start with an undefined allowed root.`
+        `(for example C:\\Projects). Refusing to start with an undefined allowed root.`
     );
   }
 
@@ -87,7 +94,7 @@ const allowedRoots = parseAllowedRoots(readOwnEnv("REMOTE_AGENT_ALLOWED_ROOTS"))
 
 export const config = {
   name: "p05-remote-agent",
-  version: "0.2.0",
+  version: VERSION,
   /** Raw value; validated fail-closed by src/policy/tool-profile.ts. Unset means "discovery". */
   toolProfile: readOwnEnv("P05_TOOL_PROFILE"),
   allowedRoots,

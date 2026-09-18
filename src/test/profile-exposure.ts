@@ -13,19 +13,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { CONNECT_ERROR_CATEGORIES } from "../downstream/client.js";
+import { VERSION } from "../version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.resolve(here, "..", "index.js");
 
-const ROOT = "F:\\Project_Git";
-const REPO = path.join(ROOT, "P05_Remote_Agent");
+// Derived from this file's location instead of hardcoded: `here` is <repo>/dist/test, so
+// the fixtures land beside the repository on whatever drive it is checked out to.
+const REPO = path.resolve(here, "..", "..");
+const ROOT = path.dirname(REPO);
 const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
 const STATE_DIR = path.join(REPO, ".p05");
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_list", "fs_read"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_call_tool", "mcp_list_tools", "mcp_status"];
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_list_tools", "mcp_status"];
+// mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
+// reachable, and for MATLAB that includes code evaluation. The plan lists it under
+// "never expose initially" next to shell_run, so it sits at `full`.
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "shell_run"];
 const ALL_TOOLS = FULL_TOOLS;
 
 let checks = 0;
@@ -58,7 +65,7 @@ type Session = {
 };
 
 async function openSession(env: Record<string, string>): Promise<Session> {
-  const client = new Client({ name: "p05-profile-test", version: "0.1.0" });
+  const client = new Client({ name: "p05-profile-test", version: VERSION });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverEntry],
@@ -222,6 +229,14 @@ for (const scenario of scenarios) {
     const readBack = await session.client.callTool({ name: "fs_read", arguments: { path: probe } });
     check("developer: fs_write round-trips through fs_read", textOf(readBack).includes("p05-probe"), textOf(readBack));
 
+    // A successful write must not disclose the resolved path. A relative path is the
+    // sharpest probe: it resolves against the server's working directory, so returning
+    // the resolved form would hand the remote that directory.
+    const REL_FILE = "p05-relative-write-probe.txt";
+    const relativeText = textOf(await session.client.callTool({ name: "fs_write", arguments: { path: REL_FILE, content: "rel" } }));
+    check("developer: fs_write echoes the caller's path, not a resolved one",
+      relativeText.includes(REL_FILE) && !relativeText.includes(ROOT), relativeText.slice(0, 200));
+
     // 1. a junction inside the allowed root that points outside it
     mklink(outlink, outsideTarget);
     const readOut = await outcome(() =>
@@ -329,9 +344,38 @@ for (const scenario of scenarios) {
     check("junction cleanup left the link target intact", await pathExists(path.join(outsideTarget, "outside.txt")));
     await fs.rm(outsideTarget, { recursive: true, force: true }).catch(() => undefined);
     await fs.rm(PROBE_DIR, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rm(path.join(REPO, "p05-relative-write-probe.txt"), { force: true }).catch(() => undefined);
     await session.client.close().catch(() => undefined);
   }
   console.log("ok  developer write + path guards");
+}
+
+// ------------------------------------ downstream configuration and errors stay local
+{
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "developer",
+    MATLAB_MCP_ENABLED: "true",
+    MATLAB_MCP_COMMAND: path.join(ROOT, "no-such-matlab-mcp.exe"),
+    MATLAB_MCP_ARGS_JSON: "[]"
+  }));
+  try {
+    const statusText = textOf(await session.client.callTool({ name: "mcp_status", arguments: {} }));
+    check("downstream: mcp_status does not disclose the configured command path",
+      !statusText.includes(ROOT) && !statusText.includes("no-such-matlab-mcp"), statusText.slice(0, 200));
+
+    const failed = await outcome(() => session.client.callTool({ name: "mcp_list_tools", arguments: { server: "matlab" } }));
+    // The transport reports a child that never started as "Connection closed" rather than
+    // ENOENT, so the contract asserted here is "one short category, no path" instead of a
+    // specific word.
+    check("downstream: a spawn failure becomes a short category",
+      failed.failed && (CONNECT_ERROR_CATEGORIES as readonly string[]).includes(failed.message.trim()),
+      failed.message.slice(0, 200));
+    check("downstream: the failure text does not disclose the command path",
+      !failed.message.includes(ROOT) && !failed.message.includes("no-such-matlab-mcp"), failed.message.slice(0, 200));
+  } finally {
+    await session.client.close().catch(() => undefined);
+  }
+  console.log("ok  downstream config and errors stay path-free");
 }
 
 // ---------------------------------------------------------------- full-profile shell
@@ -342,6 +386,12 @@ for (const scenario of scenarios) {
   try {
     const shell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT } });
     check("full: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
+
+    // With no cwd argument the working directory is the configured default, a machine
+    // path; a success response must not disclose it.
+    const defaultCwdShell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok" } });
+    check("full: shell_run does not disclose the default working directory",
+      !textOf(defaultCwdShell).includes(ROOT), textOf(defaultCwdShell).slice(0, 200));
 
     // cwd used to be string-checked only, so a junction in the root ran the command outside it.
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
@@ -385,6 +435,15 @@ async function spawnExpectingFailure(env: Record<string, string>): Promise<{ cod
   check("an explicitly empty allowed-roots value exits non-zero", failure.code !== 0, `exit code ${failure.code}`);
   check("empty allowed roots explains itself on stderr", failure.stderr.includes("no usable path"), failure.stderr.split(/\r?\n/)[0]);
   console.log("ok  fail closed on empty allowed roots (copying .env.example verbatim will not start)");
+}
+
+{
+  const env = childEnv({});
+  delete env.REMOTE_AGENT_ALLOWED_ROOTS;
+  const failure = await spawnExpectingFailure(env);
+  check("an unset allowed-roots value exits non-zero", failure.code !== 0, `exit code ${failure.code}`);
+  check("unset allowed roots explains itself on stderr", failure.stderr.includes("no default root"), failure.stderr.split(/\r?\n/)[0]);
+  console.log("ok  fail closed on unset allowed roots (no machine-specific default root)");
 }
 
 {

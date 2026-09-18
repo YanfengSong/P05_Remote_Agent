@@ -4,6 +4,9 @@
  *
  * Run: npm run test:policy
  */
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_TOOL_PROFILE,
   PLANNED_TOOLS,
@@ -49,8 +52,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_read", "fs_list"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_call_tool", "mcp_list_tools", "mcp_status"];
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run"];
+// mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
+// under "never expose initially" next to shell_run. It sits at `full`.
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_list_tools", "mcp_status"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "shell_run"];
 
 // ---------------------------------------------------------------- catalog invariants
 for (const spec of TOOL_SPECS) {
@@ -102,6 +107,11 @@ for (const forbidden of ["shell_run", "fs_write", "mcp_call_tool"]) {
 check("DoD: discovery is exactly device_info + ping",
   toolProfileReport("discovery", "env").exposed.length === 2);
 
+// Review fix: the generic downstream proxy is a `full` tool, not a `developer` one.
+check("matrix: the generic downstream proxy sits at full", specFor("mcp_call_tool")?.minProfile === "full");
+check("matrix: developer cannot reach the generic downstream proxy", !isToolAllowed("developer", "mcp_call_tool"));
+check("matrix: full can reach the generic downstream proxy", isToolAllowed("full", "mcp_call_tool"));
+
 // Cumulative nesting: each profile is a superset of the one below it.
 for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
   const lower = TOOL_PROFILE_NAMES[i - 1]!;
@@ -121,7 +131,7 @@ check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile ===
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
 
 // ---------------------------------------------------------------- dangerous commands
-process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
+process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const { assertAllowedPath, assertPathShape, assertSafeCommand, protectionReason } = await import("../security.js");
 
 for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\Software", "Remove-Item -Recurse -Force C:\\Data", "rm -rf /"]) {
@@ -131,11 +141,14 @@ check("command: an ordinary read command passes", (() => { assertSafeCommand("gi
 
 // ---------------------------------------------------------------- allowed-root configuration fails closed
 const { parseAllowedRoots, parseDefaultCwd, readOwnEnv } = await import("../config.js");
-const absRoot = process.platform === "win32" ? "F:\\Project_Git" : "/srv/project_git";
+const absRoot = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const absOther = process.platform === "win32" ? "C:\\Windows" : "/etc";
 const absChild = [absRoot, "sub"].join(process.platform === "win32" ? "\\" : "/");
 
-check("config: unset roots fall back to one default root", parseAllowedRoots(undefined).length === 1);
+// No machine-specific default: an unset variable is a configuration error, exactly like
+// an empty one. A built-in root would name one developer's drive on every machine.
+throws("config: unset roots are refused (no machine-specific default)",
+  () => parseAllowedRoots(undefined), "no default root");
 check("config: a single root is accepted", parseAllowedRoots(absRoot).length === 1);
 check("config: several roots are accepted", parseAllowedRoots(`${absRoot};${absOther}`).length === 2);
 throws("config: empty roots are refused", () => parseAllowedRoots(""), "no usable path");
@@ -185,7 +198,7 @@ for (const profile of TOOL_PROFILE_NAMES) {
 }
 
 // ---------------------------------------------------------------- protected paths
-const root = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
+const root = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const p = (...parts: string[]) => [root, ...parts].join(process.platform === "win32" ? "\\" : "/");
 
 check("path: ordinary source file is unprotected", protectionReason(p("P05_Remote_Agent", "src", "index.ts")) === undefined);
@@ -209,10 +222,20 @@ check("path: private key is protected", Boolean(protectionReason(p("certs", "ser
 check("path: an ordinary dotted filename is not over-blocked", protectionReason(p("P05_Remote_Agent", "docs", "v1.2.3.md")) === undefined);
 
 // Windows spellings that change which file is touched while looking harmless.
-throws("path: alternate data stream is refused", () => assertPathShape("F:\\a\\b.txt:evil", "write"), "alternate data streams");
-throws("path: extended-length prefix is refused", () => assertPathShape("\\\\?\\F:\\Project_Git\\x", "read"), "UNC");
+throws("path: alternate data stream is refused", () => assertPathShape("C:\\a\\b.txt:evil", "write"), "alternate data streams");
+throws("path: extended-length prefix is refused", () => assertPathShape("\\\\?\\C:\\p05-root\\x", "read"), "UNC");
 throws("path: UNC share is refused", () => assertPathShape("\\\\server\\share\\x", "read"), "UNC");
-throws("path: drive-relative path is refused", () => assertPathShape("F:foo", "read"), "drive-relative");
-check("path: an ordinary absolute path is accepted", Boolean(assertPathShape("F:\\Project_Git\\x", "read")));
+throws("path: drive-relative path is refused", () => assertPathShape("C:foo", "read"), "drive-relative");
+check("path: an ordinary absolute path is accepted", Boolean(assertPathShape("C:\\p05-root\\x", "read")));
+
+// ---------------------------------------------------------------- version consistency
+{
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const pkg = JSON.parse(await readFile(path.resolve(here, "..", "..", "package.json"), "utf8")) as { version?: string };
+  const { VERSION } = await import("../version.js");
+  check("version: package.json agrees with src/version.ts", pkg.version === VERSION,
+    `package.json ${pkg.version} vs src/version.ts ${VERSION}`);
+  check("version: the version is a plain semver string", /^\d+\.\d+\.\d+$/.test(VERSION), VERSION);
+}
 
 console.log(`POLICY_PROFILES_OK (${checks} checks)`);
