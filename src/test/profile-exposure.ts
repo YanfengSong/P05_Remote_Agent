@@ -124,9 +124,13 @@ for (const scenario of scenarios) {
 
     const reportLine = session.stderrText().split(/\r?\n/).find((line) => line.includes("p05.tool_profile"));
     check(`[${scenario.label}] startup exposure report is emitted on stderr`, Boolean(reportLine));
-    const report = JSON.parse(reportLine!) as { profile: string; exposed: string[] };
+    const report = JSON.parse(reportLine!) as { profile: string; exposed: string[]; suppressed: { tool: string }[] };
     check(`[${scenario.label}] report carries the active profile`, report.profile === scenario.profile, report.profile);
     sameSet(`[${scenario.label}] report exposed list matches tools/list`, report.exposed, names);
+    // Regression guard: every declared tool is accounted for by the report, so no tool can
+    // be registered without going through the profile gate.
+    sameSet(`[${scenario.label}] exposed + suppressed covers every declared tool`,
+      [...report.exposed, ...report.suppressed.map((entry) => entry.tool)], ALL_TOOLS);
 
     // Every suppressed tool must be genuinely unreachable, not merely hidden.
     for (const name of ALL_TOOLS.filter((tool) => !scenario.expected.includes(tool))) {
@@ -183,8 +187,11 @@ for (const scenario of scenarios) {
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
   const outsideTarget = path.join(path.parse(ROOT).root, "_p05_junction_target");
+  const outsideName = "_p05_junction_target";
   const outlink = path.join(ROOT, "_p05_junction_probe");
   const gitlink = path.join(ROOT, "_p05_git_junction");
+  const goneJunction = path.join(ROOT, "_p05_gone_junction");
+  const goneTarget = path.join(path.parse(ROOT).root, "_p05_never_exists");
   const gitDir = path.join(REPO, ".git");
 
   const mklink = (link: string, target: string) => execFileSync("cmd", ["/c", "mklink", "/J", link, target], { stdio: "pipe" });
@@ -221,7 +228,7 @@ for (const scenario of scenarios) {
       session.client.callTool({ name: "fs_read", arguments: { path: path.join(outlink, "outside.txt") } })
     );
     check("junction: read through a link leaving the allowed root is refused",
-      readOut.failed && readOut.message.includes("outside allowed roots"), readOut.message.slice(0, 200));
+      readOut.failed && readOut.message.includes("a link resolves outside the allowed roots"), readOut.message.slice(0, 200));
     const writeOut = await outcome(() =>
       session.client.callTool({ name: "fs_write", arguments: { path: path.join(outlink, "planted.txt"), content: "x" } })
     );
@@ -258,11 +265,52 @@ for (const scenario of scenarios) {
     );
     check("extended-length path prefix is refused", extendedResult.failed, extendedResult.message.slice(0, 200));
 
-    // 6. .env is never handed out
+    // 6. a dangling junction: its target does not exist, so realpath fails. Falling back
+    //    to the unresolved path here would skip the containment check entirely.
+    mklink(goneJunction, goneTarget);
+    const danglingRead = await outcome(() =>
+      session.client.callTool({ name: "fs_read", arguments: { path: path.join(goneJunction, "x.txt") } })
+    );
+    check("dangling junction: read is refused", danglingRead.failed && danglingRead.message.includes("does not exist"),
+      danglingRead.message.slice(0, 200));
+    const danglingWrite = await outcome(() =>
+      session.client.callTool({ name: "fs_write", arguments: { path: path.join(goneJunction, "sub", "x.txt"), content: "x" } })
+    );
+    check("dangling junction: write is refused", danglingWrite.failed, danglingWrite.message.slice(0, 200));
+    check("dangling junction: nothing was created at the target", !(await pathExists(goneTarget)));
+
+    // 7. write-side code-execution paths: writing these would run code on the next start
+    const packageJsonPath = path.join(REPO, "package.json");
+    const packageJsonBefore = await fs.readFile(packageJsonPath, "utf8");
+    for (const rel of [
+      ["node_modules", "_p05_probe.js"],
+      ["dist", "_p05_probe.js"],
+      ["package.json"],
+      ["tsconfig.json"],
+      [".vscode", "tasks.json"]
+    ]) {
+      const target = path.join(REPO, ...rel);
+      const attempt = await outcome(() => session.client.callTool({ name: "fs_write", arguments: { path: target, content: "x" } }));
+      check(`write side: ${rel.join("/")} is refused`, attempt.failed, attempt.message.slice(0, 200));
+    }
+    check("write side: package.json was not modified", (await fs.readFile(packageJsonPath, "utf8")) === packageJsonBefore);
+    check("write side: nothing landed in dist", !(await pathExists(path.join(REPO, "dist", "_p05_probe.js"))));
+    check("write side: nothing landed in node_modules", !(await pathExists(path.join(REPO, "node_modules", "_p05_probe.js"))));
+
+    // 8. refusals must not hand the remote the machine's layout
+    check("leak: a link refusal does not name the link target", !readOut.message.includes(outsideName), readOut.message.slice(0, 200));
+    const relativeRead = await outcome(() => session.client.callTool({ name: "fs_read", arguments: { path: "definitely-not-here.txt" } }));
+    check("leak: a missing-file error does not reveal the working directory",
+      relativeRead.failed && !relativeRead.message.includes(REPO), relativeRead.message.slice(0, 200));
+    const outsideRead = await outcome(() => session.client.callTool({ name: "fs_read", arguments: { path: path.join(path.parse(ROOT).root, "Windows", "win.ini") } }));
+    check("leak: an out-of-root refusal states the rule, not the allowed roots",
+      outsideRead.failed && !outsideRead.message.includes(ROOT), outsideRead.message.slice(0, 200));
+
+    // 9. .env is never handed out
     const envRead = await outcome(() => session.client.callTool({ name: "fs_read", arguments: { path: path.join(REPO, ".env") } }));
     check("fs_read refuses to hand out .env", envRead.failed, envRead.message.slice(0, 200));
 
-    // 7. short (8.3) name for .git, when the volume generates them
+    // 10. short (8.3) name for .git, when the volume generates them
     const shortGit = shortPathOf(gitDir);
     const shortBase = shortGit ? path.basename(shortGit) : "";
     if (shortBase && shortBase !== ".git") {
@@ -277,6 +325,7 @@ for (const scenario of scenarios) {
   } finally {
     unlink(outlink);
     unlink(gitlink);
+    unlink(goneJunction);
     check("junction cleanup left the link target intact", await pathExists(path.join(outsideTarget, "outside.txt")));
     await fs.rm(outsideTarget, { recursive: true, force: true }).catch(() => undefined);
     await fs.rm(PROBE_DIR, { recursive: true, force: true }).catch(() => undefined);
@@ -288,13 +337,29 @@ for (const scenario of scenarios) {
 // ---------------------------------------------------------------- full-profile shell
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "full" }));
+  const escapeLink = path.join(ROOT, "_p05_shell_junction");
+  const escapeTarget = path.join(path.parse(ROOT).root, "_p05_shell_target");
   try {
     const shell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT } });
     check("full: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
+
+    // cwd used to be string-checked only, so a junction in the root ran the command outside it.
+    await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
+    await fs.mkdir(escapeTarget, { recursive: true });
+    try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
+    execFileSync("cmd", ["/c", "mklink", "/J", escapeLink, escapeTarget], { stdio: "pipe" });
+
+    const escapedCwd = await outcome(() =>
+      session.client.callTool({ name: "shell_run", arguments: { command: "New-Item -ItemType File -Name escaped.txt -Force", cwd: escapeLink } })
+    );
+    check("full: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
+    check("full: nothing was written outside the roots by shell_run", !(await pathExists(path.join(escapeTarget, "escaped.txt"))));
   } finally {
+    try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
+    await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await session.client.close().catch(() => undefined);
   }
-  console.log("ok  full grants shell_run");
+  console.log("ok  full grants shell_run, and its cwd goes through the same guard");
 }
 
 // ---------------------------------------------------------------- fail closed

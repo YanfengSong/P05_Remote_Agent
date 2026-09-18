@@ -65,8 +65,24 @@ then it exposes the read-only tools that exist.
   `.env.template` templates), `.git-credentials`, `.netrc`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa`, `credentials`, and `*.pem` / `*.pfx` / `*.p12`.
 
-Read and write share one list; a write-side approval step (TASK-012) would be a
-divergence inside `assertAccessiblePath`.
+Read and write share the protected-name list; a write-side approval step (TASK-012) would be
+a divergence inside `assertAccessiblePath`.
+
+### Write-side code-execution paths
+
+A write is additionally refused inside directories and to files that turn a text write into
+code that runs later with no further tool call:
+
+| Refused for write | Why |
+|---|---|
+| any `node_modules` / `dist` segment | code this agent itself loads |
+| any `.vscode` segment | tasks and settings the editor executes |
+| `package.json`, `package-lock.json` | scripts run on the next install |
+| `tsconfig.json`, `.mcp.json`, `.gitmodules` | build and tooling configuration |
+
+Reads stay allowed — a build artefact holds no secret, and blocking reads would break
+ordinary work. The consequence is deliberate: the agent cannot update its own manifests
+remotely; that is a local action today and an approval case (TASK-012) later.
 
 ## Path resolution
 
@@ -82,23 +98,30 @@ passes four checks, in order:
    Windows strips those, so `.git.` and `.git ` name the same directory as `.git`.
 4. **real path** — the path is re-resolved through symlinks, NTFS junctions and 8.3
    short names (walking up to the nearest existing ancestor for a file that does not
-   exist yet). If the real path differs from the requested one, it must *also* be
-   inside the allowed roots and *also* be free of protected names.
+   exist yet). The first component that exists **must** canonicalise: a junction whose
+   target does not exist is refused rather than falling back to the unresolved path,
+   because that fallback would make the real path equal the requested path and silently
+   skip this whole check. If the real path differs from the requested one, it must
+   *also* be inside the allowed roots and *also* be free of protected names.
 
-Step 4 closes an escape the earlier design missed: a symlink or junction that already
-exists inside an allowed root — `node_modules/.bin`-style links are ordinary — could
-point outside it, and a string comparison sees nothing wrong.
+Step 4 closes two escape classes that were reproduced against an earlier revision: a
+symlink or junction that already exists inside an allowed root (`node_modules/.bin`-style
+links are ordinary) pointing outside it, and a dangling junction whose check used to pass
+and whose write landed outside the roots once the target appeared. See ADR-0004.
+
+Refusal messages are returned to the remote, so they echo only the caller's own input and
+the rule that refused it — never the resolved path, the process working directory or a link
+target, all of which would let a remote client enumerate the machine for free.
 
 Residual risk, accepted and documented rather than papered over:
 
-- **hard links** — `realpath` cannot see them; a pre-existing hard link inside a root
-  pointing at another file on the same volume is not detected. Refusing every
-  multi-linked file was rejected because legitimate toolchains (pnpm stores) rely on
-  them;
+- **hard links** — `realpath` cannot see them. A pre-existing hard link inside a root
+  pointing at another file on the same volume is not detected; a reviewer reproduced one
+  reading a `.env` and a private key. Refusing every multi-linked file was rejected because
+  legitimate toolchains (pnpm stores) rely on them;
 - **TOCTOU** — a small window exists between this check and the caller's open();
-- **`shell_run`'s `cwd`** still uses the string-only check, and 8.3 short names are not
-  generated on the volumes in use here; both are noted rather than defended, since
-  `shell_run` is a full-execution unlock by design.
+- 8.3 short names are not generated on the volumes in use here, so that spelling is not
+  reachable in practice (the probe reports a skip rather than a pass).
 
 ## Operating it
 
@@ -141,11 +164,17 @@ nothing was written where it should not be:
 - a junction inside the allowed root pointing outside it — read and write refused, and
   no file planted in the target;
 - a junction inside the allowed root pointing at `.git` — write refused;
+- a **dangling** junction (target does not exist) — read and write refused, so a check
+  can never pass and the write land outside later;
 - `.git.` (trailing dot) and plain `.git` — refused, and no `pre-commit` appears;
 - an alternate data stream (`probe.txt:evil`) — refused;
 - a `\\?\` extended-length path — refused;
+- a write to `node_modules`, `dist`, `package.json`, `tsconfig.json` or `.vscode/tasks.json`
+  — refused, with `package.json` byte-identical afterwards;
+- `shell_run` with a junction as `cwd` — refused, and nothing written at the target;
 - an 8.3 short name for `.git`, when the volume generates one (this volume does not,
-  so the probe reports a skip rather than a pass).
+  so the probe reports a skip rather than a pass);
+- refusals must not contain the link target, the working directory or the allowed root.
 
 ## What this policy does NOT do
 

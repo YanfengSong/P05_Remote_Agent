@@ -9,6 +9,17 @@ import path from "node:path";
  */
 const DEFAULT_ROOTS = ["F:\\Project_Git"];
 
+/**
+ * Read an environment variable as an own property only.
+ *
+ * `process.env` inherits from Object.prototype, so a polluted prototype would otherwise
+ * make `process.env[name]` answer for a variable that was never set - and here that
+ * value decides which roots are reachable and which tool profile is active.
+ */
+export function readOwnEnv(name: string): string | undefined {
+  return Object.hasOwn(process.env, name) ? process.env[name] : undefined;
+}
+
 function parseEntries(raw: string): string[] {
   return raw
     .split(";")
@@ -72,16 +83,16 @@ export function parseDefaultCwd(raw: string | undefined, allowedRoots: string[])
   return resolved;
 }
 
-const allowedRoots = parseAllowedRoots(process.env.REMOTE_AGENT_ALLOWED_ROOTS);
+const allowedRoots = parseAllowedRoots(readOwnEnv("REMOTE_AGENT_ALLOWED_ROOTS"));
 
 export const config = {
   name: "p05-remote-agent",
   version: "0.2.0",
   /** Raw value; validated fail-closed by src/policy/tool-profile.ts. Unset means "discovery". */
-  toolProfile: process.env.P05_TOOL_PROFILE,
+  toolProfile: readOwnEnv("P05_TOOL_PROFILE"),
   allowedRoots,
-  defaultCwd: parseDefaultCwd(process.env.REMOTE_AGENT_DEFAULT_CWD, allowedRoots),
-  shellTimeoutMs: Number(process.env.REMOTE_AGENT_SHELL_TIMEOUT_MS ?? "120000"),
-  maxReadBytes: Number(process.env.REMOTE_AGENT_MAX_READ_BYTES ?? String(2 * 1024 * 1024)),
-  maxWriteBytes: Number(process.env.REMOTE_AGENT_MAX_WRITE_BYTES ?? String(2 * 1024 * 1024))
+  defaultCwd: parseDefaultCwd(readOwnEnv("REMOTE_AGENT_DEFAULT_CWD"), allowedRoots),
+  shellTimeoutMs: Number(readOwnEnv("REMOTE_AGENT_SHELL_TIMEOUT_MS") ?? "120000"),
+  maxReadBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_READ_BYTES") ?? String(2 * 1024 * 1024)),
+  maxWriteBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_WRITE_BYTES") ?? String(2 * 1024 * 1024))
 };

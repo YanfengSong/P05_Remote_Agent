@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { config } from "./config.js";
+import { config, readOwnEnv } from "./config.js";
 import { matlabDefinition } from "./downstream/matlab.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
 import { registerGatewayTools } from "./gateway-tools.js";
@@ -12,7 +12,7 @@ import { listDirectory, readTextFile, writeTextFile } from "./tools/files.js";
 import { runPowerShell } from "./tools/shell.js";
 
 // Fail closed: an unknown P05_TOOL_PROFILE aborts startup instead of widening the surface.
-const { profile, profileSource } = resolveToolProfile(process.env.P05_TOOL_PROFILE);
+const { profile, profileSource } = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE"));
 
 const registry = new DownstreamRegistry([matlabDefinition]);
 process.once("SIGINT", () => void registry.closeAll().finally(() => process.exit(0)));

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { config } from "../config.js";
-import { assertAllowedPath, assertSafeCommand } from "../security.js";
+import { assertAccessiblePath, assertPathShape, assertSafeCommand } from "../security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,7 +11,12 @@ export async function runPowerShell(
   timeoutMs = config.shellTimeoutMs
 ): Promise<{ stdout: string; stderr: string; cwd: string }> {
   assertSafeCommand(command);
-  const safeCwd = assertAllowedPath(cwd);
+  // The working directory goes through the same guard as the fs tools. A string-only
+  // check let a junction in the allowed root run the command outside it, which the
+  // README's "runs in an allowed working directory" claim then contradicted.
+  // Note: this constrains where the command starts, not what it may then write —
+  // shell_run is not a sandbox.
+  const safeCwd = await assertAccessiblePath(assertPathShape(cwd, "read"), "read");
   try {
     const { stdout, stderr } = await execFileAsync(
       "powershell.exe",

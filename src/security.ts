@@ -7,14 +7,26 @@ function normalizeForCompare(input: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-export function assertAllowedPath(input: string): string {
-  const resolved = path.resolve(input);
+export type Access = "read" | "write";
+
+function containmentProblem(resolved: string): string | undefined {
   const candidate = normalizeForCompare(resolved);
   const allowed = config.allowedRoots.some((root) => {
     const normalizedRoot = normalizeForCompare(root);
     return candidate === normalizedRoot || candidate.startsWith(normalizedRoot + path.sep);
   });
-  if (!allowed) throw new Error(`Path is outside allowed roots: ${resolved}`);
+  return allowed ? undefined : "is outside the allowed roots";
+}
+
+/**
+ * Refusal messages are returned to a remote client, so they echo the caller's own input
+ * and never the resolved path, the process working directory or a link target: those
+ * would let the remote enumerate the machine for free.
+ */
+export function assertAllowedPath(input: string): string {
+  const resolved = path.resolve(input);
+  const problem = containmentProblem(resolved);
+  if (problem) throw new Error(`Path refused: ${input} ${problem}.`);
   return resolved;
 }
 
@@ -22,8 +34,7 @@ export function assertAllowedPath(input: string): string {
  * Reject path spellings whose meaning a string comparison cannot reason about.
  *
  * These are not style preferences: each one changes which file the OS actually
- * touches while leaving the string looking harmless, which is exactly how a path
- * policy gets bypassed.
+ * touches while leaving the string looking harmless.
  */
 function shapeProblem(input: string): string | undefined {
   if (process.platform !== "win32") return undefined;
@@ -41,17 +52,14 @@ function shapeProblem(input: string): string | undefined {
   return undefined;
 }
 
-/** Resolve a path after rejecting spellings the policy will not evaluate. */
 export function assertPathShape(input: string, access: Access): string {
   const problem = shapeProblem(input);
   if (problem) throw new Error(`Path refused for ${access}: ${input} (${problem}).`);
   return path.resolve(input);
 }
 
-export type Access = "read" | "write";
-
 /**
- * Paths that stay off-limits even when they sit inside an allowed root.
+ * Paths that stay off-limits even inside an allowed root.
  *
  * Two distinct concerns, deliberately in one list:
  *  - secrets/credentials: reading them through a remote client is exfiltration;
@@ -101,49 +109,97 @@ export function protectionReason(resolvedPath: string): string | undefined {
 }
 
 /**
- * Real path of `target`, resolving symlinks, NTFS junctions and short (8.3) names.
- * If the leaf does not exist yet, the nearest existing ancestor is resolved and the
- * remaining segments are re-appended, so a write to a new file still gets a real
- * parent directory checked.
+ * Paths a write must never touch even inside an allowed root, because each one turns a
+ * text write into code that runs later with no further tool call: a dependency or build
+ * artefact this agent itself loads, or a manifest whose scripts or tasks execute on the
+ * next install or workspace open. Reads stay allowed — a build artefact holds no secret.
  */
-async function resolveRealPath(target: string): Promise<string> {
+const writeForbiddenPathSegments = new Set(["node_modules", "dist", ".vscode"]);
+
+const writeForbiddenBasenames = new Set([
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  ".mcp.json",
+  ".gitmodules"
+]);
+
+export function writeProtectionReason(resolvedPath: string): string | undefined {
+  const segments = resolvedPath.split(path.sep).filter(Boolean).map(canonicalSegment);
+  const segment = segments.find((entry) => writeForbiddenPathSegments.has(entry));
+  if (segment) return `"${segment}" holds code this agent loads, so it is read-only`;
+
+  const base = canonicalSegment(path.basename(resolvedPath));
+  if (writeForbiddenBasenames.has(base)) return `"${base}" can execute code on the next build or install`;
+
+  return undefined;
+}
+
+/**
+ * Canonicalise `target`, following symlinks, junctions and 8.3 short names.
+ *
+ * The first component that exists must canonicalise. If it cannot - a dangling junction
+ * whose target does not exist - this reports `danglingLink` and the caller refuses.
+ * Falling back to the unresolved path here would make the real path equal the requested
+ * path and silently skip the containment check below, which is exactly how a dangling
+ * junction used to let a write land outside the allowed roots.
+ */
+async function resolveRealPath(target: string): Promise<{ real: string; danglingLink: boolean }> {
   let current = target;
   const pending: string[] = [];
 
   for (;;) {
+    let exists = true;
     try {
-      const real = await fs.realpath(current);
-      return pending.length === 0 ? real : path.join(real, ...pending.reverse());
+      await fs.lstat(current);
     } catch {
-      const parent = path.dirname(current);
-      if (parent === current) return target; // nothing on this path exists
-      pending.push(path.basename(current));
-      current = parent;
+      exists = false;
     }
+
+    if (exists) {
+      try {
+        const real = await fs.realpath(current);
+        return { real: pending.length === 0 ? real : path.join(real, ...pending.reverse()), danglingLink: false };
+      } catch {
+        return { real: current, danglingLink: true };
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return { real: target, danglingLink: false }; // nothing on this path exists at all
+    pending.push(path.basename(current));
+    current = parent;
   }
 }
 
 /**
- * Guard for the filesystem tools: path shape, allowed root, protected paths, and
- * the resolved real path.
+ * Guard for the filesystem tools: path shape, allowed root, protected names, write-side
+ * code-execution paths, and the resolved real path.
  *
- * The real-path pass is what stops an escape through a symlink or junction that
- * already exists inside an allowed root: the string looks local, the target is not.
- * Residual risk: a hard link inside the tree (realpath cannot see those) and the
- * TOCTOU window between this check and the caller's open().
+ * Residual risk, documented rather than papered over: `realpath` cannot see hard links,
+ * and a TOCTOU window remains between this check and the caller's open().
  */
 export async function assertAccessiblePath(input: string, access: Access): Promise<string> {
   const resolved = assertAllowedPath(assertPathShape(input, access));
 
   const directReason = protectionReason(resolved);
-  if (directReason) throw new Error(`Path refused for ${access}: ${resolved} (${directReason}).`);
+  if (directReason) throw new Error(`Path refused for ${access}: ${input} (${directReason}).`);
+  if (access === "write") {
+    const writeReason = writeProtectionReason(resolved);
+    if (writeReason) throw new Error(`Path refused for ${access}: ${input} (${writeReason}).`);
+  }
 
-  const real = await resolveRealPath(resolved);
+  const { real, danglingLink } = await resolveRealPath(resolved);
+  if (danglingLink) {
+    throw new Error(`Path refused for ${access}: ${input} (a link in this path points at something that does not exist).`);
+  }
+
   if (normalizeForCompare(real) !== normalizeForCompare(resolved)) {
-    assertAllowedPath(real); // a link must still land inside the allowed roots
-    const realReason = protectionReason(real); // ...and must not land on a protected path
-    if (realReason) {
-      throw new Error(`Path refused for ${access}: ${resolved} resolves to ${real} (${realReason}).`);
+    const outside = containmentProblem(real);
+    const onProtected = outside ? undefined : protectionReason(real) ?? (access === "write" ? writeProtectionReason(real) : undefined);
+    if (outside || onProtected) {
+      const detail = outside ? "outside the allowed roots" : `onto a protected path (${onProtected})`;
+      throw new Error(`Path refused for ${access}: ${input} (a link resolves ${detail}).`);
     }
   }
 
@@ -160,6 +216,11 @@ const blockedCommandPatterns = [
   /\brm\b[\s\S]*\s-rf\b/i
 ];
 
+/**
+ * A small destructive-command blocklist. This is a guard rail against accidents, NOT a
+ * security boundary: option order, aliases, `rd /s /q`, `cmd /c del /f /s /q`, cmdlet
+ * name obfuscation and `Stop-Computer` all pass (TASK-009 owns the real rework).
+ */
 export function assertSafeCommand(command: string): void {
   const hit = blockedCommandPatterns.find((pattern) => pattern.test(command));
   if (hit) throw new Error(`Command blocked by safety policy: ${hit}`);

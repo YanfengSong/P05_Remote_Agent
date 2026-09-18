@@ -130,7 +130,7 @@ for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\So
 check("command: an ordinary read command passes", (() => { assertSafeCommand("git status"); return true; })());
 
 // ---------------------------------------------------------------- allowed-root configuration fails closed
-const { parseAllowedRoots, parseDefaultCwd } = await import("../config.js");
+const { parseAllowedRoots, parseDefaultCwd, readOwnEnv } = await import("../config.js");
 const absRoot = process.platform === "win32" ? "F:\\Project_Git" : "/srv/project_git";
 const absOther = process.platform === "win32" ? "C:\\Windows" : "/etc";
 const absChild = [absRoot, "sub"].join(process.platform === "win32" ? "\\" : "/");
@@ -147,6 +147,43 @@ check("config: an in-root cwd is accepted", parseDefaultCwd(absChild, [absRoot])
 throws("config: an empty cwd is refused", () => parseDefaultCwd("", [absRoot]), "empty");
 throws("config: a cwd outside the roots is refused", () => parseDefaultCwd(absOther, [absRoot]), "outside the allowed roots");
 
+// process.env inherits from Object.prototype, so a plain lookup can answer for a variable
+// that was never set - and these variables pick the roots and the profile.
+(Object.prototype as Record<string, unknown>).P05_TEST_POLLUTED = "1";
+check("config: a plain lookup sees the inherited value", (process.env as Record<string, string>)["P05_TEST_POLLUTED"] === "1");
+check("config: readOwnEnv ignores inherited properties", readOwnEnv("P05_TEST_POLLUTED") === undefined);
+delete (Object.prototype as Record<string, unknown>).P05_TEST_POLLUTED;
+check("config: readOwnEnv still reads real variables", readOwnEnv("REMOTE_AGENT_ALLOWED_ROOTS") === process.env.REMOTE_AGENT_ALLOWED_ROOTS);
+
+// ---------------------------------------------------------------- write-side code-execution paths
+const { writeProtectionReason } = await import("../security.js");
+const wp = (...parts: string[]) => [absRoot, ...parts].join(process.platform === "win32" ? "\\" : "/");
+for (const rel of [
+  ["node_modules", "pkg", "index.js"],
+  ["dist", "index.js"],
+  [".vscode", "tasks.json"],
+  ["package.json"],
+  ["package-lock.json"],
+  ["tsconfig.json"],
+  [".mcp.json"],
+  [".gitmodules"]
+]) {
+  check(`write-protect: ${rel.join("/")} cannot be written`,
+    Boolean(writeProtectionReason(wp(...rel))), String(writeProtectionReason(wp(...rel))));
+}
+for (const rel of [["src", "index.ts"], ["README.md"], ["docs", "architecture", "TOOL-PROFILES.md"]]) {
+  check(`write-protect: ${rel.join("/")} stays writable`, writeProtectionReason(wp(...rel)) === undefined);
+}
+
+// ---------------------------------------------------------------- profile partition invariant
+for (const profile of TOOL_PROFILE_NAMES) {
+  const report = toolProfileReport(profile, "env");
+  sameSet(`partition: ${profile} exposed + suppressed covers every declared tool`,
+    [...report.exposed, ...report.suppressed.map((entry) => entry.tool)], TOOL_SPECS.map((spec) => spec.name));
+  check(`partition: ${profile} never reports a tool twice`,
+    new Set([...report.exposed, ...report.suppressed.map((entry) => entry.tool)]).size === TOOL_SPECS.length);
+}
+
 // ---------------------------------------------------------------- protected paths
 const root = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
 const p = (...parts: string[]) => [root, ...parts].join(process.platform === "win32" ? "\\" : "/");
@@ -155,7 +192,7 @@ check("path: ordinary source file is unprotected", protectionReason(p("P05_Remot
 check("path: allowed root accepts an in-tree file", Boolean(assertAllowedPath(p("P05_Remote_Agent", "src", "index.ts"))));
 throws("path: allowed root escape is denied",
   () => assertAllowedPath(process.platform === "win32" ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts"),
-  "outside allowed roots");
+  "outside the allowed roots");
 
 check("path: .env is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env"))?.includes("secrets")));
 check("path: .env.local is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env.local"))?.includes("secrets")));
