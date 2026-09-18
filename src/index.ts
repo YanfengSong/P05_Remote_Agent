@@ -6,14 +6,13 @@ import { matlabDefinition } from "./downstream/matlab.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
 import { registerGatewayTools } from "./gateway-tools.js";
 import { createExposer, logExposure } from "./policy/expose.js";
-import { createToolGate } from "./policy/gate.js";
+import { resolveToolProfile } from "./policy/tool-profile.js";
 import { registerDeviceTools } from "./tools/device.js";
 import { listDirectory, readTextFile, writeTextFile } from "./tools/files.js";
-import { registerPolicyTool } from "./tools/policy.js";
 import { runPowerShell } from "./tools/shell.js";
 
-// Fail-closed: an unknown P05_TOOL_PROFILE aborts startup instead of widening the surface.
-const gate = createToolGate(process.env);
+// Fail closed: an unknown P05_TOOL_PROFILE aborts startup instead of widening the surface.
+const { profile, profileSource } = resolveToolProfile(process.env.P05_TOOL_PROFILE);
 
 const registry = new DownstreamRegistry([matlabDefinition]);
 process.once("SIGINT", () => void registry.closeAll().finally(() => process.exit(0)));
@@ -21,9 +20,8 @@ process.once("SIGTERM", () => void registry.closeAll().finally(() => process.exi
 
 serveStdio(() => {
   const server = new McpServer({ name: config.name, version: config.version });
-  const exposer = createExposer(server, gate);
+  const exposer = createExposer(server, profile, profileSource);
 
-  registerPolicyTool(exposer, gate);
   registerDeviceTools(exposer);
   registerGatewayTools(exposer, registry);
 

@@ -154,8 +154,10 @@ const blockedCommandPatterns = [
   /\bformat\b/i, /\bdiskpart\b/i, /\bshutdown\b/i, /\breboot\b/i,
   /\bbcdedit\b/i, /\breg(\.exe)?\b/i, /\bnetsh\b/i, /\brunas\b/i,
   /\btakeown\b/i, /\bcipher\b/i,
-  /\bRemove-Item\b.*\b-Recurse\b.*\b-Force\b/i,
-  /\brm\b.*\s-rf\b/i
+  // No \b before "-Recurse": between a space and "-" there is no word boundary, so
+  // the old /\b-Recurse\b/ form never matched and this rule was dead.
+  /\bRemove-Item\b[\s\S]*-Recurse[\s\S]*-Force/i,
+  /\brm\b[\s\S]*\s-rf\b/i
 ];
 
 export function assertSafeCommand(command: string): void {

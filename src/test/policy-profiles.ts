@@ -1,11 +1,21 @@
 /**
- * Policy unit checks. No MCP transport involved: this exercises the gate, the
- * catalog invariants and the protected-path rules directly.
+ * Tool profile policy checks. No MCP transport involved: this exercises the profile
+ * matrix, the catalog invariants and the path/command guards directly.
  *
  * Run: npm run test:policy
  */
-import { PROFILE_NAMES, PROFILE_RANK, TOOL_SPECS, specFor } from "../policy/spec.js";
-import { createToolGate, isTruthyFlag, normalizeProfile } from "../policy/gate.js";
+import {
+  DEFAULT_TOOL_PROFILE,
+  PLANNED_TOOLS,
+  PROFILE_RANK,
+  TOOL_PROFILE_NAMES,
+  TOOL_SPECS,
+  isToolAllowed,
+  resolveToolProfile,
+  specFor,
+  toolDecision,
+  toolProfileReport
+} from "../policy/tool-profile.js";
 
 let checks = 0;
 
@@ -14,11 +24,11 @@ function check(label: string, condition: boolean, detail = ""): void {
   if (!condition) throw new Error(`FAIL ${label}${detail ? " -> " + detail : ""}`);
 }
 
-function sorted(values: string[]): string[] {
+function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
-function sameSet(label: string, actual: string[], expected: string[]): void {
+function sameSet(label: string, actual: readonly string[], expected: readonly string[]): void {
   const a = sorted(actual).join(",");
   const e = sorted(expected).join(",");
   check(label, a === e, `expected [${e}] got [${a}]`);
@@ -36,93 +46,98 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
   throw new Error(`FAIL ${label} -> expected a throw, nothing was thrown`);
 }
 
-const SAFE_SET = ["device_info", "fs_list", "fs_read", "ping", "policy_info"];
-const DEV_SET = [...SAFE_SET, "mcp_list_tools", "mcp_status"];
+// The plan's per-profile lists, restricted to the tools implemented today.
+const DISCOVERY_TOOLS = ["device_info", "ping"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_read", "fs_list"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_call_tool", "mcp_list_tools", "mcp_status"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run"];
 
 // ---------------------------------------------------------------- catalog invariants
 for (const spec of TOOL_SPECS) {
-  check(`catalog: ${spec.name} declares a known profile`, PROFILE_NAMES.includes(spec.minProfile), spec.minProfile);
+  check(`catalog: ${spec.name} declares a known profile`, TOOL_PROFILE_NAMES.includes(spec.minProfile), spec.minProfile);
   check(`catalog: ${spec.name} has a summary`, spec.summary.length > 10);
-  if (spec.risk === "write" || spec.risk === "execute") {
-    check(`catalog: ${spec.name} (risk=${spec.risk}) must require a local unlock flag`, Boolean(spec.unlockFlag));
+}
+check("catalog: profile ranking is ordered",
+  PROFILE_RANK.discovery < PROFILE_RANK.readonly &&
+  PROFILE_RANK.readonly < PROFILE_RANK.developer &&
+  PROFILE_RANK.developer < PROFILE_RANK.full);
+check("catalog: the default is discovery", DEFAULT_TOOL_PROFILE === "discovery");
+check("catalog: full is never the default", DEFAULT_TOOL_PROFILE !== "full");
+check("catalog: tool names are unique", new Set(TOOL_SPECS.map((s) => s.name)).size === TOOL_SPECS.length);
+for (const [profile, planned] of Object.entries(PLANNED_TOOLS)) {
+  for (const name of planned) {
+    check(`catalog: planned ${name} (${profile}) is not exposable before it exists`, specFor(name) === undefined);
   }
 }
 
 // ---------------------------------------------------------------- profile resolution
-check("profile: unset falls back to safe", normalizeProfile(undefined).profile === "safe");
-check("profile: unset records the default source", normalizeProfile(undefined).source === "default");
-check("profile: empty string falls back to safe", normalizeProfile("").profile === "safe");
-check("profile: value is trimmed and case-folded", normalizeProfile("  DEV ").profile === "dev");
-check("profile: env source recorded", normalizeProfile("full").source === "env");
-throws("profile: unknown value is rejected", () => normalizeProfile("godmode"), "Unknown P05_TOOL_PROFILE");
+check("profile: unset falls back to discovery", resolveToolProfile(undefined).profile === "discovery");
+check("profile: unset records the default source", resolveToolProfile(undefined).profileSource === "default");
+check("profile: empty string falls back to discovery", resolveToolProfile("").profile === "discovery");
+check("profile: value is trimmed and case-folded", resolveToolProfile("  READONLY ").profile === "readonly");
+check("profile: env source recorded", resolveToolProfile("full").profileSource === "env");
+throws("profile: unknown value is rejected", () => resolveToolProfile("safe"), "Unknown P05_TOOL_PROFILE");
+throws("profile: old invented value is rejected", () => resolveToolProfile("dev"), "Unknown P05_TOOL_PROFILE");
 
-// ---------------------------------------------------------------- unlock flag parsing
-for (const truthy of ["1", "true", "TRUE", "yes", " On "]) {
-  check(`flag: "${truthy}" is on`, isTruthyFlag(truthy));
+// ---------------------------------------------------------------- the matrix
+sameSet("matrix: discovery", toolProfileReport("discovery", "env").exposed, DISCOVERY_TOOLS);
+sameSet("matrix: readonly", toolProfileReport("readonly", "env").exposed, READONLY_TOOLS);
+sameSet("matrix: developer", toolProfileReport("developer", "env").exposed, DEVELOPER_TOOLS);
+sameSet("matrix: full", toolProfileReport("full", "env").exposed, FULL_TOOLS);
+
+for (const name of DISCOVERY_TOOLS) {
+  check(`matrix: discovery allows ${name}`, isToolAllowed("discovery", name));
 }
-for (const falsy of [undefined, "", "0", "false", "no", "2", "enabled"]) {
-  check(`flag: ${JSON.stringify(falsy)} is off`, !isTruthyFlag(falsy));
+for (const name of READONLY_TOOLS) {
+  check(`matrix: readonly allows ${name}`, isToolAllowed("readonly", name));
+}
+for (const name of DEVELOPER_TOOLS) {
+  check(`matrix: developer allows ${name}`, isToolAllowed("developer", name));
 }
 
-// ---------------------------------------------------------------- exposure decisions
-const safeGate = createToolGate({});
-sameSet("gate: default profile exposes the read-only set", safeGate.report().exposed, SAFE_SET);
-check("gate: default profile hides shell_run", !safeGate.isExposed("shell_run"));
-check("gate: default profile hides fs_write", !safeGate.isExposed("fs_write"));
-check("gate: default profile hides mcp_call_tool", !safeGate.isExposed("mcp_call_tool"));
+// The TASK-001 DoD: these must not be reachable from discovery.
+for (const forbidden of ["shell_run", "fs_write", "mcp_call_tool"]) {
+  check(`DoD: discovery hides ${forbidden}`, !isToolAllowed("discovery", forbidden));
+}
+check("DoD: discovery is exactly device_info + ping",
+  toolProfileReport("discovery", "env").exposed.length === 2);
 
-const devGate = createToolGate({ P05_TOOL_PROFILE: "dev" });
-sameSet("gate: dev adds the downstream read tools", devGate.report().exposed, DEV_SET);
-check("gate: dev alone does not unlock fs_write", !devGate.isExposed("fs_write"));
+// Cumulative nesting: each profile is a superset of the one below it.
+for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
+  const lower = TOOL_PROFILE_NAMES[i - 1]!;
+  const upper = TOOL_PROFILE_NAMES[i]!;
+  const upperSet = new Set(toolProfileReport(upper, "env").exposed);
+  for (const name of toolProfileReport(lower, "env").exposed) {
+    check(`matrix: ${upper} includes ${lower}'s ${name}`, upperSet.has(name));
+  }
+}
 
-const devWriteGate = createToolGate({ P05_TOOL_PROFILE: "dev", P05_ENABLE_FS_WRITE: "true" });
-check("gate: dev + unlock exposes fs_write", devWriteGate.isExposed("fs_write"));
+check("decision: a suppressed tool explains the required profile",
+  toolDecision("discovery", "shell_run").reason.includes('"full"'),
+  toolDecision("discovery", "shell_run").reason);
+check("decision: an allowed tool says so", toolDecision("full", "shell_run").allowed);
+throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "rm_rf_everything"), "not declared");
+check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
+check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
 
-const fullNoUnlock = createToolGate({ P05_TOOL_PROFILE: "full" });
-sameSet("gate: full without unlocks grants nothing dangerous", fullNoUnlock.report().exposed, DEV_SET);
-check("gate: full without unlock still hides shell_run", !fullNoUnlock.isExposed("shell_run"));
-check("gate: full without unlock still hides mcp_call_tool", !fullNoUnlock.isExposed("mcp_call_tool"));
+// ---------------------------------------------------------------- dangerous commands
+process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
+const { assertAllowedPath, assertPathShape, assertSafeCommand, protectionReason } = await import("../security.js");
 
-const fullGate = createToolGate({
-  P05_TOOL_PROFILE: "full",
-  P05_ENABLE_SHELL: "1",
-  P05_ENABLE_FS_WRITE: "1",
-  P05_ENABLE_DOWNSTREAM_EXEC: "1"
-});
-check("gate: full + unlock exposes shell_run", fullGate.isExposed("shell_run"));
-check("gate: full + unlock exposes mcp_call_tool", fullGate.isExposed("mcp_call_tool"));
-
-const shellOnly = createToolGate({ P05_TOOL_PROFILE: "full", P05_ENABLE_SHELL: "1" });
-check("gate: shell unlock alone does not expose mcp_call_tool", !shellOnly.isExposed("mcp_call_tool"));
-
-const report = shellOnly.report();
-const shellSuppressed = report.suppressed.find((entry) => entry.tool === "shell_run");
-check("gate: report: shell_run is not listed as suppressed once unlocked", shellSuppressed === undefined);
-const execSuppressed = report.suppressed.find((entry) => entry.tool === "mcp_call_tool");
-check(
-  "gate: report: suppression reason names the missing unlock flag",
-  Boolean(execSuppressed?.reason.includes("P05_ENABLE_DOWNSTREAM_EXEC")),
-  execSuppressed?.reason
-);
-
-// ---------------------------------------------------------------- undeclared tools
-throws("gate: undeclared tool name is refused", () => safeGate.isExposed("rm_rf_everything"), "not declared");
-throws("gate: assertExposed refuses a suppressed tool", () => safeGate.assertExposed("shell_run"));
-check("gate: assertExposed passes for an exposed tool", (() => { safeGate.assertExposed("fs_read"); return true; })());
+for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\Software", "Remove-Item -Recurse -Force C:\\Data", "rm -rf /"]) {
+  throws(`command: "${command}" is denied`, () => assertSafeCommand(command), "blocked by safety policy");
+}
+check("command: an ordinary read command passes", (() => { assertSafeCommand("git status"); return true; })());
 
 // ---------------------------------------------------------------- protected paths
-process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
-const { assertAllowedPath, assertPathShape, protectionReason } = await import("../security.js");
 const root = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
 const p = (...parts: string[]) => [root, ...parts].join(process.platform === "win32" ? "\\" : "/");
 
 check("path: ordinary source file is unprotected", protectionReason(p("P05_Remote_Agent", "src", "index.ts")) === undefined);
 check("path: allowed root accepts an in-tree file", Boolean(assertAllowedPath(p("P05_Remote_Agent", "src", "index.ts"))));
-throws(
-  "path: outside allowed roots is refused",
+throws("path: allowed root escape is denied",
   () => assertAllowedPath(process.platform === "win32" ? "C:\\Windows\\System32\\drivers\\etc\\hosts" : "/etc/hosts"),
-  "outside allowed roots"
-);
+  "outside allowed roots");
 
 check("path: .env is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env"))?.includes("secrets")));
 check("path: .env.local is protected", Boolean(protectionReason(p("P05_Remote_Agent", ".env.local"))?.includes("secrets")));
@@ -144,10 +159,5 @@ throws("path: extended-length prefix is refused", () => assertPathShape("\\\\?\\
 throws("path: UNC share is refused", () => assertPathShape("\\\\server\\share\\x", "read"), "UNC");
 throws("path: drive-relative path is refused", () => assertPathShape("F:foo", "read"), "drive-relative");
 check("path: an ordinary absolute path is accepted", Boolean(assertPathShape("F:\\Project_Git\\x", "read")));
-
-// ---------------------------------------------------------------- already-declared spec lookup
-check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
-check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
-check("spec: profile ranking is ordered", PROFILE_RANK.safe < PROFILE_RANK.dev && PROFILE_RANK.dev < PROFILE_RANK.full);
 
 console.log(`POLICY_PROFILES_OK (${checks} checks)`);

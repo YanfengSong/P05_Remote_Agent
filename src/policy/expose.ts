@@ -1,5 +1,12 @@
 import type { McpServer, StandardSchemaWithJSON, ToolCallback } from "@modelcontextprotocol/server";
-import type { PolicyReport, ToolGate } from "./gate.js";
+import {
+  assertToolDeclared,
+  toolDecision,
+  toolProfileReport,
+  type ProfileSource,
+  type ToolProfile,
+  type ToolProfileReport
+} from "./tool-profile.js";
 
 export type ToolConfig<Args> = {
   description?: string;
@@ -8,21 +15,22 @@ export type ToolConfig<Args> = {
 
 export type Exposer = {
   /**
-   * Register a tool only when the active tool profile allows it.
+   * Register a tool only when the active profile allows it.
    *
-   * Tools are gated at registration time, so a suppressed capability never appears
-   * in tools/list and cannot be discovered by a remote client. The handler is
-   * additionally re-checked at call time (defence in depth).
+   * The plan requires registering conditionally, not registering everything and
+   * checking at execution time: a suppressed tool is never advertised, so a remote
+   * client cannot discover it through tools/list. The handler is additionally
+   * re-checked at call time (defence in depth).
    */
   expose<Args extends StandardSchemaWithJSON | undefined>(
     name: string,
     config: ToolConfig<Args>,
     handler: ToolCallback<Args>
   ): void;
-  report(): PolicyReport;
+  report(): ToolProfileReport;
 };
 
-export function createExposer(server: McpServer, gate: ToolGate): Exposer {
+export function createExposer(server: McpServer, profile: ToolProfile, profileSource: ProfileSource): Exposer {
   const exposed: string[] = [];
   const suppressed: { tool: string; reason: string }[] = [];
 
@@ -31,18 +39,22 @@ export function createExposer(server: McpServer, gate: ToolGate): Exposer {
     handler: ToolCallback<Args>
   ): ToolCallback<Args> => {
     const wrapped = async (...args: unknown[]): Promise<unknown> => {
-      gate.assertExposed(name);
+      const decision = toolDecision(profile, name);
+      if (!decision.allowed) {
+        throw new Error(`Tool "${name}" is not exposed by profile "${profile}": ${decision.reason}.`);
+      }
       return (handler as unknown as (...innerArgs: unknown[]) => Promise<unknown>)(...args);
     };
-    // Single deliberate erasure boundary: the runtime signature is the SDK's, and
-    // assertExposed re-validates before the real handler ever runs.
+    // Single deliberate erasure boundary: the runtime signature is the SDK's, and the
+    // profile is re-checked before the real handler ever runs.
     return wrapped as unknown as ToolCallback<Args>;
   };
 
   return {
     expose(name, config, handler) {
-      const decision = gate.decision(name); // throws for undeclared tools
-      if (!decision.exposed) {
+      assertToolDeclared(name); // throws for an undeclared tool
+      const decision = toolDecision(profile, name);
+      if (!decision.allowed) {
         suppressed.push({ tool: name, reason: decision.reason });
         return;
       }
@@ -50,13 +62,8 @@ export function createExposer(server: McpServer, gate: ToolGate): Exposer {
       exposed.push(name);
     },
     report() {
-      return {
-        profile: gate.profile,
-        profileSource: gate.profileSource,
-        exposed,
-        suppressed,
-        unlockFlags: gate.report().unlockFlags
-      };
+      const base = toolProfileReport(profile, profileSource);
+      return { ...base, exposed, suppressed };
     }
   };
 }
@@ -65,15 +72,14 @@ export function createExposer(server: McpServer, gate: ToolGate): Exposer {
  * Startup exposure report. MUST go to stderr: stdout is the JSON-RPC channel
  * under the stdio transport.
  */
-export function logExposure(report: PolicyReport): void {
+export function logExposure(report: ToolProfileReport): void {
   process.stderr.write(
     JSON.stringify({
       event: "p05.tool_profile",
       profile: report.profile,
       profileSource: report.profileSource,
       exposed: report.exposed,
-      suppressed: report.suppressed,
-      unlockFlags: report.unlockFlags.filter((flag) => flag.enabled).map((flag) => flag.flag)
+      suppressed: report.suppressed
     }) + "\n"
   );
 }

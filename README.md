@@ -12,7 +12,10 @@ P05 Remote Agent provides one stable MCP entry point for:
 
 The project intentionally avoids becoming a full enterprise MCP platform. It borrows proven patterns from existing open-source gateways while keeping the runtime small enough for a single Windows engineering workstation.
 
-## Current status: V0.3 phase 1 — safe tool profiles
+## Current status: V0.3 — TASK-001 tool profile safety
+
+Governing plan: [docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md) (Chinese) and
+[docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md) (English).
 
 Implemented:
 - MCP server over stdio;
@@ -22,39 +25,46 @@ Implemented:
 - MATLAB MCP configuration adapter;
 - generic `mcp_status`, `mcp_list_tools`, `mcp_call_tool`;
 - mock downstream MCP and smoke test;
-- **tool exposure gate**: profile ceiling (`P05_TOOL_PROFILE`) plus local unlock flags,
-  with suppressed tools never registered;
+- **tool profile layer** (`P05_TOOL_PROFILE`): four profiles, tools registered only
+  when the active profile allows them, unknown value aborts startup;
 - **protected-path policy**: `.git`, `.p05`, credentials and `.env` are refused even
-  inside an allowed root.
+  inside an allowed root;
+- **path resolution hardening**: UNC / `\\?\` / drive-relative / alternate-data-stream
+  spellings refused, trailing dots and spaces canonicalised, and the resolved real path
+  re-checked so a symlink or junction inside a root cannot escape it.
 
-Next:
-- install/configure MathWorks MATLAB MCP and run an end-to-end test;
-- add Streamable HTTP ingress and bearer-token authentication;
-- add structured audit log and an approval hook for write/execute tools;
-- add Git-specific and batched execution tools;
-- connect the OpenAI Secure MCP Tunnel runtime.
+Next (per the plan; stop after each task):
+- TASK-002 local startup standardization, TASK-003 Secure Tunnel integration;
+- TASK-004 read-only file tools (`fs_search`) and TASK-005 Git tool layer, which
+  complete the `readonly` profile;
+- TASK-006/007 process manager and batch execution for the `developer` profile;
+- TASK-010 audit log, TASK-012 approval model.
 
 ## Tool exposure
 
-Tools are not all published at once. A remote client only sees what the active profile
-and its local unlock flags allow, and a suppressed tool is never registered, so it
-cannot be discovered through `tools/list`.
+Tools are registered conditionally, not filtered at call time: a tool outside the
+active profile is never advertised, so a remote client cannot discover it through
+`tools/list`.
 
-| Profile | Unlocks | Surface |
-|---|---|---|
-| *(unset)* / `safe` | — | `device_info`, `ping`, `policy_info`, `fs_read`, `fs_list` |
-| `dev` | — | + `mcp_status`, `mcp_list_tools` |
-| `dev` | `P05_ENABLE_FS_WRITE=1` | + `fs_write` |
-| `full` | — | same as `dev`; escalation alone arms nothing |
-| `full` | `P05_ENABLE_SHELL`, `P05_ENABLE_DOWNSTREAM_EXEC` | + `shell_run`, `mcp_call_tool` |
+| `P05_TOOL_PROFILE` | Tool list |
+|---|---|
+| *(unset)* / `discovery` | `device_info`, `ping` |
+| `readonly` | discovery + `fs_read`, `fs_list` |
+| `developer` | readonly + `fs_write`, `mcp_status`, `mcp_list_tools`, `mcp_call_tool` |
+| `full` | developer + `shell_run` |
 
-An unknown `P05_TOOL_PROFILE` aborts startup. See
+`discovery` is the default and `full` must never be the default. An unknown
+`P05_TOOL_PROFILE` aborts startup instead of falling back — see
 [tool exposure policy](docs/architecture/TOOL-PROFILES.md) and
 [ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md).
 
+The plan assigns more tools to these profiles than exist today (`fs_search`, `git_*`,
+`apply_patch`, `process_*`, `batch_execute`). They are recorded in
+`PLANNED_TOOLS` and are exposed only once implemented — see TASK-004 onwards.
+
 `shell_run` is **not** a sandbox — it constrains the working directory, not the
-command. Do not unlock it on a daemon that a remote client can reach until the audit
-log and approval hook exist.
+command. It stays in `full` and must stay hidden from any remotely reachable daemon
+until the audit log and approval model (TASK-010/TASK-012) exist.
 
 ## Architecture
 
@@ -76,6 +86,8 @@ P05 Remote Agent
 ```
 
 See:
+- [Execution plan (governing)](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md)
+- [Execution plan — English](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md)
 - [Gateway comparison](docs/research/mcp-gateway-benchmark.md)
 - [Target architecture](docs/architecture/ARCHITECTURE.md)
 - [Tool exposure policy](docs/architecture/TOOL-PROFILES.md)
@@ -89,14 +101,15 @@ Requires Node.js 22+ (validated on Node 22.23.1).
 
 ```powershell
 npm install
-npm run build
-npm test                 # policy + exposure + downstream smoke
-npm run smoke:downstream # downstream MCP round trip only
+npm run verify           # check + build + smoke:downstream + test
+npm run test             # profile tests + downstream smoke
+npm run test:policy      # profile matrix, path guards, command guards (no transport)
+npm run test:exposure    # spawns the server per profile, asserts tools/list
 npm start
 ```
 
 Copy `.env.example` to `.env` and configure downstream MCP servers as needed. The
-example ships with `P05_TOOL_PROFILE=safe` and no unlock flags.
+example ships with `P05_TOOL_PROFILE=discovery`.
 
 ## Repository policy
 
