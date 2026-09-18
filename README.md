@@ -127,9 +127,10 @@ npm run test:exposure    # spawns the server per profile, asserts tools/list
 npm start                # stdio server
 ```
 
-Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine. There is
-no default root: an unset value aborts startup, and so does an explicitly empty one —
-the example ships empty on purpose.
+Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine — that is
+the only value you must supply. There is no default root: an unset value aborts startup,
+and so does an explicitly empty one. `REMOTE_AGENT_DEFAULT_CWD` may stay blank, in which
+case the working directory is the first allowed root.
 
 ### Local startup
 

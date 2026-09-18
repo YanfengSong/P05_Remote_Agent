@@ -61,8 +61,8 @@ Validation:
 ```text
 npm run check           pass (tsc --noEmit)
 npm run build           pass
-npm run test:policy     POLICY_PROFILES_OK (145 checks)
-npm run test:exposure   PROFILE_EXPOSURE_OK (100 checks)
+npm run test:policy     POLICY_PROFILES_OK (148 checks)
+npm run test:exposure   PROFILE_EXPOSURE_OK (101 checks)
 npm run smoke:downstream DOWNSTREAM_SMOKE_OK
 scripts/verify.ps1      VERIFY_OK (5 steps, 9s)
 ```
@@ -130,6 +130,35 @@ are fixed; each has a test. See ADR-0005.
 | Successful responses leaked resolved absolute paths | `fs_write` returns bytes and the handler echoes the caller's own `path`; `shell_run` no longer echoes the working directory (the caller's `cwd` is echoed only if it supplied one); `mcp_status.lastError` and downstream error text carry a short category instead of the raw spawn error (real message kept on stderr) | `test:exposure` (relative write echoes the input; no default cwd disclosure; downstream status/error free of the command path) |
 | `PROJECT_STATUS.md` claimed the branch had never been pushed | this file now records the pushed branch, and the workspace section no longer claims a default root | review of this document |
 | Version drift: `0.2.0` in `package.json` / `config.ts` / client, `0.1.0` in mock and test client, documents saying V0.3 | single `src/version.ts` (`0.3.0`) used by the server identity, the downstream client and the mock; `package.json` aligned | `test:policy` (package.json matches `src/version.ts`) |
+
+### Follow-up from the code-level re-review (same day)
+
+The reviewer checked the pushed revision on the remote (ahead 9 / behind 0 against
+`main`) rather than this file's summary, and found one merge blocker plus two
+non-blocking points.
+
+Fixed:
+
+- **`REMOTE_AGENT_DEFAULT_CWD` contradicted the documentation.** `.env.example` ships the
+  line blank, and both it and the README present "copy the example, fill in the allowed
+  root" as the install path, but the implementation refused a blank value as "set but
+  empty" — only `undefined` fell back — so the documented install path did not start.
+  Unset, empty and whitespace-only now all mean the first allowed root. A separators-only
+  value (`;`) is still refused as a typo, and a value outside the roots still aborts
+  startup. This does not widen access: the root list is explicit and required, so the
+  fallback is one of the roots the operator just stated, not a machine default. Verified
+  end to end by building the documented `.env` (`cp .env.example .env`, one root filled
+  in, cwd line left blank) and starting the configuration from it:
+  `roots=["F:\\Project_Git"]`, `cwd=F:\\Project_Git`. The temporary `.env` was removed
+  afterwards; it is gitignored and untracked.
+
+Recorded, not fixed here — both are unreachable from `discovery`, and both stay with
+TASK-013:
+
+- `src/downstream/matlab.ts` reads `process.env.MATLAB_MCP_*` directly instead of the
+  `readOwnEnv()` helper introduced for prototype-pollution safety; unify when TASK-013
+  touches that file.
+- `mcp_list_tools` is declared `risk: "read"` but starts a local downstream process.
 
 ## Security hardening — adversarial review findings
 

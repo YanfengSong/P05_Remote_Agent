@@ -155,9 +155,15 @@ throws("config: empty roots are refused", () => parseAllowedRoots(""), "no usabl
 throws("config: a separator-only value is refused", () => parseAllowedRoots(";"), "no usable path");
 throws("config: a blank value is refused", () => parseAllowedRoots("   "), "no usable path");
 throws("config: a relative root is refused", () => parseAllowedRoots("Project_Git"), "must be absolute");
+// Unset, empty and whitespace-only all mean "the first authorised root". That cannot
+// widen access - the root list is explicit and required - and it is the documented
+// install path, since .env.example ships this line blank.
 check("config: an unset default cwd uses the first root", parseDefaultCwd(undefined, [absRoot]) === absRoot);
+check("config: an empty default cwd uses the first root", parseDefaultCwd("", [absRoot]) === absRoot);
+check("config: a whitespace default cwd uses the first root", parseDefaultCwd("   ", [absRoot]) === absRoot);
+check("config: a default cwd is trimmed before use", parseDefaultCwd(`  ${absChild}  `, [absRoot]) === absChild);
 check("config: an in-root cwd is accepted", parseDefaultCwd(absChild, [absRoot]) === absChild);
-throws("config: an empty cwd is refused", () => parseDefaultCwd("", [absRoot]), "empty");
+throws("config: a separators-only cwd is refused", () => parseDefaultCwd(";", [absRoot]), "no usable path");
 throws("config: a cwd outside the roots is refused", () => parseDefaultCwd(absOther, [absRoot]), "outside the allowed roots");
 
 // process.env inherits from Object.prototype, so a plain lookup can answer for a variable

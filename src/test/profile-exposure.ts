@@ -412,6 +412,24 @@ for (const scenario of scenarios) {
   console.log("ok  full grants shell_run, and its cwd goes through the same guard");
 }
 
+// ------------------------------------------ the documented install path does start
+{
+  // `.env.example` ships REMOTE_AGENT_DEFAULT_CWD blank, so filling in only the allowed
+  // root must be enough to start: a blank value means "the first authorised root". This
+  // used to fail, which made the example configuration unstartable.
+  const env = childEnv({});
+  env.REMOTE_AGENT_DEFAULT_CWD = "";
+  const session = await openSession(env); // throws if the server exits at startup
+  try {
+    const { tools } = await session.client.listTools();
+    sameSet("a blank default cwd starts on the first allowed root",
+      tools.map((tool) => tool.name), DISCOVERY_TOOLS);
+  } finally {
+    await session.client.close().catch(() => undefined);
+  }
+  console.log("ok  blank (or unset) default cwd uses the first allowed root");
+}
+
 // ---------------------------------------------------------------- fail closed
 async function spawnExpectingFailure(env: Record<string, string>): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {

@@ -41,6 +41,16 @@ machine, or to a remote client over a tunnel.
 - Test fixtures derive the allowed root from the repository's own location, so the suite
   runs from any checkout.
 
+**A blank `REMOTE_AGENT_DEFAULT_CWD` means "the first authorised root".** Unset, empty and
+whitespace-only all fall back to `allowedRoots[0]`; a value that is present but holds no
+path at all (e.g. `;`) is still refused as a typo, and a value outside the roots still
+aborts startup. This cannot widen access — the root list is explicit and required, so the
+fallback is one of the roots the operator just stated, not a machine default. It is also
+the documented install path: `.env.example` ships the line blank and the README tells the
+operator to fill in only the root, so treating the blank line as a configuration error
+made the documented procedure fail to start. Found in the second review round, on the
+pushed revision.
+
 **The generic downstream proxy is a `full` tool.** `mcp_call_tool` moves from `developer`
 to `full`, next to `shell_run`. Rationale: it is not a capability this repository
 implemented, it is a pipe to whatever the downstream server implements, and the plan's
@@ -70,9 +80,11 @@ test asserts that the two agree, so they cannot drift again.
 
 ## Consequences
 
-- To run the agent, the operator must now state the allowed roots. Copying
-  `.env.example` verbatim will not start the server — intentionally, and asserted by a
-  test. `start-local.ps1` therefore also requires the variable to be present.
+- To run the agent, the operator must state the allowed roots. Copying `.env.example`
+  verbatim will not start the server — intentionally, and asserted by a test — but filling
+  in the root and leaving `REMOTE_AGENT_DEFAULT_CWD` blank does, which is the procedure
+  the README describes. `start-local.ps1` therefore also requires the roots variable to be
+  present.
 - Anyone reusing the earlier "developer profile can call MATLAB" behaviour must use
   `full` now (or wait for TASK-013).
 - Remote clients receive slightly less diagnostic detail on downstream failures; the

@@ -58,13 +58,21 @@ export function parseAllowedRoots(raw: string | undefined): string[] {
 }
 
 export function parseDefaultCwd(raw: string | undefined, allowedRoots: string[]): string {
-  if (raw === undefined) return allowedRoots[0]!;
+  // Unset, empty and whitespace-only all mean "use the first root the operator already
+  // authorised". This cannot widen access: the root list is explicit and required, so the
+  // fallback is one of the roots that was just stated, not a built-in machine path. It is
+  // also the documented install path - copy .env.example, fill in the root, leave this
+  // line blank - so refusing an empty value here made the example configuration
+  // unstartable.
+  if (raw === undefined || raw.trim() === "") return allowedRoots[0]!;
 
   const entries = parseEntries(raw);
   if (entries.length === 0) {
+    // Something was written but holds no usable path (e.g. ";"): that is a typo, not an
+    // instruction to fall back, so it is refused like the roots parser refuses it.
     throw new Error(
-      "REMOTE_AGENT_DEFAULT_CWD is set but empty. " +
-        "Set it to an absolute directory inside an allowed root, or remove it."
+      "REMOTE_AGENT_DEFAULT_CWD is set but contains no usable path. " +
+        "Set it to an absolute directory inside an allowed root, or leave it blank to use the first root."
     );
   }
 
