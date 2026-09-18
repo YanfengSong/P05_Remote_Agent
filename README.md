@@ -12,7 +12,7 @@ P05 Remote Agent provides one stable MCP entry point for:
 
 The project intentionally avoids becoming a full enterprise MCP platform. It borrows proven patterns from existing open-source gateways while keeping the runtime small enough for a single Windows engineering workstation.
 
-## Current status: V0.3 — TASK-001 tool profile safety
+## Current status: V0.3 — TASK-001 tool profile safety, TASK-002 local startup
 
 Governing plan: [docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md) (Chinese) and
 [docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md) (English).
@@ -31,10 +31,14 @@ Implemented:
   inside an allowed root;
 - **path resolution hardening**: UNC / `\\?\` / drive-relative / alternate-data-stream
   spellings refused, trailing dots and spaces canonicalised, and the resolved real path
-  re-checked so a symlink or junction inside a root cannot escape it.
+  re-checked so a symlink or junction inside a root cannot escape it;
+- **unified local startup**: `scripts/start-local.ps1` checks the toolchain, builds,
+  resolves the profile, refuses a busy port and prints the device/profile/MCP/health
+  banner before starting the gateway;
+- **verification pipeline**: `npm run verify` plus `scripts/verify.ps1`.
 
 Next (per the plan; stop after each task):
-- TASK-002 local startup standardization, TASK-003 Secure Tunnel integration;
+- TASK-003 Secure Tunnel integration (`scripts/tunnel/*`);
 - TASK-004 read-only file tools (`fs_search`) and TASK-005 Git tool layer, which
   complete the `readonly` profile;
 - TASK-006/007 process manager and batch execution for the `developer` profile;
@@ -105,11 +109,27 @@ npm run verify           # check + build + smoke:downstream + test
 npm run test             # profile tests + downstream smoke
 npm run test:policy      # profile matrix, path guards, command guards (no transport)
 npm run test:exposure    # spawns the server per profile, asserts tools/list
-npm start
+npm start                # stdio server
 ```
 
-Copy `.env.example` to `.env` and configure downstream MCP servers as needed. The
-example ships with `P05_TOOL_PROFILE=discovery`.
+Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine — the
+example ships empty on purpose, and an empty value aborts startup rather than falling
+back.
+
+### Local startup
+
+```powershell
+npm run start:local                      # banner + Streamable HTTP gateway on 127.0.0.1:8765
+npm run start:local -- -Profile readonly # override the profile for this run
+npm run start:local -- -Port 8766        # different port
+npm run start:local -- -Probe            # start, wait for /healthz, report, stop
+npm run verify:win                       # scripts/verify.ps1 summary
+npm run start:http                       # the underlying gateway command, unchanged
+```
+
+`start-local.ps1` refuses to start when the port is already in use, because a health
+probe answered by a pre-existing listener would otherwise report success for a start
+that never happened.
 
 ## Repository policy
 

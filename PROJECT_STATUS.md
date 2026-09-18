@@ -8,7 +8,7 @@ TASK at a time and stops.
 
 ## Current baseline
 
-Version: V0.3 — TASK-001 Tool Profile Safety complete  
+Version: V0.3 — TASK-001 Tool Profile Safety and TASK-002 Local Startup complete  
 Branch: `feat/remote-agent-v03`  
 Canonical repository: `YanfengSong/P05_Remote_Agent`  
 Validated on Windows with Node.js 22.23.1.
@@ -78,6 +78,36 @@ Deviations from the plan, deliberate and recorded:
   wrappers"; the word *approved* is the TASK-012 approval model, which does not exist
   yet, so today the profile value alone is the gate. Flagged as a risk below.
 
+## TASK-002 — Local Startup Standardization
+
+Implemented:
+
+- `scripts/start-local.ps1`: checks Node, checks/creates dependencies, builds, resolves
+  the tool profile (command line > environment > `.env` > `discovery`), validates it,
+  refuses a port that is already in use, prints the device/profile/MCP/health banner and
+  starts the Streamable HTTP gateway;
+- `-Profile`, `-Port`, `-Probe` switches; `-Probe` starts the gateway, waits for
+  `/healthz` and stops it again, which makes the pre-tunnel check repeatable;
+- `scripts/verify.ps1`: runs the section 20 pipeline and prints one PASS/FAIL summary,
+  ending in `VERIFY_OK` or `VERIFY_FAILED`, plus a working-tree hygiene line;
+- `npm run start:local`, `npm run verify:win`; `npm run start:http` is unchanged.
+
+Validation:
+
+```text
+scripts/verify.ps1                  VERIFY_OK (5 steps, 8s)
+scripts/start-local.ps1 -Probe      banner correct, /healthz 200 on a free port,
+                                    port released afterwards
+busy port                            refused with the owning PID and start time
+over HTTP (real MCP client)          tools/list -> device_info, ping
+                                     ping -> ok=true, hostname XiaoiWu
+                                     device_info -> deviceId p05-1362e78d-...
+                                     shell_run -> refused, "Tool shell_run not found"
+```
+
+The HTTP result is the shape the plan's section 7 expects from ChatGPT, so the local
+half of that acceptance path is already proven; only the tunnel itself is missing.
+
 ## Known risks
 
 - `shell_run` is not a sandbox and is reachable at `full`. Do not run `full` on any
@@ -96,7 +126,10 @@ project.
 
 ## Open items for the user
 
-- `feat/remote-agent-v03` has not been pushed to `origin`.
+- `feat/remote-agent-v03` has not been pushed: neither WSL git nor the Windows git has a
+  credential helper, so the push stops for credentials rather than hunting for a token.
+- A node process started 2026-09-18 19:48 is still listening on 127.0.0.1:8765 (a
+  gateway from the earlier V0.3-B verification). `start-local.ps1` now refuses that port
+  until it is stopped, and probes must use a free port.
 - `docs/roadmap/` and `docs/deployment/` plan documents arrived on `main` during
-  TASK-001 (commits `7d05c6c`, `fafac2a`, pushed by the user); this branch is rebased
-  onto them.
+  TASK-001 (commits `7d05c6c`, `fafac2a`); this branch is rebased onto them.
