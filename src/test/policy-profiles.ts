@@ -129,6 +129,24 @@ for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\So
 }
 check("command: an ordinary read command passes", (() => { assertSafeCommand("git status"); return true; })());
 
+// ---------------------------------------------------------------- allowed-root configuration fails closed
+const { parseAllowedRoots, parseDefaultCwd } = await import("../config.js");
+const absRoot = process.platform === "win32" ? "F:\\Project_Git" : "/srv/project_git";
+const absOther = process.platform === "win32" ? "C:\\Windows" : "/etc";
+const absChild = [absRoot, "sub"].join(process.platform === "win32" ? "\\" : "/");
+
+check("config: unset roots fall back to one default root", parseAllowedRoots(undefined).length === 1);
+check("config: a single root is accepted", parseAllowedRoots(absRoot).length === 1);
+check("config: several roots are accepted", parseAllowedRoots(`${absRoot};${absOther}`).length === 2);
+throws("config: empty roots are refused", () => parseAllowedRoots(""), "no usable path");
+throws("config: a separator-only value is refused", () => parseAllowedRoots(";"), "no usable path");
+throws("config: a blank value is refused", () => parseAllowedRoots("   "), "no usable path");
+throws("config: a relative root is refused", () => parseAllowedRoots("Project_Git"), "must be absolute");
+check("config: an unset default cwd uses the first root", parseDefaultCwd(undefined, [absRoot]) === absRoot);
+check("config: an in-root cwd is accepted", parseDefaultCwd(absChild, [absRoot]) === absChild);
+throws("config: an empty cwd is refused", () => parseDefaultCwd("", [absRoot]), "empty");
+throws("config: a cwd outside the roots is refused", () => parseDefaultCwd(absOther, [absRoot]), "outside the allowed roots");
+
 // ---------------------------------------------------------------- protected paths
 const root = process.platform === "win32" ? "D:\\Project_Git" : "/srv/project_git";
 const p = (...parts: string[]) => [root, ...parts].join(process.platform === "win32" ? "\\" : "/");

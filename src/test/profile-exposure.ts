@@ -298,15 +298,36 @@ for (const scenario of scenarios) {
 }
 
 // ---------------------------------------------------------------- fail closed
-{
-  const failure = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
-    const child = spawn(process.execPath, [serverEntry], { env: childEnv({ P05_TOOL_PROFILE: "godmode" }) });
+async function spawnExpectingFailure(env: Record<string, string>): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [serverEntry], { env });
     let stderr = "";
     child.stderr.on("data", (chunk: Buffer | string) => { stderr += String(chunk); });
     child.on("close", (code) => resolve({ code, stderr }));
   });
+}
+
+{
+  const failure = await spawnExpectingFailure(childEnv({ P05_TOOL_PROFILE: "godmode" }));
   check("unknown profile exits non-zero", failure.code !== 0, `exit code ${failure.code}`);
   check("unknown profile explains itself on stderr", failure.stderr.includes("Unknown P05_TOOL_PROFILE"), failure.stderr.split(/\r?\n/)[0]);
+}
+
+{
+  const env = childEnv({});
+  env.REMOTE_AGENT_ALLOWED_ROOTS = "";
+  const failure = await spawnExpectingFailure(env);
+  check("an explicitly empty allowed-roots value exits non-zero", failure.code !== 0, `exit code ${failure.code}`);
+  check("empty allowed roots explains itself on stderr", failure.stderr.includes("no usable path"), failure.stderr.split(/\r?\n/)[0]);
+  console.log("ok  fail closed on empty allowed roots (copying .env.example verbatim will not start)");
+}
+
+{
+  const env = childEnv({});
+  env.REMOTE_AGENT_DEFAULT_CWD = path.parse(ROOT).root;
+  const failure = await spawnExpectingFailure(env);
+  check("a default cwd outside the allowed roots exits non-zero", failure.code !== 0, `exit code ${failure.code}`);
+  check("out-of-root cwd explains itself on stderr", failure.stderr.includes("outside the allowed roots"), failure.stderr.split(/\r?\n/)[0]);
 }
 
 console.log(`PROFILE_EXPOSURE_OK (${checks} checks)`);
