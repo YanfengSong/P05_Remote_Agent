@@ -7,6 +7,7 @@ import { DownstreamRegistry } from "./downstream/registry.js";
 import { registerGatewayTools } from "./gateway-tools.js";
 import { listDirectory, readTextFile, writeTextFile } from "./tools/files.js";
 import { runPowerShell } from "./tools/shell.js";
+import { registerDeviceTools } from "./tools/device.js";
 
 const registry = new DownstreamRegistry([matlabDefinition]);
 process.once("SIGINT", () => void registry.closeAll().finally(() => process.exit(0)));
@@ -15,6 +16,7 @@ process.once("SIGTERM", () => void registry.closeAll().finally(() => process.exi
 serveStdio(() => {
   const server = new McpServer({ name: config.name, version: config.version });
   registerGatewayTools(server, registry);
+  registerDeviceTools(server);
 
   server.registerTool("fs_read", {
     description: "Read a UTF-8 text file inside configured allowed roots.",
