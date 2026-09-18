@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "dev": "tsx src/index.ts",
     "check": "tsc -p tsconfig.json --noEmit",
-    "smoke:downstream": "npm run build && node dist/test/downstream-smoke.js"
+    "smoke:downstream": "npm run build && node dist/test/downstream-smoke.js",
+    "inspect": "npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
