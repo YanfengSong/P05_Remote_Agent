@@ -56,10 +56,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat", "search_start", "search_more", "search_status", "search_stop", "agent_list"];
 // mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
 // under "never expose initially" next to shell_run. It sits at `full`.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run", "process_start", "process_input", "process_output", "process_status", "process_wait", "process_stop", "agent_start", "agent_task", "agent_status", "agent_output", "agent_stop"];
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants

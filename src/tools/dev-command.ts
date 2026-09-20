@@ -16,6 +16,12 @@ export const DEVELOPER_ACTIONS = [
   "test_git_mutations",
   "test_plugin_framework",
   "test_output_schema",
+  "test_process_runtime",
+  "test_search_runtime",
+  "test_isolation",
+  "test_agent_runtime",
+  "test_audit_correlation",
+  "test_run_kernel",
   "smoke_downstream",
   "verify"
 ] as const;
@@ -96,6 +102,18 @@ async function runSingle(action: Exclude<DeveloperAction, "verify">, platformRoo
       return runNodeScript("test_plugin_framework", "dist/test/plugin-framework.js", [], platformRoot);
     case "test_output_schema":
       return runNodeScript("test_output_schema", "dist/test/output-schema.js", [], platformRoot);
+    case "test_process_runtime":
+      return runNodeScript("test_process_runtime", "dist/test/process-runtime.js", [], platformRoot);
+    case "test_search_runtime":
+      return runNodeScript("test_search_runtime", "dist/test/search-runtime.js", [], platformRoot);
+    case "test_isolation":
+      return runNodeScript("test_isolation", "dist/test/isolation.js", [], platformRoot);
+    case "test_agent_runtime":
+      return runNodeScript("test_agent_runtime", "dist/test/agent-runtime.js", [], platformRoot);
+    case "test_audit_correlation":
+      return runNodeScript("test_audit_correlation", "dist/test/audit-correlation.js", [], platformRoot);
+    case "test_run_kernel":
+      return runNodeScript("test_run_kernel", "dist/test/run-kernel.js", [], platformRoot);
     case "smoke_downstream":
       return runNodeScript("smoke_downstream", "dist/test/downstream-smoke.js", [], platformRoot);
   }
@@ -122,7 +140,13 @@ export async function runDeveloperAction(requestedAction: string, platformRoot: 
     "test_foundation",
     "test_git_mutations",
     "test_plugin_framework",
-    "test_output_schema"
+    "test_output_schema",
+    "test_process_runtime",
+    "test_search_runtime",
+    "test_isolation",
+    "test_agent_runtime",
+    "test_audit_correlation",
+    "test_run_kernel"
   ];
   const results: string[] = [];
   for (const step of steps) results.push(await runSingle(step, platformRoot));

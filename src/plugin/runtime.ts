@@ -15,6 +15,7 @@ export type PluginView = {
   activeForWorkspace: boolean;
   capabilityNames: string[];
   downstreamIds: string[];
+  agentProviderIds: string[];
   lastError?: string;
 };
 
@@ -32,12 +33,22 @@ export class PluginRuntime {
     }
   }
 
-  isAllowedForCurrentWorkspace(pluginId: string): boolean {
+  isAllowedForWorkspace(pluginId: string, workspaceId: string): boolean {
     const plugin = this.registry.get(pluginId);
     if (!plugin.manifest.enabled) return false;
     const state = this.#state.get(pluginId)?.state;
     if (state === "failed" || state === "disabled" || state === "stopped") return false;
-    return this.workspaceManager.pluginAllowed(pluginId);
+    return this.workspaceManager.pluginAllowed(
+      pluginId,
+      this.workspaceManager.get(workspaceId)
+    );
+  }
+
+  isAllowedForCurrentWorkspace(pluginId: string): boolean {
+    return this.isAllowedForWorkspace(
+      pluginId,
+      this.workspaceManager.current().id
+    );
   }
 
   assertAllowedForCurrentWorkspace(pluginId: string): void {
@@ -122,6 +133,9 @@ export class PluginRuntime {
         downstreamIds: downstream
           .filter((definition) => definition.pluginId === plugin.manifest.id)
           .map((definition) => definition.id),
+        agentProviderIds: this.registry.agentProviders()
+          .filter((entry) => entry.pluginId === plugin.manifest.id)
+          .map((entry) => entry.provider.id),
         ...(state.lastError ? { lastError: state.lastError } : {})
       };
     });

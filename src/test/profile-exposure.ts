@@ -36,8 +36,8 @@ const DISCOVERY_TOOLS = ["device_info", "ping"];
 // P05_TEMP_READONLY_ROOT, so with the gate off (the default, and how every other scenario
 // here runs) the surface is still exactly device_info + ping.
 const TEMP_READONLY_TOOLS = ["list_directory", "read_file"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat", "search_start", "search_more", "search_status", "search_stop", "agent_list"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run", "process_start", "process_input", "process_output", "process_status", "process_wait", "process_stop", "agent_start", "agent_task", "agent_status", "agent_output", "agent_stop"];
 // mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
 // reachable, and for MATLAB that includes code evaluation. The plan lists it under
 // "never expose initially" next to shell_run, so it sits at `full`.

@@ -20,6 +20,10 @@ export type AuditEvent = {
   capability: string;
   scope: CapabilityScope;
   workspaceId: string;
+  sessionId?: string;
+  actorType?: "interactive" | "agent" | "plugin" | "system";
+  actorId?: string;
+  taskId?: string;
   state: ExecutionState;
   phase: ExecutionPhase;
   startedAt: string;

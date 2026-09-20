@@ -35,6 +35,10 @@ const auditEventSchema = z.object({
   capability: z.string(),
   scope: z.enum(["platform", "workspace", "downstream", "host", "external", "temporary"]),
   workspaceId: z.string(),
+  sessionId: z.string().optional(),
+  actorType: z.enum(["interactive", "agent", "plugin", "system"]).optional(),
+  actorId: z.string().optional(),
+  taskId: z.string().optional(),
   state: z.enum(["running", "succeeded", "failed"]),
   phase: z.enum(["prepare", "authorize", "execute", "verify", "complete"]),
   startedAt: z.string(),
@@ -54,6 +58,7 @@ const pluginViewSchema = z.object({
   activeForWorkspace: z.boolean(),
   capabilityNames: z.array(z.string()),
   downstreamIds: z.array(z.string()),
+  agentProviderIds: z.array(z.string()),
   lastError: z.string().optional()
 });
 

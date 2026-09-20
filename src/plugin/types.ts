@@ -1,3 +1,4 @@
+import type { AgentProvider } from "../agent/provider.js";
 import type { CapabilityDescriptor } from "../capability/types.js";
 import type { DownstreamDefinition } from "../downstream/types.js";
 import type { Exposer } from "../policy/expose.js";
@@ -33,6 +34,7 @@ export type PluginToolContext = {
 export type ApplicationPlugin = {
   manifest: PluginManifest;
   downstreamDefinitions?: () => readonly DownstreamDefinition[];
+  agentProviders?: () => readonly AgentProvider[];
   registerTools?: (exposer: Exposer, context: PluginToolContext) => void;
   start?: () => void | Promise<void>;
   stop?: () => void | Promise<void>;

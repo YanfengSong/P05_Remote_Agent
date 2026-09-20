@@ -33,7 +33,26 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "mcp_list_tools", minProfile: "developer", risk: "read", scope: "downstream", summary: "Connect to a downstream MCP server and list its tools." },
   { name: "mcp_call_tool", minProfile: "full", risk: "execute", scope: "downstream", summary: "Call an arbitrary tool on a downstream MCP server." },
 
-  { name: "shell_run", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Run PowerShell with the paired Windows user permissions; not a sandbox." }
+  { name: "shell_run", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Run PowerShell with the paired Windows user permissions; not a sandbox." },
+
+  { name: "process_start", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Start a managed command or persistent terminal session inside the active workspace." },
+  { name: "process_input", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Write stdin to a managed process session owned by the active workspace." },
+  { name: "process_output", minProfile: "developer", risk: "read", scope: "workspace", summary: "Read bounded incremental stdout/stderr events from a managed process session." },
+  { name: "process_status", minProfile: "developer", risk: "read", scope: "workspace", summary: "Inspect managed process sessions owned by the active workspace." },
+  { name: "process_wait", minProfile: "developer", risk: "read", scope: "workspace", summary: "Wait for a managed process session up to a bounded timeout." },
+  { name: "process_stop", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Stop a managed process session owned by the active workspace." },
+
+  { name: "search_start", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Start a bounded asynchronous file-name or text search in the active workspace." },
+  { name: "search_more", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read a page of available results from an asynchronous search session." },
+  { name: "search_status", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Inspect asynchronous search sessions owned by the active workspace." },
+  { name: "search_stop", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Stop an asynchronous search session owned by the active workspace." },
+
+  { name: "agent_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List installed Agent Providers and Agent sessions for the active workspace." },
+  { name: "agent_start", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Start an Agent session through an authorized Agent Provider." },
+  { name: "agent_task", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Submit a task to a running Agent session without persisting the task payload." },
+  { name: "agent_status", minProfile: "developer", risk: "read", scope: "workspace", summary: "Inspect Agent session lifecycle state in the active workspace." },
+  { name: "agent_output", minProfile: "developer", risk: "read", scope: "workspace", summary: "Read bounded incremental Agent output for a running Agent session." },
+  { name: "agent_stop", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Stop an Agent session while preserving unreconciled isolation results." }
 ];
 
 export class CapabilityCatalog {

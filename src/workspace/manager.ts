@@ -148,8 +148,24 @@ export class WorkspaceManager {
     }));
   }
 
+  get(id: string): WorkspaceDescriptor {
+    const match = this.#workspaces.find(
+      (entry) => entry.id.toLowerCase() === id.trim().toLowerCase()
+    );
+    if (!match) throw new Error(`Workspace "${id}" is not registered.`);
+    return match;
+  }
+
+  all(): WorkspaceDescriptor[] {
+    return this.#workspaces.map((entry) => ({
+      ...entry,
+      ...(entry.plugins ? { plugins: [...entry.plugins] } : {}),
+      authorization: { ...entry.authorization }
+    }));
+  }
+
   current(): WorkspaceDescriptor {
-    return this.#workspaces.find((entry) => entry.id === this.#currentId)!;
+    return this.get(this.#currentId);
   }
 
   currentRoot(): string {

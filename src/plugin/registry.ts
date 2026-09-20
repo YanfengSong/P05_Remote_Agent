@@ -1,3 +1,4 @@
+import type { AgentProvider } from "../agent/provider.js";
 import type { CapabilityDescriptor } from "../capability/types.js";
 import type { DownstreamDefinition } from "../downstream/types.js";
 import {
@@ -84,6 +85,22 @@ export class PluginRegistry {
     return this.plugins().flatMap((plugin) =>
       plugin.manifest.capabilities.map((entry) => ({ ...entry }))
     );
+  }
+
+  agentProviders(): Array<{ pluginId: string; provider: AgentProvider }> {
+    const providers: Array<{ pluginId: string; provider: AgentProvider }> = [];
+    const ids = new Set<string>();
+
+    for (const plugin of this.plugins()) {
+      for (const provider of plugin.agentProviders?.() ?? []) {
+        if (ids.has(provider.id)) {
+          throw new Error(`Duplicate Agent Provider id "${provider.id}" from plugins.`);
+        }
+        ids.add(provider.id);
+        providers.push({ pluginId: plugin.manifest.id, provider });
+      }
+    }
+    return providers;
   }
 
   downstreamDefinitions(): DownstreamDefinition[] {

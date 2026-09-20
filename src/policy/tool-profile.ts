@@ -27,8 +27,8 @@ export const TOOL_SPECS: readonly CapabilityDescriptor[] = CAPABILITIES;
 
 export const PLANNED_TOOLS: Record<ToolProfile, readonly string[]> = {
   discovery: [],
-  readonly: ["fs_search", "git_log"],
-  developer: ["process_start", "process_wait", "process_output", "process_stop", "batch_execute"],
+  readonly: ["git_log"],
+  developer: ["batch_execute"],
   full: []
 };
 
