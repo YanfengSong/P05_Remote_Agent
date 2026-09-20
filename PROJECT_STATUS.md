@@ -1,6 +1,6 @@
 # Project Status
 
-Updated: 2026-09-18
+Updated: 2026-09-20
 
 Governing plan: `docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md` (Chinese) and
 `docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md` (English). The local AI agent executes one
@@ -8,8 +8,8 @@ TASK at a time and stops.
 
 ## Current baseline
 
-Version: 0.3.0 (stage V0.3) — TASK-001 Tool Profile Safety, TASK-002 Local Startup and
-the pre-merge review fixes are complete
+Version: 0.3.1 — TASK-001 Tool Profile Safety, TASK-002 Local Startup, the pre-merge review
+fixes, and the temporary read-only layer (TMP-R01..TMP-R06)
 Branch: `feat/remote-agent-v03`, pushed to `origin/feat/remote-agent-v03`
 Canonical repository: `YanfengSong/P05_Remote_Agent`
 Validated on Windows with Node.js 22.23.1.
@@ -25,6 +25,53 @@ V0.5   Developer Agent         not started
 V0.6   Efficient Agent         not started
 V0.7   MATLAB                  not started
 ```
+
+## TMP — temporary read-only layer (2026-09-20)
+
+Requested capability: let a remote client read this repository's documents and source so it can
+review them, without granting anything else. Approved as a **temporary** layer only; the
+Self-Development Bootstrap design (`D:\Project_Git\_p05_deploy\BOOTSTRAP_V1_DESIGN.md`) is a
+separate, not-yet-implemented phase, and this layer must not grow into the permission model.
+
+Implemented:
+
+- `list_directory` and `read_file` in `src/tools/temp-readonly.ts` — the module contains no
+  write, delete, move or process-spawning code path at all;
+- opt-in gate `P05_TEMP_READONLY_ROOT`: the two tools are declared in
+  `src/policy/tool-profile.ts` with `gate: "temp-readonly"`, and the gate is evaluated before the
+  profile rank, so with the variable unset the startup report lists both as suppressed and
+  `tools/list` is still exactly `device_info` + `ping` (TASK-001 DoD preserved);
+- confinement: every path goes through the existing `assertAccessiblePath` guard (path shape,
+  allowed root, protected names, real path) and is then re-checked against the temporary root,
+  including its resolved real path — so `..`, a junction leaving the root, and a sibling of the
+  temporary root inside the allowed roots are all refused (TMP-R02, TMP-R03);
+- credential filter on top of the guard's own rules: `.env*` (templates excepted), `*.key`,
+  `*.pem`, `*.pfx`, `*.p12`, `*.kdbx`, `*.jks`, `*.keystore`, `*.ppk`, `*.asc`, `*.crt`, `*.der`,
+  `secrets`/`credentials` path segments, and separator-anchored `token`/`secret`/`password`/
+  `api-key` file names; refusals echo the caller's input and never the root or a link target, and
+  no refusal text contains the secret (TMP-R04);
+- bounded read: 1 MB cap and binary (NUL-containing) files refused (TMP-R05);
+- listing withholds protected and credential-like entries and reports how many were withheld;
+- fail closed on a relative or out-of-root `P05_TEMP_READONLY_ROOT` (startup aborts); a blank
+  value means "off", not "refuse to start";
+- published on `discovery` deliberately, so enabling it needs no profile change: it is the gate,
+  not the profile, that decides.
+
+Validation (`npm run verify:win` → `VERIFY_OK`, now six steps):
+
+```text
+npm run check              pass (tsc --noEmit)
+npm run build              pass
+npm run smoke:downstream   DOWNSTREAM_SMOKE_OK
+npm run test:policy        POLICY_PROFILES_OK (148 checks)
+npm run test:exposure      PROFILE_EXPOSURE_OK (101 checks)
+npm run test:temp-readonly TEMP_READONLY_OK (48 checks)
+```
+
+Deletion path when the Security Broker lands: `src/tools/temp-readonly.ts`, its spec entries in
+`src/policy/tool-profile.ts`, the two `exposer.expose` blocks in `src/index.ts`, the
+`test:temp-readonly` script and verify step, and the `P05_TEMP_READONLY_ROOT` line from `.env`.
+ADR-0006 records the decision; no part of this layer is meant to survive it.
 
 ## TASK-001 — Tool Profile Safety
 

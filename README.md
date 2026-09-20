@@ -12,7 +12,7 @@ P05 Remote Agent provides one stable MCP entry point for:
 
 The project intentionally avoids becoming a full enterprise MCP platform. It borrows proven patterns from existing open-source gateways while keeping the runtime small enough for a single Windows engineering workstation.
 
-## Current status: 0.3.0 (stage V0.3) — TASK-001 tool profile safety, TASK-002 local startup, pre-merge review fixes
+## Current status: 0.3.1 — TASK-001 tool profile safety, TASK-002 local startup, pre-merge review fixes, temporary read-only layer
 
 Governing plan: [docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md) (Chinese) and
 [docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md) (English).
@@ -44,6 +44,16 @@ Implemented:
   resolves the profile, refuses a busy port and prints the device/profile/MCP/health
   banner before starting the gateway;
 - **verification pipeline**: `npm run verify` plus `scripts/verify.ps1`.
+- **temporary read-only layer** (`P05_TEMP_READONLY_ROOT`, TMP-R01..TMP-R06, see
+  [docs/adr/ADR-0006](docs/adr/ADR-0006-temporary-readonly-capability.md)): two extra read-only
+  tools, `list_directory` and `read_file`, offered only while that variable names a directory
+  inside `REMOTE_AGENT_ALLOWED_ROOTS`. The variable is an opt-in *gate* checked before the profile
+  rank, so an install that does not set it still exposes exactly `device_info` + `ping`. The tools
+  can only ever narrow what is reachable: every path passes the existing hardened guard first and
+  is then re-checked against the temporary root (real path included), credential-shaped files are
+  refused, reads are capped at 1 MB, and no write, delete, move or execute path exists in that
+  module. It is a stop-gap for remote document review, not the permission model — ADR-0006 records
+  how it is deleted once the Security Broker lands.
 
 Next (per the plan; stop after each task):
 - TASK-003 Secure Tunnel integration (`scripts/tunnel/*`);

@@ -41,6 +41,15 @@ Cumulative: each profile contains everything below it.
 | `developer` | + `fs_write`, `mcp_status`, `mcp_list_tools` | write, read |
 | `full` | + `mcp_call_tool`, `shell_run` | execute |
 
+One capability is additional to this table and is gated rather than profiled: the **temporary
+read-only layer** (`list_directory`, `read_file`, ADR-0006). Those two tools are declared at
+`discovery` but a capability gate — evaluated before the profile rank — hides them unless
+`P05_TEMP_READONLY_ROOT` names a directory inside `REMOTE_AGENT_ALLOWED_ROOTS`. With that variable
+unset the surface is exactly the `discovery` row above, so the TASK-001 DoD is unchanged by
+default; with it set, the two tools appear without any profile change and can only ever reach
+inside that (narrower) root. Both are read-only: no write, delete, move or execute path exists in
+that module.
+
 `mcp_call_tool` is the generic downstream proxy: through it, the entire surface of a
 configured downstream server becomes reachable, and for MATLAB that surface includes
 arbitrary code evaluation. Plan section 3 lists it under 禁止一开始暴露 ("never expose
@@ -185,6 +194,12 @@ npm start
 
 # highest surface: adds shell_run and the generic downstream proxy
 #   .env:  P05_TOOL_PROFILE=full
+
+# temporary read-only layer (ADR-0006): two extra read tools, opt-in per machine
+#   -- leave it out and the surface is unchanged (device_info + ping at discovery)
+#   -- the value must be inside REMOTE_AGENT_ALLOWED_ROOTS; it can only narrow that area
+#   -- a relative value, or one outside the allowed roots, aborts startup
+#   .env:  P05_TEMP_READONLY_ROOT=<absolute directory inside an allowed root>
 ```
 
 Every server start writes one line to **stderr** (stdout is the JSON-RPC channel):
