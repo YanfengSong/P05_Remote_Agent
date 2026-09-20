@@ -1,6 +1,6 @@
 {
   "name": "p05-remote-agent",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "smoke:downstream": "npm run build && node dist/test/downstream-smoke.js",
     "test:policy": "npm run build && node dist/test/policy-profiles.js",
     "test:exposure": "npm run build && node dist/test/profile-exposure.js",
-    "test": "npm run test:policy && npm run test:exposure && npm run smoke:downstream",
+    "test:temp-readonly": "npm run build && node dist/test/temp-readonly.js",
+    "test": "npm run test:policy && npm run test:exposure && npm run test:temp-readonly && npm run smoke:downstream",
     "verify": "npm run check && npm run build && npm run smoke:downstream && npm run test",
     "verify:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1",
     "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local.ps1",

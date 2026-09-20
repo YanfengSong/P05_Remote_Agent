@@ -6,6 +6,8 @@
  * profile allows them, an unknown profile fails closed, and `full` is never the default.
  */
 
+import { TEMP_READONLY_ROOT_ENV, readOwnEnv } from "../env.js";
+
 export const TOOL_PROFILE_NAMES = ["discovery", "readonly", "developer", "full"] as const;
 
 export type ToolProfile = (typeof TOOL_PROFILE_NAMES)[number];
@@ -29,6 +31,12 @@ export type ToolSpec = {
   minProfile: ToolProfile;
   risk: ToolRisk;
   summary: string;
+  /**
+   * Optional capability gate, evaluated before the profile rank. A gated tool is exposed only
+   * when its gate is satisfied on this machine, so declaring it at a profile does not by
+   * itself widen the surface. Used by the temporary read-only layer (TMP-R01).
+   */
+  gate?: "temp-readonly";
 };
 
 /**
@@ -59,6 +67,32 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
     minProfile: "readonly",
     risk: "read",
     summary: "List the direct children of a directory inside the allowed roots."
+  },
+  // ---------------------------------------------------------------------------------------
+  // TEMPORARY read-only layer (TMP-R01..TMP-R06, docs/adr/ADR-0006).
+  //
+  // Declared at `discovery` on purpose: the operator enables it per machine with
+  // P05_TEMP_READONLY_ROOT, without changing the active tool profile. The gate below keeps
+  // the default install unchanged, so `discovery` still exposes exactly device_info + ping
+  // unless someone opts in.
+  //
+  // Deletion path when the Security Broker lands: remove these two specs, the two
+  // `exposer.expose` blocks in src/index.ts, src/tools/temp-readonly.ts, its test file, and
+  // the P05_TEMP_READONLY_ROOT line from .env. This is NOT the permanent permission model.
+  // ---------------------------------------------------------------------------------------
+  {
+    name: "list_directory",
+    minProfile: "discovery",
+    risk: "read",
+    gate: "temp-readonly",
+    summary: "TEMPORARY: list direct children of a directory inside the temporary read-only root."
+  },
+  {
+    name: "read_file",
+    minProfile: "discovery",
+    risk: "read",
+    gate: "temp-readonly",
+    summary: "TEMPORARY: read a UTF-8 text file inside the temporary read-only root (1 MB cap)."
   },
   {
     name: "fs_write",
@@ -152,10 +186,28 @@ export function resolveToolProfile(raw: string | undefined): { profile: ToolProf
   return { profile: lowered as ToolProfile, profileSource: "env" };
 }
 
+/**
+ * Gate reasons are evaluated before the profile rank: an unsatisfied capability gate hides the
+ * tool whatever the active profile is.
+ *
+ * The check reads the opt-in variable directly instead of importing `src/config.ts`, because
+ * importing that module validates configuration as a side effect - which test files that set the
+ * environment after their imports must not trigger. A malformed value is refused at startup by
+ * `parseTempReadonlyRoot`, so "blank/absent" is the only state this gate has to recognise.
+ */
+function gateReason(spec: ToolSpec): string | undefined {
+  if (spec.gate === "temp-readonly") {
+    const raw = readOwnEnv(TEMP_READONLY_ROOT_ENV)?.trim();
+    if (!raw) {
+      return `the temporary read-only layer is off (set ${TEMP_READONLY_ROOT_ENV} to enable it)`;
+    }
+  }
+  return undefined;
+}
+
 /** The contract named in the execution plan. */
 export function isToolAllowed(profile: ToolProfile, toolName: string): boolean {
-  const spec = assertToolDeclared(toolName);
-  return PROFILE_RANK[profile] >= PROFILE_RANK[spec.minProfile];
+  return toolDecision(profile, toolName).allowed;
 }
 
 export type ToolDecision = {
@@ -166,6 +218,10 @@ export type ToolDecision = {
 
 export function toolDecision(profile: ToolProfile, toolName: string): ToolDecision {
   const spec = assertToolDeclared(toolName);
+  const gated = gateReason(spec);
+  if (gated) {
+    return { tool: toolName, allowed: false, reason: gated };
+  }
   if (PROFILE_RANK[profile] < PROFILE_RANK[spec.minProfile]) {
     return {
       tool: toolName,

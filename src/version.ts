@@ -5,4 +5,4 @@
  * identity all read this value; `src/test/policy-profiles.ts` asserts that package.json
  * agrees, so the three can no longer drift apart.
  */
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";

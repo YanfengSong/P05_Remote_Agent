@@ -44,6 +44,7 @@ if (-not (Invoke-Step "npm run build"            { npm run build }            ""
 if (-not (Invoke-Step "npm run smoke:downstream" { npm run smoke:downstream } "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "npm run test:policy"      { npm run test:policy }      "POLICY_PROFILES_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "npm run test:exposure"    { npm run test:exposure }    "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "npm run test:temp-readonly" { npm run test:temp-readonly } "TEMP_READONLY_OK")) { $allPassed = $false }
 
 # Working tree hygiene: a dirty tree after verification usually means generated output
 # leaked into version control.

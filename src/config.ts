@@ -1,16 +1,10 @@
 import path from "node:path";
 import { VERSION } from "./version.js";
+import { TEMP_READONLY_ROOT_ENV, readOwnEnv } from "./env.js";
 
-/**
- * Read an environment variable as an own property only.
- *
- * `process.env` inherits from Object.prototype, so a polluted prototype would otherwise
- * make `process.env[name]` answer for a variable that was never set - and here that
- * value decides which roots are reachable and which tool profile is active.
- */
-export function readOwnEnv(name: string): string | undefined {
-  return Object.hasOwn(process.env, name) ? process.env[name] : undefined;
-}
+// Re-exported so existing importers keep working; the implementation lives in src/env.ts, which
+// has no import-time side effects (see that file's header for why that matters).
+export { readOwnEnv };
 
 function parseEntries(raw: string): string[] {
   return raw
@@ -98,6 +92,46 @@ export function parseDefaultCwd(raw: string | undefined, allowedRoots: string[])
   return resolved;
 }
 
+function isWithinRoot(candidate: string, root: string): boolean {
+  const normalize = (value: string) => (process.platform === "win32" ? value.toLowerCase() : value);
+  const resolvedCandidate = normalize(candidate);
+  const resolvedRoot = normalize(root);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(resolvedRoot + path.sep);
+}
+
+/**
+ * Temporary read-only capability layer (TMP-R01..TMP-R06, see docs/adr/ADR-0006).
+ *
+ * Unset or blank turns the layer off: the two temporary tools stay declared but are never
+ * registered, so the TASK-001 discovery contract (`device_info` + `ping` only) still holds
+ * unless an operator opts in on this machine.
+ *
+ * A relative value, or one outside the allowed roots, aborts startup instead of being
+ * ignored: this value decides what a remote client may read, so a typo must not silently
+ * either widen the reachable area or narrow it to something meaningless.
+ */
+export function parseTempReadonlyRoot(raw: string | undefined, allowedRoots: string[]): string | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+
+  const candidate = raw.trim();
+  if (!path.isAbsolute(candidate)) {
+    throw new Error(
+      `P05_TEMP_READONLY_ROOT must be an absolute path; got: ${candidate}. ` +
+        "Refusing to start rather than guess which directory that names."
+    );
+  }
+
+  const resolved = path.resolve(candidate);
+  if (!allowedRoots.some((root) => isWithinRoot(resolved, root))) {
+    throw new Error(
+      `P05_TEMP_READONLY_ROOT (${resolved}) is outside the allowed roots (${allowedRoots.join("; ")}). ` +
+        "The temporary layer may only narrow what this agent can reach, never widen it."
+    );
+  }
+
+  return resolved;
+}
+
 const allowedRoots = parseAllowedRoots(readOwnEnv("REMOTE_AGENT_ALLOWED_ROOTS"));
 
 export const config = {
@@ -107,6 +141,8 @@ export const config = {
   toolProfile: readOwnEnv("P05_TOOL_PROFILE"),
   allowedRoots,
   defaultCwd: parseDefaultCwd(readOwnEnv("REMOTE_AGENT_DEFAULT_CWD"), allowedRoots),
+  /** Temporary read-only layer root; undefined means the layer is off (TMP-R01). */
+  tempReadonlyRoot: parseTempReadonlyRoot(readOwnEnv(TEMP_READONLY_ROOT_ENV), allowedRoots),
   shellTimeoutMs: Number(readOwnEnv("REMOTE_AGENT_SHELL_TIMEOUT_MS") ?? "120000"),
   maxReadBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_READ_BYTES") ?? String(2 * 1024 * 1024)),
   maxWriteBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_WRITE_BYTES") ?? String(2 * 1024 * 1024))

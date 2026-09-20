@@ -27,13 +27,17 @@ const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
 const STATE_DIR = path.join(REPO, ".p05");
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
+// TMP-R01: the temporary read-only layer is declared at `discovery` but gated on
+// P05_TEMP_READONLY_ROOT, so with the gate off (the default, and how every other scenario
+// here runs) the surface is still exactly device_info + ping.
+const TEMP_READONLY_TOOLS = ["list_directory", "read_file"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_list", "fs_read"];
 const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_list_tools", "mcp_status"];
 // mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
 // reachable, and for MATLAB that includes code evaluation. The plan lists it under
 // "never expose initially" next to shell_run, so it sits at `full`.
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "shell_run"];
-const ALL_TOOLS = FULL_TOOLS;
+const ALL_TOOLS = [...FULL_TOOLS, ...TEMP_READONLY_TOOLS];
 
 let checks = 0;
 

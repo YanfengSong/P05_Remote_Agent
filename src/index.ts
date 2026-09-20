@@ -10,6 +10,7 @@ import { resolveToolProfile } from "./policy/tool-profile.js";
 import { registerDeviceTools } from "./tools/device.js";
 import { listDirectory, readTextFile, writeTextFile } from "./tools/files.js";
 import { runPowerShell } from "./tools/shell.js";
+import { listTempDirectory, readTempFile } from "./tools/temp-readonly.js";
 
 // Fail closed: an unknown P05_TOOL_PROFILE aborts startup instead of widening the surface.
 const { profile, profileSource } = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE"));
@@ -62,6 +63,28 @@ serveStdio(() => {
       header + "STDOUT:\n" + result.stdout + "\nSTDERR:\n" + result.stderr
     }] };
   });
+
+  // TEMPORARY read-only layer (TMP-R01..TMP-R06, docs/adr/ADR-0006). Both tools are offered
+  // to the exposer unconditionally so visibility is decided in exactly one place: the policy
+  // gate hides them unless P05_TEMP_READONLY_ROOT is set, which leaves the default discovery
+  // surface (device_info + ping) untouched.
+  exposer.expose("list_directory", {
+    description:
+      "TEMPORARY: list direct children of a directory inside the temporary read-only root. " +
+      "This layer is read-only: no write, delete, move or execute tool exists.",
+    inputSchema: z.object({ path: z.string().min(1) })
+  }, async ({ path }) => ({
+    content: [{ type: "text", text: (await listTempDirectory(path)).join("\n") }]
+  }));
+
+  exposer.expose("read_file", {
+    description:
+      "TEMPORARY: read a UTF-8 text file inside the temporary read-only root. " +
+      "1 MB cap; credential-shaped and binary files are refused.",
+    inputSchema: z.object({ path: z.string().min(1) })
+  }, async ({ path }) => ({
+    content: [{ type: "text", text: await readTempFile(path) }]
+  }));
 
   logExposure(exposer.report());
   return server;
