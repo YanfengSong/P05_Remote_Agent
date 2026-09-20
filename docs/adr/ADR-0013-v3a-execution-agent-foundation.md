@@ -1,6 +1,6 @@
 # ADR-0013 — V3-A Execution & Agent Foundation
 
-Status: Accepted
+Status: Accepted implementation-slice decision; subordinate to complete V3
 Date: 2026-09-20
 
 ## Context
@@ -22,10 +22,13 @@ the generic Agent contract.
 
 Adopt V3-A as the first V3 implementation slice.
 
-V3-A introduces five explicit concepts:
+V3-A introduces five early implementation concepts. They are interpreted through the complete V3 contracts,
+especially the Durable Run Kernel, Host Session and Capability Binding model:
+
+
 
 1. Execution Context — immutable execution identity/scope.
-2. Session Manager — generic long-lived lifecycle/event/recovery owner.
+2. Session Manager — early host-session lifecycle/output abstraction, later projected onto the shared V3 Run Kernel.
 3. Process Driver — host-specific process execution adapter.
 4. Isolation Manager — worktree/session-root allocation and reconciliation boundary.
 5. Agent Runtime — generic actor lifecycle with concrete Agent Provider Plugins.
@@ -43,8 +46,9 @@ their identity from a later mutable `WorkspaceManager.current()` value.
 
 PowerShell and Windows process mechanics are implementation details.
 
-They belong behind a Process Driver such as `LocalPowerShellDriver`. Session Manager owns lifecycle and recovery, not
-`spawn`, PowerShell arguments or `taskkill.exe`.
+They belong behind a Process Driver such as `LocalPowerShellDriver`. The slice-level Session Manager owns
+host-session behavior, not `spawn`, PowerShell arguments or `taskkill.exe`; generic durable lifecycle/recovery is
+owned by the complete V3 Run Kernel.
 
 ## Isolation decision
 
@@ -64,8 +68,9 @@ and MUST NOT bypass Core Policy / Execution Runtime / Audit.
 
 V3-A stops after the execution substrate and one reference Agent Provider are stable.
 
-Verified Assets, Meta-Capabilities, Skills and Orchestrator remain accepted V3 target architecture but are deferred
-until V3-A acceptance criteria pass.
+The full V3 target remains normative regardless of this slice boundary. Durable Run/State, Capability Bindings,
+Verified Assets, Skills, Orchestrator, Resource Leases, multi-device and isolated workers are not removed from the
+architecture merely because they are deferred from this delivery slice.
 
 ## Consequences
 
@@ -106,3 +111,13 @@ between providers.
 - `docs/architecture/TARGET_ARCHITECTURE_V3.md`
 - `docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md`
 - `docs/adr/ADR-0012-agent-skill-orchestrator.md`
+
+
+## Superseding clarification
+
+This ADR controls V3-A implementation sequencing only. It does not define the complete V3 target architecture.
+For target semantics and terminology, use:
+
+- `docs/architecture/TARGET_ARCHITECTURE_V3.md`;
+- `docs/research/V3_TECHNICAL_RESEARCH.md`;
+- ADR-0014 through ADR-0017.

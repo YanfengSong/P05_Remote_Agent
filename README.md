@@ -43,11 +43,14 @@ Implemented baseline: [Target Architecture V2](docs/architecture/TARGET_ARCHITEC
 
 Long-term target: [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md).
 
-Current implementation slice: [Target Architecture V3-A — Execution & Agent Foundation](docs/architecture/TARGET_ARCHITECTURE_V3A.md).
+V3 technical research: [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md).
 
-V3-A is the 0.4.x delivery boundary: immutable Execution Context, generic Session Manager, Process Driver abstraction,
-Isolation Manager and Agent Runtime with one reference Provider. Verified Assets, Meta-Capabilities, Skills and
-Orchestrator remain later V3 slices until this execution substrate is stable.
+V3 is the complete target architecture: stateless Protocol Edge, Durable Run Kernel, transactional state, execution
+and isolation substrate, one semantic Capability Catalog with versioned Bindings, Agent Runtime, Verified Assets,
+bounded Skills, deterministic Orchestrator, approvals/resource leases, artifacts and multi-device evolution.
+
+[Target Architecture V3-A](docs/architecture/TARGET_ARCHITECTURE_V3A.md) is only an implementation slice derived from
+V3; it is not the definition of the target architecture.
 
 ## Tool profiles
 
@@ -198,26 +201,29 @@ Latest Foundation V2 validation:
 
 This is 583 explicit assertions/checks, plus build/typecheck and downstream smoke.
 
-## What comes next
+## Architecture direction
 
-Foundation V2 should remain stable while implementation moves through V3-A before broader V3 capability work:
+Foundation V2 remains the implemented stable substrate. Architecture V3 is the complete research-backed target and
+defines the contracts that future implementation slices must follow.
 
-1. Execution Context that is immutable for long-lived execution.
-2. Session Manager separated from host-specific process mechanics.
-3. LocalPowerShellDriver behind the generic Process Driver contract.
-4. worktree/session isolation and explicit reconciliation.
-5. Agent Runtime + one reference Agent Provider.
-6. V3-A stabilization against the full Foundation V2 regression baseline.
-7. only then Verified Assets / Meta-Capabilities, Skills and Orchestrator.
+Key V3 decisions include:
 
-New application behavior should extend V3 layers rather than redesign Foundation V2 Core.
+- MCP is a stateless Protocol Edge, not P05 lifecycle state;
+- one Durable Run Kernel and transactional State Store serve all long-running domains;
+- Process, Terminal, Work Isolation and Security Isolation are separate primitives;
+- one semantic Capability Catalog uses versioned implementation Bindings;
+- Assets, Artifacts, Agents, Skills and Tasks have distinct contracts;
+- ChatGPT provides high-level reasoning while the Orchestrator performs deterministic coordination.
+
+Implementation sequencing is documented in V3/V3-A but does not narrow the target architecture.
 
 ## Canonical documents
 
 - [Project Status](PROJECT_STATUS.md)
 - [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
-- [Target Architecture V3-A — Execution & Agent Foundation](docs/architecture/TARGET_ARCHITECTURE_V3A.md)
-- [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
+- [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md)
+- [V3 Capability / Agent / Skill / Asset / Run Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
+- [Target Architecture V3-A — implementation slice](docs/architecture/TARGET_ARCHITECTURE_V3A.md)
 - [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
 - [Permission Model](docs/architecture/PERMISSION-MODEL.md)
 - [Tool Profiles](docs/architecture/TOOL-PROFILES.md)
@@ -228,4 +234,8 @@ New application behavior should extend V3 layers rather than redesign Foundation
 - [ADR-0011 Plugin Framework](docs/adr/ADR-0011-plugin-framework.md)
 - [ADR-0012 Agent / Skill / Asset / Orchestrator Layering](docs/adr/ADR-0012-agent-skill-orchestrator.md)
 - [ADR-0013 V3-A Execution & Agent Foundation](docs/adr/ADR-0013-v3a-execution-agent-foundation.md)
+- [ADR-0014 Protocol Edge and Explicit Handles](docs/adr/ADR-0014-protocol-edge-explicit-handles.md)
+- [ADR-0015 Durable Run Kernel and State](docs/adr/ADR-0015-durable-run-kernel-state.md)
+- [ADR-0016 Host Session / Terminal / Isolation](docs/adr/ADR-0016-host-session-terminal-isolation.md)
+- [ADR-0017 Capability Bindings and Assets](docs/adr/ADR-0017-capability-bindings-assets.md)
 - [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)

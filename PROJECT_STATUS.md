@@ -224,19 +224,25 @@ P05 intentionally does not pretend a command blacklist can sandbox PowerShell.
 
 A future Approval/Execution Broker or OS-isolated worker can add hard containment without changing the Foundation V2 contracts.
 
-## Next capability work
+## Architecture V3 research baseline
 
-The active implementation slice is **Architecture V3-A / 0.4.x — Execution & Agent Foundation**.
+The complete V3 target architecture is now defined independently of implementation slicing.
 
-1. immutable Execution Context for long-lived execution;
-2. Session Manager separated from host-specific Process Drivers;
-3. LocalPowerShellDriver migration of the current Process Runtime prototype;
-4. Git worktree/session-root Isolation Manager and explicit reconciliation;
-5. generic Agent Runtime + one reference Agent Provider;
-6. V3-A stabilization against the complete Foundation V2 regression baseline.
+The research-backed target adds:
 
-Asynchronous Search, richer application adapters, Verified Assets, Skills and Orchestrator remain later work and MUST
-NOT bypass or pre-empt these execution-foundation contracts.
+- stateless Protocol Edge and explicit application handles;
+- Durable Run Kernel + transactional State Store;
+- separate Process, Terminal, Work Isolation and Security Isolation contracts;
+- effect/idempotency-aware execution and durable approvals/resource leases;
+- one semantic Capability Catalog with versioned Bindings;
+- distinct Asset and Artifact lifecycles;
+- provider-neutral Agent Runtime;
+- bounded Skill Runtime;
+- deterministic Orchestrator;
+- multi-device and optional isolated/GUI Worker extension points.
+
+V3-A remains one possible early implementation slice and MUST conform to the complete V3 contracts rather than define
+or narrow them.
 
 ## Working tree
 
@@ -250,51 +256,54 @@ Foundation V1, Git mutation and Foundation V2 work are still part of the current
 
 ## Target Architecture V3
 
-Architecture V3 is **accepted as the long-term target but is not yet fully implemented**.
+Architecture V3 is **accepted as the complete long-term target and technical research baseline; it is not yet fully
+implemented**.
 
-The fixed target stack is:
+Canonical target stack:
 
 ```text
-ChatGPT
-  -> Orchestrator
-  -> Skill / Workflow Engine
-  -> Meta-Capability / Capability
-  -> Plugin / Agent Provider / Verified Asset / Core primitive
-  -> P05 Core Runtime
-  -> Host / Applications
+Client / ChatGPT
+  -> Protocol Edge
+  -> Orchestrator / Skill / Agent / Capability services
+  -> Policy + Durable Run Kernel + Execution Runtime
+  -> Capability Binding / Plugin / Verified Asset
+  -> Host Session / Process / Terminal / Worker / Isolation
+  -> Engineering host / applications / hardware
 ```
 
-Layer meanings:
-- Plugin = optional capability/provider extension;
-- Agent = execution actor;
-- Skill = reusable bounded process;
-- Asset = verified versioned implementation material;
-- Orchestrator = coordination;
-- Core = generic authorization/execution substrate.
+Key V3 decisions:
 
-V3 acceptance rules include:
-- concrete Agents enter through Agent Provider Plugins;
-- Skills reference Capability IDs rather than filenames/providers;
-- Script Assets require version/hash/verification lifecycle;
-- writing Agents use isolated worktree/session roots;
-- Plugin/Agent/Skill/Orchestrator execution cannot bypass Core Policy/Runtime/Audit;
-- parallel results require explicit reconcile before integration.
+- MCP transport/session state is not P05 application state;
+- long-running domains share one Durable Run Kernel;
+- SQLite is the reference local transactional State Store behind an abstraction;
+- Process and interactive Terminal Drivers are separate;
+- Git worktree isolation is not an OS sandbox;
+- Capabilities are semantic contracts with versioned implementation Bindings;
+- Capability effect class constrains retry/recovery;
+- Agents are actors, not Capabilities;
+- Skills are typed bounded workflows;
+- Orchestrator is deterministic coordination, while ChatGPT remains the high-level reasoning authority;
+- Assets are reusable implementations; Artifacts are Run outputs;
+- parallel writers require explicit reconciliation;
+- device-local authority remains authoritative in future multi-device execution.
 
 Canonical V3 documents:
+
 - `docs/architecture/TARGET_ARCHITECTURE_V3.md`
+- `docs/research/V3_TECHNICAL_RESEARCH.md`
 - `docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md`
+- `docs/architecture/TARGET_ARCHITECTURE_V3A.md` (implementation slice only)
 - `docs/adr/ADR-0012-agent-skill-orchestrator.md`
+- `docs/adr/ADR-0014-protocol-edge-explicit-handles.md`
+- `docs/adr/ADR-0015-durable-run-kernel-state.md`
+- `docs/adr/ADR-0016-host-session-terminal-isolation.md`
+- `docs/adr/ADR-0017-capability-bindings-assets.md`
 
-Implementation priority:
+Technical POCs still required before freezing implementation technology:
 
-The accepted first delivery slice is defined by
-`docs/architecture/TARGET_ARCHITECTURE_V3A.md`.
-
-1. Execution Context.
-2. Session Manager / Process Driver separation.
-3. worktree/session isolation + reconciliation.
-4. Agent Runtime + reference Provider.
-5. V3-A stabilization.
-6. only then Verified Asset Registry + Meta-Capability.
-7. Skill Runtime.
-8. Orchestrator.
+1. MCP 2026-07-28 + current tunnel/client compatibility;
+2. node-pty/ConPTY interactive Agent sessions;
+3. Windows Job Object process-tree supervision;
+4. SQLite crash/recovery/concurrency behavior;
+5. parallel Git worktree reconciliation;
+6. Windows Sandbox/isolated Worker suitability.

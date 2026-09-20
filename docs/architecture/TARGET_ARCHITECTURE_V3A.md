@@ -1,19 +1,20 @@
 # P05 Target Architecture V3-A — Execution & Agent Foundation
 
-Status: implementation architecture baseline
+Status: derived implementation slice; non-normative for the complete V3 target
 Date: 2026-09-20
-Parent target: TARGET_ARCHITECTURE_V3.md
+Normative target: TARGET_ARCHITECTURE_V3.md
+Research basis: ../research/V3_TECHNICAL_RESEARCH.md
 Implemented baseline: Foundation V2 / P05 0.3.1
 Target release: 0.4.x
 
 ## Purpose
 
-V3-A is the first implementation slice of Architecture V3.
+V3-A is an implementation slice derived from the complete Architecture V3 target.
 
-Its purpose is to make P05 safe to extend from a single interactive engineering session into concurrent, recoverable
-Agent execution without redesigning Foundation V2 and without prematurely implementing Skill or Orchestrator layers.
+Its purpose is to provide a bounded early delivery scope. It does **not** define, narrow or supersede V3. If a V3-A
+statement conflicts with TARGET_ARCHITECTURE_V3.md or a later accepted V3 ADR, the complete V3 contract wins.
 
-V3-A freezes the following delivery boundary:
+V3-A defines the following slice delivery boundary:
 
 1. Execution Context.
 2. Session Manager.
@@ -21,8 +22,12 @@ V3-A freezes the following delivery boundary:
 4. Isolation Manager.
 5. Agent Runtime plus one reference Agent Provider.
 
-Verified Assets, Meta-Capabilities, Skills and Orchestrator remain V3 contracts, but they are not required for V3-A
-completion.
+Durable Run Kernel, transactional State Store, Capability Bindings, Verified Assets, Skills, Orchestrator,
+Resource Leases, multi-device and isolated-worker capabilities remain part of the complete V3 target even when they
+are outside this slice's acceptance boundary.
+
+The V3-A term "Session Manager" is a slice-level projection only. Under the complete V3 architecture, durable
+lifecycle semantics belong to the shared Run Kernel while Host Session owns execution-container semantics.
 
 ## Architectural rule
 
@@ -153,15 +158,17 @@ Minimum session record:
 
 ### Ownership
 
-Session Manager owns:
+Within this implementation slice, Session Manager owns the host-session projection of:
 
-- lifecycle state;
 - session lookup;
 - event cursor semantics;
 - bounded event retention;
-- recovery classification;
-- restart-time interruption handling;
+- host-session state;
+- restart-time host-session interruption handling;
 - session-to-context association.
+
+Under the complete V3 target, generic durable lifecycle, event sequencing and recovery classification are owned by the
+shared Durable Run Kernel; V3-A MUST NOT create a competing durability model.
 
 Session Manager MUST NOT contain:
 
@@ -362,9 +369,10 @@ These behaviors SHOULD be retained, but responsibilities are redistributed:
 
 | Current responsibility | V3-A owner |
 |---|---|
-| Session id/lifecycle | Session Manager |
-| Event cursor/buffer | Session Manager |
-| Persisted session metadata | Session Manager/state store |
+| Host-session id/state | Session Manager / Host Session |
+| Generic durable lifecycle/events | V3 Durable Run Kernel |
+| Output cursor/buffer | Host Session output subsystem |
+| Persisted operational metadata | V3 State Store |
 | Workspace identity | Execution Context |
 | PowerShell spawn/args | LocalPowerShellDriver |
 | stdin/kill/taskkill | LocalPowerShellDriver |
@@ -486,7 +494,7 @@ V3-A is complete only when all of the following are true:
 V3-A intentionally defers:
 
 - Verified Asset Registry;
-- Meta-Capability promotion;
+- Capability Binding / verified-Asset promotion;
 - Skill Contract/Registry/Runtime;
 - Orchestrator task graph;
 - parallel Skill branches/join;
