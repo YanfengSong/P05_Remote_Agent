@@ -43,8 +43,11 @@ Implemented baseline: [Target Architecture V2](docs/architecture/TARGET_ARCHITEC
 
 Long-term target: [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md).
 
-V3 adds the generic Agent Runtime, Verified Asset / Meta-Capability system, Skill/Workflow Engine and Orchestrator.
-These are target contracts, not claims that the corresponding runtime modules are already implemented.
+Current implementation slice: [Target Architecture V3-A — Execution & Agent Foundation](docs/architecture/TARGET_ARCHITECTURE_V3A.md).
+
+V3-A is the 0.4.x delivery boundary: immutable Execution Context, generic Session Manager, Process Driver abstraction,
+Isolation Manager and Agent Runtime with one reference Provider. Verified Assets, Meta-Capabilities, Skills and
+Orchestrator remain later V3 slices until this execution substrate is stable.
 
 ## Tool profiles
 
@@ -197,17 +200,15 @@ This is 583 explicit assertions/checks, plus build/typecheck and downstream smok
 
 ## What comes next
 
-Foundation V2 should remain stable while implementation moves toward Target Architecture V3:
+Foundation V2 should remain stable while implementation moves through V3-A before broader V3 capability work:
 
-1. Process / persistent Terminal Session primitive.
-2. Agent Runtime contract + one reference Agent Provider.
-3. worktree/session isolation and reconciliation.
-4. Verified Asset Registry + Meta-Capability binding.
-5. Skill / Workflow Engine.
-6. Orchestrator task / Handoff / parallel / reconcile.
-7. MATLAB/Simulink stable Meta-Capabilities and Skills.
-8. STM32 plugin and reusable Build/Flash/Debug Meta-Capabilities.
-9. asynchronous Search, multi-device and optional GUI/isolated workers as needed.
+1. Execution Context that is immutable for long-lived execution.
+2. Session Manager separated from host-specific process mechanics.
+3. LocalPowerShellDriver behind the generic Process Driver contract.
+4. worktree/session isolation and explicit reconciliation.
+5. Agent Runtime + one reference Agent Provider.
+6. V3-A stabilization against the full Foundation V2 regression baseline.
+7. only then Verified Assets / Meta-Capabilities, Skills and Orchestrator.
 
 New application behavior should extend V3 layers rather than redesign Foundation V2 Core.
 
@@ -215,6 +216,7 @@ New application behavior should extend V3 layers rather than redesign Foundation
 
 - [Project Status](PROJECT_STATUS.md)
 - [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
+- [Target Architecture V3-A — Execution & Agent Foundation](docs/architecture/TARGET_ARCHITECTURE_V3A.md)
 - [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
 - [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
 - [Permission Model](docs/architecture/PERMISSION-MODEL.md)
@@ -225,4 +227,5 @@ New application behavior should extend V3 layers rather than redesign Foundation
 - [ADR-0010 Foundation V2](docs/adr/ADR-0010-foundation-v2.md)
 - [ADR-0011 Plugin Framework](docs/adr/ADR-0011-plugin-framework.md)
 - [ADR-0012 Agent / Skill / Asset / Orchestrator Layering](docs/adr/ADR-0012-agent-skill-orchestrator.md)
+- [ADR-0013 V3-A Execution & Agent Foundation](docs/adr/ADR-0013-v3a-execution-agent-foundation.md)
 - [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)

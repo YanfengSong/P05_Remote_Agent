@@ -226,12 +226,17 @@ A future Approval/Execution Broker or OS-isolated worker can add hard containmen
 
 ## Next capability work
 
-1. Process / persistent Terminal Session Manager.
-2. asynchronous Search.
-3. higher-level Git convenience tools if needed.
-4. MATLAB/Simulink adapters on the plugin layer.
-5. multi-device.
-6. optional GUI / isolated worker.
+The active implementation slice is **Architecture V3-A / 0.4.x — Execution & Agent Foundation**.
+
+1. immutable Execution Context for long-lived execution;
+2. Session Manager separated from host-specific Process Drivers;
+3. LocalPowerShellDriver migration of the current Process Runtime prototype;
+4. Git worktree/session-root Isolation Manager and explicit reconciliation;
+5. generic Agent Runtime + one reference Agent Provider;
+6. V3-A stabilization against the complete Foundation V2 regression baseline.
+
+Asynchronous Search, richer application adapters, Verified Assets, Skills and Orchestrator remain later work and MUST
+NOT bypass or pre-empt these execution-foundation contracts.
 
 ## Working tree
 
@@ -281,9 +286,15 @@ Canonical V3 documents:
 - `docs/adr/ADR-0012-agent-skill-orchestrator.md`
 
 Implementation priority:
-1. Process / persistent Terminal Sessions.
-2. Agent Runtime + reference Provider.
+
+The accepted first delivery slice is defined by
+`docs/architecture/TARGET_ARCHITECTURE_V3A.md`.
+
+1. Execution Context.
+2. Session Manager / Process Driver separation.
 3. worktree/session isolation + reconciliation.
-4. Verified Asset Registry + Meta-Capability.
-5. Skill Runtime.
-6. Orchestrator.
+4. Agent Runtime + reference Provider.
+5. V3-A stabilization.
+6. only then Verified Asset Registry + Meta-Capability.
+7. Skill Runtime.
+8. Orchestrator.

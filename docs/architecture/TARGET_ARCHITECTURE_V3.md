@@ -3,6 +3,7 @@
 Status: target architecture; not fully implemented
 Date: 2026-09-20
 Implemented baseline: Foundation V2
+First implementation slice: TARGET_ARCHITECTURE_V3A.md / 0.4.x
 
 ## Definition
 
@@ -499,18 +500,26 @@ confused with architectural layer ownership.
 
 # Implementation order
 
-V3 SHOULD be implemented incrementally:
+V3 SHOULD be implemented incrementally.
 
-1. Process / persistent Terminal Session primitive.
-2. Agent Runtime contract + one reference Agent Provider.
-3. worktree/session isolation + reconciliation primitive.
-4. Verified Asset Registry.
-5. Meta-Capability binding.
-6. Skill Contract / Registry / Runtime.
-7. Orchestrator task + handoff + parallel/join.
-8. MATLAB stable Meta-Capabilities.
-9. STM32 plugin + Build/Flash/Debug Meta-Capabilities.
-10. advanced multi-device / GUI / isolated Plugin Host as needed.
+The first delivery slice is V3-A, defined normatively in `TARGET_ARCHITECTURE_V3A.md`:
 
-The first five steps strengthen the execution substrate. Skill and Orchestrator should not be built on top of an
-unstable process/session model.
+1. immutable Execution Context;
+2. generic Session Manager;
+3. Process Driver abstraction with LocalPowerShellDriver as the reference implementation;
+4. worktree/session-root Isolation Manager and reconciliation primitive;
+5. Agent Runtime contract + one reference Agent Provider;
+6. V3-A stabilization against the full Foundation V2 regression baseline.
+
+Only after V3-A is stable should implementation proceed to:
+
+7. Verified Asset Registry;
+8. Meta-Capability binding;
+9. Skill Contract / Registry / Runtime;
+10. Orchestrator task + handoff + parallel/join;
+11. MATLAB stable Meta-Capabilities;
+12. STM32 plugin + Build/Flash/Debug Meta-Capabilities;
+13. advanced multi-device / GUI / isolated Plugin Host as needed.
+
+This ordering is intentional: Skills and Orchestrator must not encode assumptions from an unstable execution,
+session, Workspace-context or isolation model.
