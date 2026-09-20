@@ -109,6 +109,29 @@ Regression:
 - full + temporary tool surface is checked for output schemas;
 - representative tools are called and verified to return structured objects.
 
+### Operator Console
+
+V2 local Operator Console is implemented on the `feat/v2-operator-console` branch.
+
+Implemented:
+- independent loopback GUI process on `127.0.0.1:56301`;
+- connect / disconnect / restart controls;
+- GUI survives P05 MCP/Tunnel restart;
+- local token-protected control bridge from MCP runtime to GUI;
+- live Workspace selection;
+- Runtime/Tunnel/MCP/process status;
+- structured Git visibility;
+- Plugin/downstream visibility;
+- persistent Audit/Recovery;
+- memory-only sanitized Live Activity;
+- MCP capability/exposure visibility;
+- one-click local launcher.
+
+Current automated regression:
+- `OPERATOR_CONSOLE_OK (16 checks)`.
+
+Current V2+Operator validation baseline: **599 explicit checks**, plus build/typecheck and downstream smoke.
+
 ### Plugins / Downstream
 
 Application-specific integrations use the Plugin layer.

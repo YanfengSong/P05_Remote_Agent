@@ -97,6 +97,38 @@ A true hard shell boundary requires OS isolation or an external execution/approv
 
 See [Permission Model](docs/architecture/PERMISSION-MODEL.md).
 
+## Operator Console
+
+P05 includes a local browser-based Operator Console for people who do not want to manage the runtime from a terminal.
+
+Default local URL:
+
+    http://127.0.0.1:56301
+
+One-click launcher:
+
+    scripts\Open-P05-Console.cmd
+
+The Console is intentionally independent from the MCP/Tunnel child process. Restarting P05 does not close the GUI.
+
+Current V2 controls and visibility:
+- connect / disconnect / restart;
+- Tunnel and MCP online/readiness state;
+- runtime task / restart broker state;
+- current Workspace and Workspace switching;
+- Workspace path, kind, plugin policy and authorization semantics;
+- device/runtime information and P05-related process roles;
+- structured Git branch/ahead/behind/staged/modified/untracked/conflict status;
+- Plugin and downstream MCP status;
+- persistent Audit and Recovery;
+- memory-only Live Activity with sanitized operation detail;
+- exposed/suppressed MCP tool surface grouped by risk;
+- recent Tunnel log lines.
+
+Live Activity can show safe details such as file paths, Git targets and sanitized shell summaries. Raw file contents, downstream argument payloads and secret-like command parameters are not persisted by the monitor.
+
+The Operator Console and local MCP control bridge bind only to loopback.
+
 ## Runtime / Audit / Recovery
 
 All exposed tools use the common lifecycle:

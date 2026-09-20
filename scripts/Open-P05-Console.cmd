@@ -1,0 +1,1 @@
+@echo off\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-operator.ps1"\r\n

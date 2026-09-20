@@ -7,6 +7,7 @@ import {
   DEFAULT_CAPABILITY_CATALOG,
   type CapabilityCatalog
 } from "../capability/registry.js";
+import { summarizeToolInput } from "../monitor/live-activity.js";
 import type { ExecutionRuntime } from "../runtime/execution.js";
 import {
   assertToolDeclared,
@@ -74,7 +75,8 @@ export function createExposer(
           (handler as unknown as (...innerArgs: unknown[]) => unknown)(...args)
         );
 
-      return runtime ? runtime.run(name, operation) : operation();
+      const liveDetail = summarizeToolInput(name, args[0]);
+      return runtime ? runtime.run(name, operation, liveDetail) : operation();
     };
 
     // Single deliberate erasure boundary: the runtime signature is the SDK's.
