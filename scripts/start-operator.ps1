@@ -1,4 +1,4 @@
-param(
+﻿param(
   [int]$Port = 56301
 )
 
@@ -21,13 +21,12 @@ if (Test-Operator) {
   exit 0
 }
 
-$node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
+$node = $env:P05_NODE_PATH
 if (-not $node) {
-  $fallback = 'D:\Tools\node-v22.23.1-win-x64\node.exe'
-  if (Test-Path $fallback) { $node = $fallback }
+  $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
 }
-if (-not $node) {
-  throw 'Node.js was not found. Install/configure Node before starting P05 Operator Console.'
+if (-not $node -or -not (Test-Path $node)) {
+  throw 'Node.js was not found. Set P05_NODE_PATH or put node.exe on PATH.'
 }
 
 $nodeDir = Split-Path -Parent $node

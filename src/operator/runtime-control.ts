@@ -9,10 +9,10 @@ const execFileAsync = promisify(execFile);
 
 const RUNTIME_TASK = process.env.P05_OPERATOR_RUNTIME_TASK ?? "P05-Runtime";
 const RESTART_TASK = process.env.P05_OPERATOR_RESTART_TASK ?? "P05-RestartBroker";
-const TUNNEL_ALIAS = process.env.P05_OPERATOR_TUNNEL_ALIAS ?? "p05-boonray";
+const TUNNEL_ALIAS = process.env.P05_OPERATOR_TUNNEL_ALIAS ?? "p05";
 const TUNNEL_CLIENT =
   process.env.P05_OPERATOR_TUNNEL_CLIENT ??
-  "D:\\Tools\\tunnel-client\\tunnel-client.exe";
+  "tunnel-client.exe";
 
 const HEALTH_URL_FILE =
   process.env.P05_OPERATOR_HEALTH_URL_FILE ??
@@ -122,7 +122,7 @@ async function processStatus() {
       }
     >(
       `$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |` +
-      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and $_.CommandLine -like '*p05-boonray*') -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*P05_Remote_Agent*') } |` +
+      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and $_.CommandLine -like '*${TUNNEL_ALIAS}*') -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*P05_Remote_Agent*') } |` +
       `Select-Object ProcessId,Name,CreationDate,ExecutablePath,CommandLine;` +
       `@($p)|ConvertTo-Json -Compress`
     );
@@ -449,7 +449,7 @@ export async function restartRuntime() {
 export async function disconnectRuntime() {
   const warnings: string[] = [];
 
-  if (fs.existsSync(TUNNEL_CLIENT)) {
+  if (!path.isAbsolute(TUNNEL_CLIENT) || fs.existsSync(TUNNEL_CLIENT)) {
     try {
       await execFileAsync(
         TUNNEL_CLIENT,

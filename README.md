@@ -258,3 +258,7 @@ New application behavior should extend V3 layers rather than redesign Foundation
 - [ADR-0011 Plugin Framework](docs/adr/ADR-0011-plugin-framework.md)
 - [ADR-0012 Agent / Skill / Asset / Orchestrator Layering](docs/adr/ADR-0012-agent-skill-orchestrator.md)
 - [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)
+
+## Host deployment
+
+Machine-neutral Windows runtime / restart / Operator task deployment is documented in `scripts/deployment/README.md`. Host tasks point only at source-controlled scripts in this repository; machine identity, tunnel alias and executable paths remain machine-local configuration.
