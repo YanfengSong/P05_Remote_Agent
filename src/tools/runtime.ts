@@ -3,24 +3,36 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const RESTART_BROKER_TASK_NAME = "P05-RestartBroker";
+export const DEFAULT_RESTART_BROKER_TASK_NAME = "P05-RestartBroker";
+
+function readOwnEnv(name: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(process.env, name)
+    ? process.env[name]
+    : undefined;
+}
+
+export function restartBrokerTaskName(
+  raw = readOwnEnv("P05_OPERATOR_RESTART_TASK")
+): string {
+  const value = raw?.trim() || DEFAULT_RESTART_BROKER_TASK_NAME;
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(value)) {
+    throw new Error(
+      "P05_OPERATOR_RESTART_TASK must be a simple Scheduled Task name containing only letters, digits, dot, underscore or hyphen."
+    );
+  }
+  return value;
+}
 
 export function runtimeRestartInvocation(): { executable: string; args: readonly string[] } {
   return {
     executable: "schtasks.exe",
-    args: ["/Run", "/TN", RESTART_BROKER_TASK_NAME]
+    args: ["/Run", "/TN", restartBrokerTaskName()]
   };
 }
 
-/**
- * Trigger the pre-provisioned external restart broker.
- *
- * The broker task is installed once by an administrator outside the Agent writable
- * workspace. The MCP caller cannot supply a task name, command, path or arguments.
- * This keeps restart authority external to the self-modifying Agent.
- */
 export async function requestRuntimeRestart(): Promise<string> {
   const invocation = runtimeRestartInvocation();
+  const taskName = invocation.args[2] ?? DEFAULT_RESTART_BROKER_TASK_NAME;
   try {
     await execFileAsync(invocation.executable, [...invocation.args], {
       windowsHide: true,
@@ -29,9 +41,9 @@ export async function requestRuntimeRestart(): Promise<string> {
     });
   } catch {
     throw new Error(
-      "Could not start the external P05 restart broker. Ensure P05-RestartBroker is provisioned and runnable."
+      `Could not start the configured P05 restart broker (${taskName}). Ensure the task is provisioned and runnable.`
     );
   }
 
-  return "RESTART_SCHEDULED: external P05 restart broker started.";
+  return "RESTART_SCHEDULED: configured P05 restart broker started.";
 }

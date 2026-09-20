@@ -130,7 +130,7 @@ Implemented:
 Current automated regression:
 - `OPERATOR_CONSOLE_OK (16 checks)`.
 
-Current V2+Operator validation baseline: **599 explicit checks**, plus build/typecheck and downstream smoke.
+Current V2+Operator validation baseline: **601 explicit checks**, plus build/typecheck and downstream smoke.
 
 ### Plugins / Downstream
 
@@ -214,7 +214,7 @@ Latest full verification:
     ACTION check                  PASS
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            238 checks
+    POLICY_PROFILES_OK            240 checks
     PROFILE_EXPOSURE_OK           162 checks
     TEMP_READONLY_OK              49 checks
     FOUNDATION_OK                 33 checks

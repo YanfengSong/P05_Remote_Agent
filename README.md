@@ -216,7 +216,7 @@ This preserves the rule:
 Latest Foundation V2 validation:
 
     ACTION verify             PASS
-    POLICY_PROFILES_OK        238 checks
+    POLICY_PROFILES_OK        240 checks
     PROFILE_EXPOSURE_OK       162 checks
     TEMP_READONLY_OK          49 checks
     FOUNDATION_OK             33 checks

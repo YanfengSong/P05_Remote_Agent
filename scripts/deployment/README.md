@@ -77,3 +77,24 @@ Invoke-WebRequest http://127.0.0.1:56301/healthz -UseBasicParsing
 - `.env`、`.p05`、Runtime API key 不进 Git；
 - 新增/修改 Windows Scheduled Task 属于主机级持久变更，需要 operator 明确授权；
 - Workspace 授权扩展仍必须单独批准。
+
+
+## Machine-local overrides
+
+The default restart task name is `P05-RestartBroker`. A host with a legacy task ACL or a different broker name may set:
+
+```dotenv
+P05_OPERATOR_RESTART_TASK=P05-RestartBroker-V2
+```
+
+The MCP caller still cannot choose a task name at runtime; only machine-local configuration can select the provisioned broker.
+
+If a host requires a control-plane proxy, keep it in that host's local `.env` rather than in source-controlled scripts:
+
+```dotenv
+CONTROL_PLANE_HTTP_PROXY=http://127.0.0.1:7892
+HTTPS_PROXY=http://127.0.0.1:7892
+HTTP_PROXY=http://127.0.0.1:7892
+```
+
+Machines that do not need a proxy should omit these variables.
