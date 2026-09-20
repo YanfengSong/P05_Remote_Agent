@@ -18,13 +18,20 @@ function containmentProblem(resolved: string): string | undefined {
   return allowed ? undefined : "is outside the allowed roots";
 }
 
+function workspaceContainmentProblem(resolved: string, workspaceRoot: string): string | undefined {
+  const candidate = normalizeForCompare(resolved);
+  const root = normalizeForCompare(workspaceRoot);
+  const inside = candidate === root || candidate.startsWith(root + path.sep);
+  return inside ? undefined : "is outside the active workspace";
+}
+
 /**
  * Refusal messages are returned to a remote client, so they echo the caller's own input
  * and never the resolved path, the process working directory or a link target: those
  * would let the remote enumerate the machine for free.
  */
-export function assertAllowedPath(input: string): string {
-  const resolved = path.resolve(input);
+export function assertAllowedPath(input: string, baseDir = process.cwd()): string {
+  const resolved = path.resolve(baseDir, input);
   const problem = containmentProblem(resolved);
   if (problem) throw new Error(`Path refused: ${input} ${problem}.`);
   return resolved;
@@ -52,10 +59,10 @@ function shapeProblem(input: string): string | undefined {
   return undefined;
 }
 
-export function assertPathShape(input: string, access: Access): string {
+export function assertPathShape(input: string, access: Access, baseDir = process.cwd()): string {
   const problem = shapeProblem(input);
   if (problem) throw new Error(`Path refused for ${access}: ${input} (${problem}).`);
-  return path.resolve(input);
+  return path.resolve(baseDir, input);
 }
 
 /**
@@ -179,8 +186,22 @@ async function resolveRealPath(target: string): Promise<{ real: string; dangling
  * Residual risk, documented rather than papered over: `realpath` cannot see hard links,
  * and a TOCTOU window remains between this check and the caller's open().
  */
-export async function assertAccessiblePath(input: string, access: Access): Promise<string> {
-  const resolved = assertAllowedPath(assertPathShape(input, access));
+export async function assertAccessiblePath(
+  input: string,
+  access: Access,
+  baseDir = process.cwd(),
+  workspaceRoot?: string
+): Promise<string> {
+  // Validate the caller's spelling first, but preserve the original input for containment
+  // errors. Relative paths resolve against the active workspace supplied by the caller.
+  assertPathShape(input, access, baseDir);
+  const resolved = assertAllowedPath(input, baseDir);
+  if (workspaceRoot) {
+    const workspaceProblem = workspaceContainmentProblem(resolved, workspaceRoot);
+    if (workspaceProblem) {
+      throw new Error(`Path refused for ${access}: ${input} (${workspaceProblem}).`);
+    }
+  }
 
   const directReason = protectionReason(resolved);
   if (directReason) throw new Error(`Path refused for ${access}: ${input} (${directReason}).`);
@@ -196,9 +217,18 @@ export async function assertAccessiblePath(input: string, access: Access): Promi
 
   if (normalizeForCompare(real) !== normalizeForCompare(resolved)) {
     const outside = containmentProblem(real);
-    const onProtected = outside ? undefined : protectionReason(real) ?? (access === "write" ? writeProtectionReason(real) : undefined);
-    if (outside || onProtected) {
-      const detail = outside ? "outside the allowed roots" : `onto a protected path (${onProtected})`;
+    const outsideWorkspace = !outside && workspaceRoot
+      ? workspaceContainmentProblem(real, workspaceRoot)
+      : undefined;
+    const onProtected = outside || outsideWorkspace
+      ? undefined
+      : protectionReason(real) ?? (access === "write" ? writeProtectionReason(real) : undefined);
+    if (outside || outsideWorkspace || onProtected) {
+      const detail = outside
+        ? "outside the allowed roots"
+        : outsideWorkspace
+          ? "outside the active workspace"
+          : `onto a protected path (${onProtected})`;
       throw new Error(`Path refused for ${access}: ${input} (a link resolves ${detail}).`);
     }
   }

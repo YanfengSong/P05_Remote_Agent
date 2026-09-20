@@ -1,5 +1,16 @@
 # P05 Remote Agent 执行方案
 
+> **状态：历史路线图 / Historical Roadmap**
+>
+> 本文保留早期任务拆分、旧设备/路径和设计演进记录，不再作为“当前运行事实”的权威来源。
+> 当前状态以仓库根目录 `PROJECT_STATUS.md` 为准；当前权限边界以
+> `docs/architecture/PERMISSION-MODEL.md` 为准；External Restart Broker 见
+> `docs/adr/ADR-0007-external-restart-broker.md`。
+>
+> 2026-09-20 已实现的 developer 基线包括：`apply_patch`、Git 只读检查、
+> 固定 `command_run`、External `runtime_restart`，并完成“修改→构建→测试→自重启→回连验证”
+> 的端到端验收。后续实施不应再从本文“当前立即执行任务 TASK-001”重新开始。
+
 > 目标：逐步构建一套可替代 Remote Desktop Commander 的本地 Remote Agent。  
 > 核心原则：分阶段实现、默认最小权限、GitHub 为唯一真源、优先减少 ChatGPT ↔ 本机工具调用次数。
 

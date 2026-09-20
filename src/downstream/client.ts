@@ -1,7 +1,13 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { VERSION } from "../version.js";
-import type { DownstreamDefinition, DownstreamStatus, DownstreamTool } from "./types.js";
+import {
+  resolveDownstreamTarget,
+  type DownstreamDefinition,
+  type DownstreamStatus,
+  type DownstreamTool,
+  type DownstreamWorkspaceContext
+} from "./types.js";
 
 function inheritedEnv(extra?: Record<string, string>): Record<string, string> {
   const env = Object.fromEntries(
@@ -10,18 +16,6 @@ function inheritedEnv(extra?: Record<string, string>): Record<string, string> {
   return { ...env, ...extra };
 }
 
-/**
- * A connect failure ends up in a response the remote can read (`mcp_status.lastError`,
- * and the error text of `mcp_list_tools` / `mcp_call_tool`), and a raw spawn error carries
- * the absolute command path. Classify it into a short category instead, and keep the
- * real message on the operator's stderr.
- *
- * The classification is deliberately coarse: the transport reports a child that never
- * started as "Connection closed" rather than ENOENT (observed on Windows against a
- * missing executable), so the ENOENT/EACCES branches only fire when the underlying error
- * does survive. The contract is "a short category with no path in it", not a precise
- * diagnosis.
- */
 function describeConnectError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/ENOENT/i.test(message)) return "command not found";
@@ -31,7 +25,6 @@ function describeConnectError(error: unknown): string {
   return "connection failed";
 }
 
-/** The categories above; exported so the exposure test asserts the same closed set. */
 export const CONNECT_ERROR_CATEGORIES = [
   "command not found",
   "access denied",
@@ -45,30 +38,52 @@ export class DownstreamMcpClient {
   private transport?: StdioClientTransport;
   private connected = false;
   private lastError?: string;
+  private bindingKey?: string;
+  private boundWorkspaceId?: string;
 
-  constructor(readonly definition: DownstreamDefinition) {}
+  constructor(
+    readonly definition: DownstreamDefinition,
+    private readonly workspaceContext: () => DownstreamWorkspaceContext
+  ) {}
 
   status(): DownstreamStatus {
+    const binding = this.definition.workspaceBinding ?? "active";
+    let boundWorkspaceId = this.boundWorkspaceId;
+    if (!boundWorkspaceId && binding !== "fixed") {
+      try {
+        boundWorkspaceId = resolveDownstreamTarget(this.definition, this.workspaceContext()).workspaceId;
+      } catch {
+        // Status should remain inspectable even when a target is misconfigured.
+      }
+    }
+
     return {
       id: this.definition.id,
       label: this.definition.label,
+      ...(this.definition.pluginId ? { pluginId: this.definition.pluginId } : {}),
+      available: true,
       enabled: this.definition.enabled,
       configured: Boolean(this.definition.command),
       connected: this.connected,
-      lastError: this.lastError
+      workspaceBinding: binding,
+      ...(boundWorkspaceId ? { boundWorkspaceId } : {}),
+      ...(this.lastError ? { lastError: this.lastError } : {})
     };
   }
 
   async connect(): Promise<void> {
-    if (this.connected) return;
     if (!this.definition.enabled) throw new Error(`${this.definition.id} is disabled.`);
     if (!this.definition.command) throw new Error(`${this.definition.id} command is not configured.`);
+
+    const target = resolveDownstreamTarget(this.definition, this.workspaceContext());
+    if (this.connected && this.bindingKey === target.bindingKey) return;
+    if (this.connected) await this.close();
 
     const client = new Client({ name: "p05-remote-agent", version: VERSION });
     const transport = new StdioClientTransport({
       command: this.definition.command,
       args: this.definition.args ?? [],
-      cwd: this.definition.cwd,
+      cwd: target.cwd,
       env: inheritedEnv(this.definition.env)
     });
 
@@ -77,13 +92,17 @@ export class DownstreamMcpClient {
       this.client = client;
       this.transport = transport;
       this.connected = true;
+      this.bindingKey = target.bindingKey;
+      this.boundWorkspaceId = target.workspaceId;
       this.lastError = undefined;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      // The operator gets the real error; the remote gets the short category.
       console.error(`[p05] downstream "${this.definition.id}" connect failed: ${detail}`);
       await client.close().catch(() => undefined);
       this.lastError = describeConnectError(error);
+      this.connected = false;
+      this.bindingKey = undefined;
+      this.boundWorkspaceId = undefined;
       throw new Error(this.lastError);
     }
   }
@@ -108,5 +127,7 @@ export class DownstreamMcpClient {
     this.client = undefined;
     this.transport = undefined;
     this.connected = false;
+    this.bindingKey = undefined;
+    this.boundWorkspaceId = undefined;
   }
 }

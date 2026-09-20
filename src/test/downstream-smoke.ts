@@ -4,13 +4,18 @@ import { DownstreamMcpClient } from "../downstream/client.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.resolve(here, "../mock/downstream-server.js");
+
 const client = new DownstreamMcpClient({
   id: "mock",
   label: "Smoke Test MCP",
   enabled: true,
   command: process.execPath,
-  args: [serverPath]
-});
+  args: [serverPath],
+  workspaceBinding: "active"
+}, () => ({
+  active: { id: "smoke", root: here },
+  platform: { id: "smoke-platform", root: here }
+}));
 
 try {
   const tools = await client.listTools();

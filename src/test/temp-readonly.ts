@@ -20,14 +20,15 @@ import { VERSION } from "../version.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.resolve(here, "..", "index.js");
 
-// Derived from this file's location: `here` is <repo>/dist/test, so the fixtures land beside the
-// repository on whatever drive it is checked out to - the same rule the exposure test follows.
+// Keep every mutable fixture inside the P05 repository. ROOT is a deliberately smaller
+// allowed-root nested in the workspace; OUTSIDE is a sibling that is outside that test root
+// but still inside the user-authorized P05 workspace.
 const REPO = path.resolve(here, "..", "..");
-const ROOT = path.dirname(REPO);
+const ROOT = path.join(REPO, "_p05_temp_allowed_root");
 const PROBE = path.join(ROOT, "_p05_temp_probe");
-const OUTSIDE = path.join(path.parse(ROOT).root, "_p05_temp_outside");
+const OUTSIDE = path.join(REPO, "_p05_temp_outside_root");
 const JUNCTION = path.join(ROOT, "_p05_temp_junction");
-const OUTSIDE_INI = path.join(path.parse(ROOT).root, "Windows", "win.ini");
+const OUTSIDE_INI = path.join(OUTSIDE, "outside.txt");
 const SECRET_TEXT = "TOP-SECRET-VALUE-DO-NOT-LEAK";
 const BIG_BYTES = 1024 * 1024 + 64 * 1024; // just over the temporary 1 MB cap
 const TEMP_TOOLS = ["list_directory", "read_file"];
@@ -260,26 +261,33 @@ try {
 
   // ---------------------------------------------------------------- TMP-R02: the layer narrows
   {
-    // Temporary root = the repository only, while REMOTE_AGENT_ALLOWED_ROOTS is its parent.
-    // The outer guard accepts the parent's other entries; the temporary root must still refuse.
-    const session = await openSession(childEnv({ P05_TEMP_READONLY_ROOT: REPO }));
+    // For this scenario the outer allowed root is the whole repository, while the
+    // temporary read-only root is the smaller ROOT fixture directory. This proves the
+    // temporary layer can narrow an already-authorized area without widening it.
+    const session = await openSession(childEnv({
+      REMOTE_AGENT_ALLOWED_ROOTS: REPO,
+      REMOTE_AGENT_DEFAULT_CWD: REPO,
+      P05_TEMP_READONLY_ROOT: ROOT
+    }));
     try {
-      const inside = textOf(await session.client.callTool({ name: "read_file", arguments: { path: path.join(REPO, "README.md") } }));
-      check("TMP-R02 narrow: a file inside the temporary root is readable", inside.length > 0);
+      const inside = textOf(await session.client.callTool({
+        name: "read_file",
+        arguments: { path: path.join(PROBE, "normal.txt") }
+      }));
+      check("TMP-R02 narrow: a file inside the temporary root is readable",
+        inside.includes("temporary layer probe"), inside.slice(0, 160));
 
-      const siblingDir = path.join(ROOT, "_p05_deploy");
-      if (await pathExists(siblingDir)) {
-        const sibling = await outcome(() =>
-          session.client.callTool({ name: "list_directory", arguments: { path: siblingDir } }));
-        check("TMP-R02 narrow: a sibling directory inside the allowed roots but outside the temporary root is refused",
-          sibling.failed && sibling.message.includes("temporary read-only root"), sibling.message.slice(0, 240));
-      } else {
-        console.log("note  sibling probe directory is absent; narrowing check used the allowed-root escape instead");
-        const sibling = await outcome(() =>
-          session.client.callTool({ name: "list_directory", arguments: { path: ROOT } }));
-        check("TMP-R02 narrow: the allowed root above the temporary root is refused",
-          sibling.failed && sibling.message.includes("temporary read-only root"), sibling.message.slice(0, 240));
-      }
+      const repoFile = await outcome(() =>
+        session.client.callTool({ name: "read_file", arguments: { path: path.join(REPO, "README.md") } }));
+      check("TMP-R02 narrow: a file inside allowed roots but outside the temporary root is refused",
+        repoFile.failed && repoFile.message.includes("temporary read-only root"),
+        repoFile.message.slice(0, 240));
+
+      const repoList = await outcome(() =>
+        session.client.callTool({ name: "list_directory", arguments: { path: REPO } }));
+      check("TMP-R02 narrow: the allowed root above the temporary root is refused",
+        repoList.failed && repoList.message.includes("temporary read-only root"),
+        repoList.message.slice(0, 240));
     } finally {
       await session.client.close().catch(() => undefined);
     }
@@ -330,4 +338,5 @@ try {
   unlinkJunction();
   await fs.rm(OUTSIDE, { recursive: true, force: true }).catch(() => undefined);
   await fs.rm(PROBE, { recursive: true, force: true }).catch(() => undefined);
+  await fs.rm(ROOT, { recursive: true, force: true }).catch(() => undefined);
 }

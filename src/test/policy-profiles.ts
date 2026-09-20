@@ -19,6 +19,11 @@ import {
   toolDecision,
   toolProfileReport
 } from "../policy/tool-profile.js";
+import { RESTART_BROKER_TASK_NAME, runtimeRestartInvocation } from "../tools/runtime.js";
+
+// Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
+delete process.env.P05_TEMP_READONLY_ROOT;
+delete process.env.REMOTE_AGENT_DEFAULT_CWD;
 
 let checks = 0;
 
@@ -51,11 +56,11 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_read", "fs_list"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
 // mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
 // under "never expose initially" next to shell_run. It sits at `full`.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_list_tools", "mcp_status"];
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "shell_run"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
 for (const spec of TOOL_SPECS) {
@@ -111,6 +116,12 @@ check("DoD: discovery is exactly device_info + ping",
 check("matrix: the generic downstream proxy sits at full", specFor("mcp_call_tool")?.minProfile === "full");
 check("matrix: developer cannot reach the generic downstream proxy", !isToolAllowed("developer", "mcp_call_tool"));
 check("matrix: full can reach the generic downstream proxy", isToolAllowed("full", "mcp_call_tool"));
+check("matrix: developer can reach shell_run", isToolAllowed("developer", "shell_run"));
+check("matrix: readonly cannot reach shell_run", !isToolAllowed("readonly", "shell_run"));
+check("matrix: readonly can inspect workspaces", isToolAllowed("readonly", "workspace_list") && isToolAllowed("readonly", "workspace_current"));
+check("matrix: workspace switch sits at developer", isToolAllowed("developer", "workspace_switch") && !isToolAllowed("readonly", "workspace_switch"));
+check("matrix: activity is readonly", isToolAllowed("readonly", "activity_recent"));
+check("matrix: git mutation profiles", isToolAllowed("developer", "git_add") && isToolAllowed("developer", "git_commit") && isToolAllowed("developer", "git_branch") && !isToolAllowed("developer", "git_push") && isToolAllowed("full", "git_push"));
 
 // Cumulative nesting: each profile is a superset of the one below it.
 for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
@@ -123,12 +134,24 @@ for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
 }
 
 check("decision: a suppressed tool explains the required profile",
-  toolDecision("discovery", "shell_run").reason.includes('"full"'),
+  toolDecision("discovery", "shell_run").reason.includes('"developer"'),
   toolDecision("discovery", "shell_run").reason);
-check("decision: an allowed tool says so", toolDecision("full", "shell_run").allowed);
+check("decision: an allowed tool says so", toolDecision("developer", "shell_run").allowed);
 throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "rm_rf_everything"), "not declared");
-check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
+check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "developer");
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
+
+// ---------------------------------------------------------------- external restart broker
+{
+  const invocation = runtimeRestartInvocation();
+  check("runtime-restart: invocation is fixed to schtasks", invocation.executable === "schtasks.exe", invocation.executable);
+  sameSet("runtime-restart: invocation has only the fixed broker arguments", invocation.args, ["/Run", "/TN", RESTART_BROKER_TASK_NAME]);
+  check("runtime-restart: broker name is fixed", RESTART_BROKER_TASK_NAME === "P05-RestartBroker");
+  const forbiddenBrokerArgs = new Set(["/Create", "/RU", "/RP", "/RL"]);
+  check("runtime-restart: no create/elevate/credential switch is reachable",
+    !invocation.args.some((arg) => forbiddenBrokerArgs.has(arg)),
+    invocation.args.join(" "));
+}
 
 // ---------------------------------------------------------------- dangerous commands
 process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";

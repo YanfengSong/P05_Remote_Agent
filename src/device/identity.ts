@@ -1,16 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
+import { ensureP05StateDir, p05StatePath } from "../state.js";
 
 type StoredIdentity = {
   deviceId: string;
   createdAt: string;
 };
 
-const stateDir = path.resolve(process.env.P05_STATE_DIR ?? path.join(process.cwd(), ".p05"));
-const identityPath = path.join(stateDir, "device.json");
+const stateDir = ensureP05StateDir();
+const identityPath = p05StatePath("device.json");
 const startedAt = new Date().toISOString();
 
 function loadOrCreateStoredIdentity(): StoredIdentity {

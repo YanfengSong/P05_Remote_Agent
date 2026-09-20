@@ -1,90 +1,88 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import * as z from "zod/v4";
+import { AuditStore } from "./audit/store.js";
+import { CAPABILITIES, CapabilityCatalog } from "./capability/registry.js";
 import { config, readOwnEnv } from "./config.js";
-import { matlabDefinition } from "./downstream/matlab.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
 import { registerGatewayTools } from "./gateway-tools.js";
+import { PluginRegistry } from "./plugin/registry.js";
+import { PluginRuntime } from "./plugin/runtime.js";
 import { createExposer, logExposure } from "./policy/expose.js";
 import { resolveToolProfile } from "./policy/tool-profile.js";
+import { BUILTIN_PLUGINS } from "./plugins/builtins.js";
+import { ExecutionRuntime } from "./runtime/execution.js";
+import { p05StatePath } from "./state.js";
+import { registerControlTools } from "./tools/register-control.js";
+import { registerExecutionTools } from "./tools/register-execution.js";
+import { registerFsTools } from "./tools/register-fs.js";
+import { registerGitTools } from "./tools/register-git.js";
+import { registerTemporaryTools } from "./tools/register-temporary.js";
 import { registerDeviceTools } from "./tools/device.js";
-import { listDirectory, readTextFile, writeTextFile } from "./tools/files.js";
-import { runPowerShell } from "./tools/shell.js";
-import { listTempDirectory, readTempFile } from "./tools/temp-readonly.js";
+import { WorkspaceManager, parseWorkspaceRegistry } from "./workspace/manager.js";
 
-// Fail closed: an unknown P05_TOOL_PROFILE aborts startup instead of widening the surface.
 const { profile, profileSource } = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE"));
 
-const registry = new DownstreamRegistry([matlabDefinition]);
-process.once("SIGINT", () => void registry.closeAll().finally(() => process.exit(0)));
-process.once("SIGTERM", () => void registry.closeAll().finally(() => process.exit(0)));
+let activeDownstreamRegistry: DownstreamRegistry | undefined;
+let activePluginRuntime: PluginRuntime | undefined;
+
+async function closeRuntime(): Promise<void> {
+  await Promise.all([
+    activeDownstreamRegistry?.closeAll(),
+    activePluginRuntime?.stopAll()
+  ]);
+}
+
+process.once("SIGINT", () => void closeRuntime().finally(() => process.exit(0)));
+process.once("SIGTERM", () => void closeRuntime().finally(() => process.exit(0)));
 
 serveStdio(() => {
   const server = new McpServer({ name: config.name, version: config.version });
-  const exposer = createExposer(server, profile, profileSource);
+
+  const workspaceManager = new WorkspaceManager(
+    parseWorkspaceRegistry(
+      readOwnEnv("P05_WORKSPACES_JSON"),
+      config.allowedRoots,
+      config.defaultCwd
+    ),
+    readOwnEnv("P05_ACTIVE_WORKSPACE_ID")
+  );
+
+  const pluginRegistry = new PluginRegistry(BUILTIN_PLUGINS);
+  const pluginRuntime = new PluginRuntime(pluginRegistry, workspaceManager);
+  activePluginRuntime = pluginRuntime;
+  void pluginRuntime.startAll();
+
+  const capabilityCatalog = new CapabilityCatalog(CAPABILITIES);
+  capabilityCatalog.registerMany(pluginRegistry.capabilities(), "application plugins");
+
+  const downstreamRegistry = new DownstreamRegistry(
+    pluginRegistry.downstreamDefinitions(),
+    () => ({
+      active: { id: workspaceManager.current().id, root: workspaceManager.currentRoot() },
+      platform: { id: workspaceManager.platform().id, root: workspaceManager.platformRoot() }
+    }),
+    (definition) => pluginRuntime.downstreamAllowed(definition)
+  );
+  activeDownstreamRegistry = downstreamRegistry;
+
+  const auditStore = new AuditStore(200, p05StatePath("audit.json"));
+  const executionRuntime = new ExecutionRuntime(auditStore, () => workspaceManager.current().id, capabilityCatalog);
+  const exposer = createExposer(
+    server,
+    profile,
+    profileSource,
+    executionRuntime,
+    capabilityCatalog
+  );
 
   registerDeviceTools(exposer);
-  registerGatewayTools(exposer, registry);
-
-  exposer.expose("fs_read", {
-    description: "Read a UTF-8 text file inside configured allowed roots.",
-    inputSchema: z.object({ path: z.string().min(1) })
-  }, async ({ path }) => ({ content: [{ type: "text", text: await readTextFile(path) }] }));
-
-  exposer.expose("fs_write", {
-    description: "Create or replace a UTF-8 text file inside configured allowed roots.",
-    inputSchema: z.object({ path: z.string().min(1), content: z.string() })
-  }, async ({ path: targetPath, content }) => {
-    const { bytes } = await writeTextFile(targetPath, content);
-    // Echo the caller's own path: the resolved path is a machine path that stays local.
-    return { content: [{ type: "text", text: `Wrote ${bytes} bytes to ${targetPath}` }] };
-  });
-
-  exposer.expose("fs_list", {
-    description: "List direct children of a directory inside configured allowed roots.",
-    inputSchema: z.object({ path: z.string().min(1) })
-  }, async ({ path }) => ({
-    content: [{ type: "text", text: (await listDirectory(path)).join("\n") }]
-  }));
-
-  exposer.expose("shell_run", {
-    description: "Run PowerShell in an allowed working directory; selected destructive commands are blocked.",
-    inputSchema: z.object({
-      command: z.string().min(1),
-      cwd: z.string().min(1).optional(),
-      timeoutMs: z.number().int().min(1000).max(600000).optional()
-    })
-  }, async ({ command, cwd, timeoutMs }) => {
-    const result = await runPowerShell(command, cwd, timeoutMs);
-    // The caller's own cwd is echoed when supplied; the default working directory is a
-    // machine path and is never disclosed.
-    const header = cwd ? `cwd: ${cwd}\n` : "";
-    return { content: [{ type: "text", text:
-      header + "STDOUT:\n" + result.stdout + "\nSTDERR:\n" + result.stderr
-    }] };
-  });
-
-  // TEMPORARY read-only layer (TMP-R01..TMP-R06, docs/adr/ADR-0006). Both tools are offered
-  // to the exposer unconditionally so visibility is decided in exactly one place: the policy
-  // gate hides them unless P05_TEMP_READONLY_ROOT is set, which leaves the default discovery
-  // surface (device_info + ping) untouched.
-  exposer.expose("list_directory", {
-    description:
-      "TEMPORARY: list direct children of a directory inside the temporary read-only root. " +
-      "This layer is read-only: no write, delete, move or execute tool exists.",
-    inputSchema: z.object({ path: z.string().min(1) })
-  }, async ({ path }) => ({
-    content: [{ type: "text", text: (await listTempDirectory(path)).join("\n") }]
-  }));
-
-  exposer.expose("read_file", {
-    description:
-      "TEMPORARY: read a UTF-8 text file inside the temporary read-only root. " +
-      "1 MB cap; credential-shaped and binary files are refused.",
-    inputSchema: z.object({ path: z.string().min(1) })
-  }, async ({ path }) => ({
-    content: [{ type: "text", text: await readTempFile(path) }]
-  }));
+  registerControlTools(exposer, workspaceManager, auditStore, pluginRuntime);
+  registerFsTools(exposer, workspaceManager);
+  registerGitTools(exposer, workspaceManager);
+  registerExecutionTools(exposer, workspaceManager);
+  registerGatewayTools(exposer, downstreamRegistry);
+  registerTemporaryTools(exposer);
+  pluginRuntime.registerTools(exposer);
 
   logExposure(exposer.report());
   return server;

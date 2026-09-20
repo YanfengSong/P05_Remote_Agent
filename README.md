@@ -1,162 +1,228 @@
 # P05 Remote Agent
 
-A lightweight local-first MCP gateway and Windows execution agent for exposing controlled local capabilities to remote AI clients.
+P05 is a local-first remote engineering Agent for controlled access to a Windows engineering workstation.
 
-## Project goal
+Design target:
 
-P05 Remote Agent provides one stable MCP entry point for:
-- local filesystem / shell / Git capabilities;
-- downstream local MCP servers such as MathWorks MATLAB MCP;
-- future remote access through Streamable HTTP;
-- centralized policy, audit, approval and tool routing.
+**Remote Desktop Commander-like engineering ergonomics + explicit Workspace, policy, lifecycle, audit and plugin architecture.**
 
-The project intentionally avoids becoming a full enterprise MCP platform. It borrows proven patterns from existing open-source gateways while keeping the runtime small enough for a single Windows engineering workstation.
+## Current baseline
 
-## Current status: 0.3.1 — TASK-001 tool profile safety, TASK-002 local startup, pre-merge review fixes, temporary read-only layer
+Version: 0.3.1
+Foundation: **V2**
+Validated: 2026-09-20
+Primary host: Windows + Node.js 22+
 
-Governing plan: [docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md) (Chinese) and
-[docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md) (English).
+The core path is operational:
 
-Implemented:
-- MCP server over stdio;
-- controlled `fs_read`, `fs_write`, `fs_list`, `shell_run`;
-- downstream MCP Client abstraction;
-- downstream registry;
-- MATLAB MCP configuration adapter (opt-in, no default path);
-- generic `mcp_status`, `mcp_list_tools`, `mcp_call_tool`;
-- mock downstream MCP and smoke test;
-- **tool profile layer** (`P05_TOOL_PROFILE`): four profiles, tools registered only
-  when the active profile allows them, unknown value aborts startup;
-- **protected-path policy**: `.git`, `.p05`, credentials and `.env` are refused even
-  inside an allowed root;
-- **path resolution hardening**: UNC / `\\?\` / drive-relative / alternate-data-stream
-  spellings refused, trailing dots and spaces canonicalised, and the resolved real path
-  re-checked so a symlink or junction inside a root cannot escape it;
-- **no machine-specific defaults**: there is no built-in allowed root (an unset
-  `REMOTE_AGENT_ALLOWED_ROOTS` aborts startup), and the MATLAB downstream is opt-in with
-  no default command, args or MATLAB root, so the repository is portable and
-  `.env.example` is publishable;
-- **response hygiene**: no successful response carries a resolved absolute path —
-  `fs_write` echoes the caller's own path, `shell_run` never echoes the default working
-  directory, and downstream failures are reported as short categories rather than raw
-  spawn errors;
-- **unified local startup**: `scripts/start-local.ps1` checks the toolchain, builds,
-  resolves the profile, refuses a busy port and prints the device/profile/MCP/health
-  banner before starting the gateway;
-- **verification pipeline**: `npm run verify` plus `scripts/verify.ps1`.
-- **temporary read-only layer** (`P05_TEMP_READONLY_ROOT`, TMP-R01..TMP-R06, see
-  [docs/adr/ADR-0006](docs/adr/ADR-0006-temporary-readonly-capability.md)): two extra read-only
-  tools, `list_directory` and `read_file`, offered only while that variable names a directory
-  inside `REMOTE_AGENT_ALLOWED_ROOTS`. The variable is an opt-in *gate* checked before the profile
-  rank, so an install that does not set it still exposes exactly `device_info` + `ping`. The tools
-  can only ever narrow what is reachable: every path passes the existing hardened guard first and
-  is then re-checked against the temporary root (real path included), credential-shaped files are
-  refused, reads are capped at 1 MB, and no write, delete, move or execute path exists in that
-  module. It is a stop-gap for remote document review, not the permission model — ADR-0006 records
-  how it is deleted once the Security Broker lands.
+    ChatGPT
+      -> tunnel / MCP
+      -> P05 Agent
+      -> Workspace / Policy
+      -> Runtime
+      -> Files / Git / Shell / Plugins / Downstream MCP
+      -> Audit / Recovery
 
-Next (per the plan; stop after each task):
-- TASK-003 Secure Tunnel integration (`scripts/tunnel/*`);
-- TASK-004 read-only file tools (`fs_search`) and TASK-005 Git tool layer, which
-  complete the `readonly` profile;
-- TASK-006/007 process manager and batch execution for the `developer` profile;
-- TASK-013 purpose-built downstream wrappers, which are what gives `developer` a
-  narrower route to MATLAB than the generic proxy;
-- TASK-010 audit log, TASK-012 approval model.
+P05 can modify, build, test, restart and reconnect to itself through the controlled developer surface.
 
-## Tool exposure
+## Foundation V2
 
-Tools are registered conditionally, not filtered at call time: a tool outside the
-active profile is never advertised, so a remote client cannot discover it through
-`tools/list`.
+The stable foundation contracts are:
 
-| `P05_TOOL_PROFILE` | Tool list |
+- Workspace Context + explicit authorization semantics;
+- exactly one stable `platform-source` workspace;
+- active-workspace confinement for structured tools;
+- single core Capability Catalog;
+- modular tool registration;
+- common execution lifecycle;
+- persistent metadata-only Audit/Recovery;
+- application Plugin architecture;
+- Workspace-aware downstream MCP binding.
+
+Implemented baseline: [Target Architecture V2](docs/architecture/TARGET_ARCHITECTURE_V2.md).
+
+Long-term target: [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md).
+
+V3 adds the generic Agent Runtime, Verified Asset / Meta-Capability system, Skill/Workflow Engine and Orchestrator.
+These are target contracts, not claims that the corresponding runtime modules are already implemented.
+
+## Tool profiles
+
+Profiles are cumulative and fail closed.
+
+| Profile | Main implemented capabilities |
 |---|---|
-| *(unset)* / `discovery` | `device_info`, `ping` |
-| `readonly` | discovery + `fs_read`, `fs_list` |
-| `developer` | readonly + `fs_write`, `mcp_status`, `mcp_list_tools` |
-| `full` | developer + `mcp_call_tool`, `shell_run` |
+| discovery | `device_info`, `ping` |
+| readonly | workspace/activity/recovery/plugin inspection, file read/list, Git status/diff |
+| developer | workspace switch, file write/patch, `git_add`, `git_commit`, `git_branch`, platform validation, restart, downstream discovery, `shell_run` |
+| full | developer + `git_push` + generic `mcp_call_tool` |
 
-`discovery` is the default and `full` must never be the default. An unknown
-`P05_TOOL_PROFILE` aborts startup instead of falling back — see
-[tool exposure policy](docs/architecture/TOOL-PROFILES.md),
-[ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md) and
-[ADR-0005](docs/adr/ADR-0005-machine-neutral-config-and-response-hygiene.md).
+Temporary gated migration tools:
+- `list_directory`
+- `read_file`
 
-The plan assigns more tools to these profiles than exist today (`fs_search`, `git_*`,
-`apply_patch`, `process_*`, `batch_execute`). They are recorded in
-`PLANNED_TOOLS` and are exposed only once implemented — see TASK-004 onwards.
+## Workspace model
 
-`shell_run` and `mcp_call_tool` are **not** constrained capabilities: the first runs an
-unconfined command (it constrains the working directory, not the command), the second
-pipes straight through to whatever a downstream server implements, which for MATLAB
-includes code evaluation. Both stay in `full` and must stay hidden from any remotely
-reachable daemon until the audit log and approval model (TASK-010/TASK-012) exist.
+A Workspace is a registered logical project context, not merely a cwd.
 
-## Architecture
+Every explicit registry must contain exactly one `platform-source` workspace.
 
-```text
-Remote AI Client
-      |
-      | Streamable HTTP (planned)
-      v
-P05 Remote Agent
-  |-- Local Tool Layer
-  |     |-- Filesystem
-  |     |-- PowerShell
-  |     `-- Git (planned)
-  |
-  `-- Downstream MCP Registry
-        |-- MATLAB MCP
-        |-- Playwright MCP (future)
-        `-- other stdio / HTTP MCP servers
-```
+Structured file/Git operations are confined to the active Workspace. An absolute path into another registered Workspace is rejected.
 
-See:
-- [Execution plan (governing)](docs/deployment/P05_REMOTE_AGENT_EXECUTION_PLAN.md)
-- [Execution plan — English](docs/roadmap/REMOTE_AGENT_EXECUTION_PLAN.md)
-- [Gateway comparison](docs/research/mcp-gateway-benchmark.md)
-- [Target architecture](docs/architecture/ARCHITECTURE.md)
-- [Tool exposure policy](docs/architecture/TOOL-PROFILES.md)
-- [ADR-0001](docs/adr/ADR-0001-gateway-architecture.md)
-- [ADR-0002](docs/adr/ADR-0002-repository-source-of-truth.md)
-- [ADR-0003](docs/adr/ADR-0003-tool-profile-policy.md)
-- [ADR-0004](docs/adr/ADR-0004-path-policy-fails-closed.md)
-- [ADR-0005](docs/adr/ADR-0005-machine-neutral-config-and-response-hygiene.md)
+P05 platform validation is different:
 
-## Development
+`command_run(check/build/verify/...)` always targets the platform-source workspace even when a business project is active.
 
-Requires Node.js 22+ (validated on Node 22.23.1).
+## Git mutation
 
-```powershell
-npm install
-npm run verify           # check + build + smoke:downstream + test
-npm run test             # profile tests + downstream smoke
-npm run test:policy      # profile matrix, path guards, command guards (no transport)
-npm run test:exposure    # spawns the server per profile, asserts tools/list
-npm start                # stdio server
-```
+Developer:
+- `git_add`
+- `git_commit`
+- `git_branch` with create/switch/safe delete
 
-Copy `.env.example` to `.env` and fill in the allowed root(s) for this machine — that is
-the only value you must supply. There is no default root: an unset value aborts startup,
-and so does an explicitly empty one. `REMOTE_AGENT_DEFAULT_CWD` may stay blank, in which
-case the working directory is the first allowed root.
+Full:
+- `git_push`
 
-### Local startup
+Push is elevated because it mutates an external remote. The structured tool does not expose force push or arbitrary refspecs.
 
-```powershell
-npm run start:local                      # banner + Streamable HTTP gateway on 127.0.0.1:8765
-npm run start:local -- -Profile readonly # override the profile for this run
-npm run start:local -- -Port 8766        # different port
-npm run start:local -- -Probe            # start, wait for /healthz, report, stop
-npm run verify:win                       # scripts/verify.ps1 summary
-npm run start:http                       # the underlying gateway command, unchanged
-```
+## Shell model
 
-`start-local.ps1` refuses to start when the port is already in use, because a health
-probe answered by a pre-existing listener would otherwise report success for a start
-that never happened.
+`shell_run` is available at developer.
 
-## Repository policy
+Its starting cwd must remain inside the active Workspace, but the PowerShell command itself runs with the paired Windows user's authority.
 
-This repository is the canonical source for project code, design notes, configuration examples, tests and architecture decisions. Generated `dist/`, `node_modules/`, local secrets and logs are not committed.
+This is deliberately a trusted-terminal model, **not a sandbox**.
+
+A true hard shell boundary requires OS isolation or an external execution/approval broker.
+
+See [Permission Model](docs/architecture/PERMISSION-MODEL.md).
+
+## Runtime / Audit / Recovery
+
+All exposed tools use the common lifecycle:
+
+    prepare -> authorize -> execute -> verify -> complete
+                          |
+                          +-> failed -> recovery hint
+
+Audit records include metadata such as:
+- execution id;
+- capability;
+- scope;
+- Workspace id;
+- phase/state;
+- duration;
+- classified error;
+- recovery hint.
+
+They do **not** store raw commands, file contents or tool argument payloads.
+
+Audit state is persisted under the protected P05 state directory. A record left running across an Agent restart becomes `interrupted`.
+
+Inspection tools:
+- `activity_recent`
+- `recovery_status`
+
+## Structured MCP outputs
+
+Core MCP tools advertise `outputSchema` and return matching `structuredContent` while preserving text content for compatibility.
+
+This gives clients typed results such as:
+- Workspace objects/lists;
+- Audit/recovery events;
+- plugin status;
+- file bytes/hash metadata;
+- Git output;
+- shell `stdout/stderr`;
+- downstream MCP status/tool descriptors.
+
+`verify` includes an output-schema regression that fails when a Core tool lacks an object-root output schema.
+
+## Capability and registration model
+
+Core capability metadata has one source of truth:
+
+`src/capability/registry.ts`
+
+Policy consumes that catalog instead of maintaining another metadata table.
+
+`src/index.ts` is assembly/bootstrap only. Tool handlers live in registration modules.
+
+## Application plugins
+
+Application-specific integration does not belong in Agent Core.
+
+P05 has a plugin layer with:
+- manifest/API version;
+- permissions;
+- capabilities;
+- downstream definitions;
+- lifecycle hooks;
+- Workspace plugin allowlists.
+
+MATLAB/Simulink is the first built-in application plugin. P05 Core no longer imports MATLAB-specific configuration or symbols.
+
+Its downstream MCP supports:
+- active Workspace binding;
+- platform Workspace binding;
+- fixed cwd binding.
+
+## Restart broker
+
+`runtime_restart` has no caller-controlled command/path parameters.
+
+It can only request the externally provisioned:
+
+    schtasks.exe /Run /TN P05-RestartBroker
+
+This preserves the rule:
+
+**Self-development is allowed; self-authorization is not.**
+
+## Validation baseline
+
+Latest Foundation V2 validation:
+
+    ACTION verify             PASS
+    POLICY_PROFILES_OK        238 checks
+    PROFILE_EXPOSURE_OK       162 checks
+    TEMP_READONLY_OK          49 checks
+    FOUNDATION_OK             33 checks
+    GIT_MUTATIONS_OK          13 checks
+    PLUGIN_FRAMEWORK_OK       17 checks
+    OUTPUT_SCHEMA_OK          71 checks
+    DOWNSTREAM_SMOKE_OK       PASS
+
+This is 583 explicit assertions/checks, plus build/typecheck and downstream smoke.
+
+## What comes next
+
+Foundation V2 should remain stable while implementation moves toward Target Architecture V3:
+
+1. Process / persistent Terminal Session primitive.
+2. Agent Runtime contract + one reference Agent Provider.
+3. worktree/session isolation and reconciliation.
+4. Verified Asset Registry + Meta-Capability binding.
+5. Skill / Workflow Engine.
+6. Orchestrator task / Handoff / parallel / reconcile.
+7. MATLAB/Simulink stable Meta-Capabilities and Skills.
+8. STM32 plugin and reusable Build/Flash/Debug Meta-Capabilities.
+9. asynchronous Search, multi-device and optional GUI/isolated workers as needed.
+
+New application behavior should extend V3 layers rather than redesign Foundation V2 Core.
+
+## Canonical documents
+
+- [Project Status](PROJECT_STATUS.md)
+- [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
+- [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
+- [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
+- [Permission Model](docs/architecture/PERMISSION-MODEL.md)
+- [Tool Profiles](docs/architecture/TOOL-PROFILES.md)
+- [ADR-0007 External Restart Broker](docs/adr/ADR-0007-external-restart-broker.md)
+- [ADR-0008 Developer Shell Trust Model](docs/adr/ADR-0008-developer-shell-trust-model.md)
+- [ADR-0009 Foundation V1](docs/adr/ADR-0009-foundation-v1.md)
+- [ADR-0010 Foundation V2](docs/adr/ADR-0010-foundation-v2.md)
+- [ADR-0011 Plugin Framework](docs/adr/ADR-0011-plugin-framework.md)
+- [ADR-0012 Agent / Skill / Asset / Orchestrator Layering](docs/adr/ADR-0012-agent-skill-orchestrator.md)
+- [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)

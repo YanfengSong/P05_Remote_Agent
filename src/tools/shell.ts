@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { config } from "../config.js";
-import { assertAccessiblePath, assertPathShape, assertSafeCommand } from "../security.js";
+import { assertAccessiblePath, assertSafeCommand } from "../security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -9,14 +8,15 @@ const execFileAsync = promisify(execFile);
  * Returns stdout/stderr only.
  *
  * The resolved working directory is deliberately not returned: when the caller omits
- * `cwd` it is `config.defaultCwd`, an absolute machine path, and a successful response
+ * `cwd` it is the active workspace root, an absolute machine path, and a successful response
  * that echoed it would hand the remote the agent's own working directory. The caller
  * echoes its own `cwd` argument instead when it supplied one.
  */
 export async function runPowerShell(
   command: string,
-  cwd = config.defaultCwd,
-  timeoutMs = config.shellTimeoutMs
+  workspaceRoot: string,
+  cwd?: string,
+  timeoutMs = 120000
 ): Promise<{ stdout: string; stderr: string }> {
   assertSafeCommand(command);
   // The working directory goes through the same guard as the fs tools. A string-only
@@ -24,7 +24,8 @@ export async function runPowerShell(
   // README's "runs in an allowed working directory" claim then contradicted.
   // Note: this constrains where the command starts, not what it may then write —
   // shell_run is not a sandbox.
-  const safeCwd = await assertAccessiblePath(assertPathShape(cwd, "read"), "read");
+  const requestedCwd = cwd ?? workspaceRoot;
+  const safeCwd = await assertAccessiblePath(requestedCwd, "read", workspaceRoot, workspaceRoot);
   try {
     const { stdout, stderr } = await execFileAsync(
       "powershell.exe",

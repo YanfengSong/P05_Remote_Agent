@@ -19,24 +19,29 @@ import { VERSION } from "../version.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverEntry = path.resolve(here, "..", "index.js");
 
-// Derived from this file's location instead of hardcoded: `here` is <repo>/dist/test, so
-// the fixtures land beside the repository on whatever drive it is checked out to.
+// Keep every destructive test fixture inside the P05 workspace. ROOT is deliberately a
+// smaller allowed-root nested inside the repository, so sibling fixtures still exercise
+// real out-of-root rejection without modifying the host outside this workspace.
 const REPO = path.resolve(here, "..", "..");
-const ROOT = path.dirname(REPO);
+const ROOT = path.join(REPO, "_p05_test_allowed_root");
 const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
+const OUTSIDE_FIXTURES = path.join(REPO, "_p05_test_outside_root");
 const STATE_DIR = path.join(REPO, ".p05");
+
+await fs.mkdir(ROOT, { recursive: true });
+await fs.mkdir(OUTSIDE_FIXTURES, { recursive: true });
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 // TMP-R01: the temporary read-only layer is declared at `discovery` but gated on
 // P05_TEMP_READONLY_ROOT, so with the gate off (the default, and how every other scenario
 // here runs) the surface is still exactly device_info + ping.
 const TEMP_READONLY_TOOLS = ["list_directory", "read_file"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "fs_list", "fs_read"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "mcp_list_tools", "mcp_status"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 // mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
 // reachable, and for MATLAB that includes code evaluation. The plan lists it under
 // "never expose initially" next to shell_run, so it sits at `full`.
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "shell_run"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 const ALL_TOOLS = [...FULL_TOOLS, ...TEMP_READONLY_TOOLS];
 
 let checks = 0;
@@ -133,6 +138,29 @@ for (const scenario of scenarios) {
     const names = tools.map((tool) => tool.name);
     sameSet(`[${scenario.label}] tools/list`, names, scenario.expected);
 
+    if (scenario.profile === "developer") {
+      const restart = tools.find((tool) => tool.name === "runtime_restart");
+      const restartSchema = restart?.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
+      check("runtime_restart schema is present at developer", Boolean(restart));
+      check("runtime_restart schema has no caller-controlled fields",
+        Object.keys(restartSchema?.properties ?? {}).length === 0,
+        JSON.stringify(restartSchema));
+      check("runtime_restart schema has no required arguments",
+        (restartSchema?.required ?? []).length === 0,
+        JSON.stringify(restartSchema));
+
+      const command = tools.find((tool) => tool.name === "command_run");
+      const commandSchema = command?.inputSchema as {
+        properties?: Record<string, { type?: string; enum?: unknown[] }>;
+      } | undefined;
+      const actionSchema = commandSchema?.properties?.action;
+      check("command_run schema is present at developer", Boolean(command));
+      check("command_run action uses a stable string schema", actionSchema?.type === "string", JSON.stringify(commandSchema));
+      check("command_run action schema does not embed the server allowlist",
+        !Array.isArray(actionSchema?.enum),
+        JSON.stringify(actionSchema));
+    }
+
     const reportLine = session.stderrText().split(/\r?\n/).find((line) => line.includes("p05.tool_profile"));
     check(`[${scenario.label}] startup exposure report is emitted on stderr`, Boolean(reportLine));
     const report = JSON.parse(reportLine!) as { profile: string; exposed: string[]; suppressed: { tool: string }[] };
@@ -197,12 +225,12 @@ for (const scenario of scenarios) {
 // ---------------------------------------------------------------- write + real filesystem guards
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
-  const outsideTarget = path.join(path.parse(ROOT).root, "_p05_junction_target");
+  const outsideTarget = path.join(OUTSIDE_FIXTURES, "_p05_junction_target");
   const outsideName = "_p05_junction_target";
   const outlink = path.join(ROOT, "_p05_junction_probe");
   const gitlink = path.join(ROOT, "_p05_git_junction");
   const goneJunction = path.join(ROOT, "_p05_gone_junction");
-  const goneTarget = path.join(path.parse(ROOT).root, "_p05_never_exists");
+  const goneTarget = path.join(OUTSIDE_FIXTURES, "_p05_never_exists");
   const gitDir = path.join(REPO, ".git");
 
   const mklink = (link: string, target: string) => execFileSync("cmd", ["/c", "mklink", "/J", link, target], { stdio: "pipe" });
@@ -382,19 +410,61 @@ for (const scenario of scenarios) {
   console.log("ok  downstream config and errors stay path-free");
 }
 
-// ---------------------------------------------------------------- full-profile shell
+// ------------------------------------------------ platform binding + cross-workspace boundary
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "full" }));
+  const crossProbe = path.join(REPO, "_p05_cross_workspace_probe.txt");
+  await fs.rm(crossProbe, { force: true }).catch(() => undefined);
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "developer",
+    REMOTE_AGENT_ALLOWED_ROOTS: REPO,
+    REMOTE_AGENT_DEFAULT_CWD: REPO,
+    P05_WORKSPACES_JSON: JSON.stringify([
+      { id: "p05", root: REPO, kind: "platform-source", label: "P05" },
+      { id: "business", root: ROOT, kind: "git-project", label: "Business" }
+    ]),
+    P05_ACTIVE_WORKSPACE_ID: "business"
+  }));
+  try {
+    const current = textOf(await session.client.callTool({ name: "workspace_current", arguments: {} }));
+    check("platform binding: business workspace is active", current.includes('"id": "business"'), current.slice(0, 240));
+
+    const crossWrite = await outcome(() =>
+      session.client.callTool({
+        name: "fs_write",
+        arguments: { path: crossProbe, content: "must-not-land" }
+      })
+    );
+    check("workspace boundary: business cannot write platform workspace by absolute path",
+      crossWrite.failed && crossWrite.message.includes("outside the active workspace"),
+      crossWrite.message.slice(0, 240));
+    check("workspace boundary: refused cross-workspace write has no side effect", !(await pathExists(crossProbe)));
+
+    const platformCheck = textOf(await session.client.callTool({
+      name: "command_run",
+      arguments: { action: "check" }
+    }));
+    check("platform binding survives business workspace switch",
+      platformCheck.includes("ACTION check OK"), platformCheck.slice(0, 300));
+  } finally {
+    await fs.rm(crossProbe, { force: true }).catch(() => undefined);
+    await session.client.close().catch(() => undefined);
+  }
+  console.log("ok  platform-source remains fixed while business workspace is active");
+}
+
+// ---------------------------------------------------------------- developer-profile shell
+{
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
   const escapeLink = path.join(ROOT, "_p05_shell_junction");
-  const escapeTarget = path.join(path.parse(ROOT).root, "_p05_shell_target");
+  const escapeTarget = path.join(OUTSIDE_FIXTURES, "_p05_shell_target");
   try {
     const shell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT } });
-    check("full: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
+    check("developer: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
 
     // With no cwd argument the working directory is the configured default, a machine
     // path; a success response must not disclose it.
     const defaultCwdShell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok" } });
-    check("full: shell_run does not disclose the default working directory",
+    check("developer: shell_run does not disclose the default working directory",
       !textOf(defaultCwdShell).includes(ROOT), textOf(defaultCwdShell).slice(0, 200));
 
     // cwd used to be string-checked only, so a junction in the root ran the command outside it.
@@ -406,14 +476,14 @@ for (const scenario of scenarios) {
     const escapedCwd = await outcome(() =>
       session.client.callTool({ name: "shell_run", arguments: { command: "New-Item -ItemType File -Name escaped.txt -Force", cwd: escapeLink } })
     );
-    check("full: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
+    check("developer: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
     check("full: nothing was written outside the roots by shell_run", !(await pathExists(path.join(escapeTarget, "escaped.txt"))));
   } finally {
     try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await session.client.close().catch(() => undefined);
   }
-  console.log("ok  full grants shell_run, and its cwd goes through the same guard");
+  console.log("ok  developer grants shell_run, and its cwd goes through the same guard");
 }
 
 // ------------------------------------------ the documented install path does start
@@ -476,4 +546,7 @@ async function spawnExpectingFailure(env: Record<string, string>): Promise<{ cod
   check("out-of-root cwd explains itself on stderr", failure.stderr.includes("outside the allowed roots"), failure.stderr.split(/\r?\n/)[0]);
 }
 
+await fs.rm(ROOT, { recursive: true, force: true }).catch(() => undefined);
+await fs.rm(OUTSIDE_FIXTURES, { recursive: true, force: true }).catch(() => undefined);
+console.log("ok  workspace-local test fixtures cleaned");
 console.log(`PROFILE_EXPOSURE_OK (${checks} checks)`);
