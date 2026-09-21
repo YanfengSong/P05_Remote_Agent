@@ -2,12 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as z from "zod/v4";
-import type {
-  DownstreamDefinition,
-  DownstreamWorkspaceBinding
-} from "../../downstream/types.js";
-import { PLUGIN_API_VERSION, type ApplicationPlugin } from "../../plugin/types.js";
-import { structuredResult } from "../../tools/result.js";
+import {
+  PLUGIN_API_VERSION,
+  defineDownstream,
+  definePlugin,
+  defineTool,
+  pluginResult,
+  type DownstreamDefinition,
+  type DownstreamWorkspaceBinding,
+  type PluginContext
+} from "../../plugin/api.js";
 import { MatlabSkillCatalog } from "./skills.js";
 
 export type MatlabToolkitDiscovery = {
@@ -197,7 +201,7 @@ export function createMatlabDownstreamDefinition(): DownstreamDefinition {
     throw new Error("MATLAB_MCP_CWD is required when MATLAB_MCP_WORKSPACE_BINDING=fixed.");
   }
 
-  return {
+  return defineDownstream({
     id: "matlab",
     label: "MathWorks MATLAB MCP Server",
     enabled: (process.env.MATLAB_MCP_ENABLED ?? "false").toLowerCase() === "true",
@@ -207,14 +211,107 @@ export function createMatlabDownstreamDefinition(): DownstreamDefinition {
     ...(binding === "fixed" && fixedCwd ? { cwd: fixedCwd } : {}),
     env: windowsRootEnv(),
     requestTimeoutMs: parseRequestTimeoutMs()
-  };
+  });
 }
 
-export const matlabPlugin: ApplicationPlugin = {
+const skillDescriptorSchema = z.object({
+  id: z.string(),
+  source: z.enum(["matlab", "simulink"]),
+  group: z.string(),
+  description: z.string(),
+  version: z.string().optional()
+});
+
+function matlabSkillCatalog(): MatlabSkillCatalog {
+  return new MatlabSkillCatalog(discoverMatlabAgenticToolkit().root);
+}
+
+function matlabDownstream(context: PluginContext) {
+  if (!context.downstream) {
+    throw new Error("MATLAB plugin requires downstream MCP access.");
+  }
+  return context.downstream;
+}
+
+const matlabSkillListTool = defineTool<{
+  source?: "matlab" | "simulink";
+  group?: string;
+  query?: string;
+  limit?: number;
+}>({
+  name: "matlab.skill_list",
+  description: "List or search installed MathWorks MATLAB/Simulink Agentic Toolkit skills.",
+  inputSchema: z.object({
+    source: z.enum(["matlab", "simulink"]).optional(),
+    group: z.string().min(1).optional(),
+    query: z.string().min(1).optional(),
+    limit: z.number().int().min(1).max(200).optional()
+  }),
+  outputSchema: z.object({
+    total: z.number().int().nonnegative(),
+    count: z.number().int().nonnegative(),
+    skills: z.array(skillDescriptorSchema)
+  }),
+  handler: ({ source, group, query, limit }) => {
+    const catalog = matlabSkillCatalog();
+    const skills = catalog.list({ source, group, query, limit });
+    const result = {
+      total: catalog.count(),
+      count: skills.length,
+      skills
+    };
+    return pluginResult(result);
+  }
+});
+
+const matlabSkillReadTool = defineTool<{ id: string }>({
+  name: "matlab.skill_read",
+  description: "Read one installed MathWorks MATLAB/Simulink Agentic Toolkit skill by stable skill id.",
+  inputSchema: z.object({ id: z.string().min(1) }),
+  outputSchema: skillDescriptorSchema.extend({ content: z.string() }),
+  handler: ({ id }) => {
+    const skill = matlabSkillCatalog().read(id);
+    return pluginResult(skill, skill.content);
+  }
+});
+
+const matlabCallTool = defineTool<{
+  tool: string;
+  arguments?: Record<string, unknown>;
+}>({
+  name: "matlab.call_tool",
+  description: "Call one tool on the MathWorks MATLAB MCP Server using the active Workspace binding.",
+  inputSchema: z.object({
+    tool: z.string().min(1),
+    arguments: z.record(z.string(), z.unknown()).optional()
+  }),
+  outputSchema: z.object({ result: z.unknown() }),
+  handler: async ({ tool, arguments: args }, context) => {
+    const downstream = matlabDownstream(context);
+    const workspaceRoot = context.workspace.root();
+    const guardedArgs = guardMatlabWorkspaceArguments(args ?? {}, workspaceRoot);
+
+    if (tool === "evaluate_matlab_code") {
+      if (guardedArgs.project_path === undefined) {
+        guardedArgs.project_path = workspaceRoot;
+      }
+    } else {
+      await downstream.callTool("matlab", "evaluate_matlab_code", {
+        project_path: workspaceRoot,
+        code: "1;"
+      });
+    }
+
+    const result = await downstream.callTool("matlab", tool, guardedArgs);
+    return pluginResult({ result });
+  }
+});
+
+export const matlabPlugin = definePlugin({
   manifest: {
     id: "matlab",
     label: "MATLAB / Simulink",
-    version: "2.1.0",
+    version: "2.2.0",
     apiVersion: PLUGIN_API_VERSION,
     enabled: (process.env.MATLAB_MCP_ENABLED ?? "false").toLowerCase() === "true",
     capabilities: [
@@ -246,70 +343,9 @@ export const matlabPlugin: ApplicationPlugin = {
     }
   },
   downstreamDefinitions: () => [createMatlabDownstreamDefinition()],
-  registerTools: (exposer, context) => {
-    const downstream = context.downstreamRegistry;
-    if (!downstream) throw new Error("MATLAB plugin requires the downstream registry.");
-    const skillCatalog = new MatlabSkillCatalog(discoverMatlabAgenticToolkit().root);
-    const skillDescriptorSchema = z.object({
-      id: z.string(),
-      source: z.enum(["matlab", "simulink"]),
-      group: z.string(),
-      description: z.string(),
-      version: z.string().optional()
-    });
-
-    exposer.expose("matlab.skill_list", {
-      description: "List or search installed MathWorks MATLAB/Simulink Agentic Toolkit skills.",
-      inputSchema: z.object({
-        source: z.enum(["matlab", "simulink"]).optional(),
-        group: z.string().min(1).optional(),
-        query: z.string().min(1).optional(),
-        limit: z.number().int().min(1).max(200).optional()
-      }),
-      outputSchema: z.object({
-        total: z.number().int().nonnegative(),
-        count: z.number().int().nonnegative(),
-        skills: z.array(skillDescriptorSchema)
-      })
-    }, async ({ source, group, query, limit }) => {
-      const skills = skillCatalog.list({ source, group, query, limit });
-      const result = { total: skillCatalog.count(), count: skills.length, skills };
-      return structuredResult(result, JSON.stringify(result, null, 2));
-    });
-
-    exposer.expose("matlab.skill_read", {
-      description: "Read one installed MathWorks MATLAB/Simulink Agentic Toolkit skill by stable skill id.",
-      inputSchema: z.object({ id: z.string().min(1) }),
-      outputSchema: skillDescriptorSchema.extend({ content: z.string() })
-    }, async ({ id }) => {
-      const skill = skillCatalog.read(id);
-      return structuredResult(skill, skill.content);
-    });
-
-    exposer.expose("matlab.call_tool", {
-      description: "Call one tool on the MathWorks MATLAB MCP Server using the active Workspace binding.",
-      inputSchema: z.object({
-        tool: z.string().min(1),
-        arguments: z.record(z.string(), z.unknown()).optional()
-      }),
-      outputSchema: z.object({ result: z.unknown() })
-    }, async ({ tool, arguments: args }) => {
-      const workspaceRoot = context.workspaceManager.currentRoot();
-      const guardedArgs = guardMatlabWorkspaceArguments(args ?? {}, workspaceRoot);
-
-      if (tool === "evaluate_matlab_code") {
-        if (guardedArgs.project_path === undefined) {
-          guardedArgs.project_path = workspaceRoot;
-        }
-      } else {
-        await downstream.callTool("matlab", "evaluate_matlab_code", {
-          project_path: workspaceRoot,
-          code: "1;"
-        });
-      }
-
-      const result = await downstream.callTool("matlab", tool, guardedArgs);
-      return structuredResult({ result }, JSON.stringify(result, null, 2));
-    });
-  }
-};
+  tools: [
+    matlabCallTool,
+    matlabSkillListTool,
+    matlabSkillReadTool
+  ]
+});

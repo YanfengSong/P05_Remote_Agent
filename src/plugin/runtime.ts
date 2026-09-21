@@ -3,6 +3,7 @@ import type { DownstreamRegistry } from "../downstream/registry.js";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type { PluginRegistry } from "./registry.js";
+import type { PluginContext } from "./types.js";
 
 export type PluginState = "disabled" | "ready" | "running" | "failed" | "stopped";
 
@@ -53,9 +54,91 @@ export class PluginRuntime {
     return !definition.pluginId || this.isAllowedForCurrentWorkspace(definition.pluginId);
   }
 
+  private pluginContext(
+    pluginId: string,
+    downstreamRegistry?: DownstreamRegistry
+  ): PluginContext {
+    const ownedDownstreams = new Set(
+      this.registry
+        .downstreamDefinitions()
+        .filter((definition) => definition.pluginId === pluginId)
+        .map((definition) => definition.id)
+    );
+
+    const assertOwnedDownstream = (serverId: string): void => {
+      if (!ownedDownstreams.has(serverId)) {
+        throw new Error(
+          `Plugin "${pluginId}" cannot access downstream MCP "${serverId}" because it does not own it.`
+        );
+      }
+    };
+
+    return {
+      workspace: {
+        current: () => {
+          const current = this.workspaceManager.current();
+          return {
+            id: current.id,
+            root: current.root,
+            kind: current.kind,
+            ...(current.label ? { label: current.label } : {}),
+            platform: current.kind === "platform-source"
+          };
+        },
+        root: () => this.workspaceManager.currentRoot()
+      },
+      ...(downstreamRegistry
+        ? {
+            downstream: {
+              listTools: async (serverId: string) => {
+                assertOwnedDownstream(serverId);
+                return downstreamRegistry.listTools(serverId);
+              },
+              callTool: async (
+                serverId: string,
+                tool: string,
+                args: Record<string, unknown> = {}
+              ) => {
+                assertOwnedDownstream(serverId);
+                return downstreamRegistry.callTool(serverId, tool, args);
+              }
+            }
+          }
+        : {})
+    };
+  }
+
   registerTools(exposer: Exposer, downstreamRegistry?: DownstreamRegistry): void {
     for (const plugin of this.registry.plugins()) {
-      if (!plugin.manifest.enabled || !plugin.registerTools) continue;
+      if (!plugin.manifest.enabled) continue;
+
+      const context = this.pluginContext(
+        plugin.manifest.id,
+        downstreamRegistry
+      );
+
+      for (const tool of plugin.tools ?? []) {
+        (
+          exposer.expose as unknown as (
+            name: string,
+            config: unknown,
+            handler: (args: Record<string, unknown>) => Promise<unknown>
+          ) => void
+        )(
+          tool.name,
+          {
+            ...(tool.description ? { description: tool.description } : {}),
+            ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
+            ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {})
+          },
+          async (args: Record<string, unknown>) => {
+            this.assertAllowedForCurrentWorkspace(plugin.manifest.id);
+            return tool.handler(args ?? {}, context);
+          }
+        );
+      }
+
+      if (!plugin.registerTools) continue;
 
       const guardedExposer: Exposer = {
         expose: ((name: string, config: unknown, handler: (...args: unknown[]) => unknown) => {
