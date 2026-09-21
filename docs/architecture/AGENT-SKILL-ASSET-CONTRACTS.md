@@ -1,33 +1,136 @@
-# P05 V3 — Capability, Agent, Skill, Asset and Run Contracts
+# P05 V3 — Run, Context, Capability, Agent, Skill and Asset Contracts
 
 Status: target contracts for Architecture V3
-Date: 2026-09-20
-Parent: TARGET_ARCHITECTURE_V3.md
+Date: 2026-09-21
+Parent:
+- TARGET_ARCHITECTURE_V3.md
+- CONTEXT-COMPONENT-RUNTIME.md
 
 ## 1. Concept distinctions
 
-- **Run** — durable lifecycle envelope for long-lived work.
-- **Execution Context** — immutable identity/scope captured for an execution.
+- **Context** — live dynamic service-composition scope.
+- **ExecutionContext** — immutable execution/authority snapshot.
+- **Component** — declarative runtime composition unit.
+- **Fiber** — one live Component instance.
+- **Run** — durable lifecycle envelope for long-running work.
 - **Capability** — stable semantic contract describing what can be done.
 - **Capability Binding** — versioned implementation of a Capability.
-- **Plugin** — trusted/isolated extension mechanism contributing implementations/providers.
+- **Plugin Package** — distribution/ownership package containing Components/Assets.
 - **Asset** — reusable versioned implementation/input material.
 - **Artifact** — output produced by a Run.
-- **Agent** — execution actor that receives objectives and uses authorized abilities.
-- **Agent Provider** — concrete adapter implementing the generic Agent Runtime.
+- **Agent** — execution actor that receives objectives.
+- **Agent Provider** — concrete implementation registered into Agent Runtime.
 - **Skill** — reusable bounded declarative workflow.
-- **Task** — top-level coordinated objective/run.
-- **Orchestrator** — deterministic coordinator of Tasks, Skills, Agents, dependencies and reconciliation.
-- **Host Session** — execution container on a host/worker.
-- **Isolation** — allocation that separates mutable work or host authority.
-- **Approval** — durable authorization decision required beyond ordinary policy.
+- **Task** — top-level coordinated objective.
+- **Orchestrator** — deterministic coordinator of Tasks/Skills/Agents.
+- **Host Session** — execution container on a host/Worker.
+- **Work Isolation** — mutable-root collision isolation.
+- **Security Mode** — host/Worker authority-containment mode.
+- **Approval** — durable authorization decision beyond ordinary Policy.
 - **Resource Lease** — durable ownership of a constrained engineering resource.
 
-These concepts MUST NOT be collapsed merely because one implementation can perform multiple roles.
+These concepts may reference each other but MUST NOT be collapsed.
 
-## 2. Common durable Run contract
+## 2. Context vs ExecutionContext
 
-Logical shape:
+### Context
+
+Live composition object.
+
+May carry/resolve:
+
+- Service Keys;
+- Fiber ownership;
+- scope key;
+- interception metadata;
+- dynamic provider view.
+
+May change when:
+
+- configuration changes;
+- provider appears/disappears;
+- Fiber reloads;
+- scope is disposed.
+
+### ExecutionContext
+
+Immutable execution snapshot.
+
+Logical fields:
+
+```ts
+type ExecutionContext = {
+  executionId: string;
+  deviceId: string;
+  workspaceId: string;
+  actor: {
+    type: "interactive" | "agent" | "skill" | "component" | "system";
+    id: string;
+  };
+  parentRunId?: string;
+  taskRunId?: string;
+  skillRunId?: string;
+  agentSessionId?: string;
+  workIsolationId?: string;
+  securityMode: "trusted-host" | "constrained-host" | "isolated-worker";
+  authority: {
+    profile: string;
+    delegatedAuthorityId?: string;
+    approvalState?: string;
+  };
+  trace: {
+    traceId: string;
+    parentSpanId?: string;
+  };
+  capturedAt: string;
+};
+```
+
+Rules:
+
+- Context visibility does not imply authority.
+- ExecutionContext cannot be retargeted by later Workspace switch.
+- child execution derives a new ExecutionContext linked to parent Run.
+- secrets are not embedded.
+
+## 3. Fiber vs Run
+
+### Fiber
+
+Ephemeral live implementation instance.
+
+Owns:
+
+- Component id/version;
+- live Context;
+- config revision;
+- service dependency view;
+- E1 Effects;
+- lifecycle state.
+
+### Run
+
+Durable work record.
+
+Owns:
+
+- durable identity;
+- Run kind;
+- parent/child lineage;
+- immutable ExecutionContext;
+- generic state;
+- cancellation;
+- interruption/recovery;
+- event sequence;
+- trace correlation.
+
+Rule:
+
+> Fiber can disappear while Run remains.
+
+No Task/Skill/Agent durable state may exist only inside a Fiber.
+
+## 4. Durable Run contract
 
 ```ts
 type RunKind =
@@ -44,6 +147,7 @@ type RunState =
   | "RUNNING"
   | "WAITING_INPUT"
   | "WAITING_APPROVAL"
+  | "WAITING_DEPENDENCY"
   | "PAUSED"
   | "RECONCILING"
   | "SUCCEEDED"
@@ -57,6 +161,7 @@ type RunRecord = {
   parentRunId?: string;
   state: RunState;
   context: ExecutionContext;
+  ownerRuntime: string;
   createdAt: string;
   startedAt?: string;
   lastActivityAt: string;
@@ -67,52 +172,144 @@ type RunRecord = {
 };
 ```
 
-Domain runtimes MAY add domain state but MUST use this envelope for durable lifecycle/correlation.
+Domain runtimes add their own state while using this envelope.
 
-## 3. Execution Context contract
-
-Logical fields:
+## 5. Component contract
 
 ```ts
-type ExecutionContext = {
-  executionId: string;
-  deviceId: string;
-  workspaceId: string;
-  actor: {
-    type: "interactive" | "agent" | "plugin" | "skill" | "system";
-    id: string;
-  };
-  parentRunId?: string;
-  taskRunId?: string;
-  skillRunId?: string;
-  agentSessionId?: string;
-  isolationId?: string;
-  authority: {
-    profile: string;
-    delegatedAuthorityId?: string;
-    approvalState?: string;
-  };
-  trace: {
-    traceId: string;
-    parentSpanId?: string;
-  };
-  capturedAt: string;
+type ComponentSpec = {
+  id: string;
+  version: string;
+  apiVersion: string;
+
+  requires: ServiceRequirement[];
+  provides: ServiceProvision[];
+  permissions: PermissionDeclaration[];
+
+  configSchema?: JsonSchema;
 };
 ```
 
 Rules:
 
-- Context is immutable after capture.
-- A later interactive Workspace switch cannot mutate existing Context.
-- Context does not grant authority by itself; Policy evaluates it.
-- Child execution derives a new Context linked to its parent.
-- Sensitive credentials are never embedded in Context.
+- permissions are requests/declarations, not grants;
+- activation waits for required services;
+- runtime registrations are owned by resulting Fiber;
+- Component cannot directly mutate Trust Kernel authority.
 
-## 4. Capability contract
+## 6. Fiber contract
 
-### 4.1 Descriptor
+```ts
+type FiberState =
+  | "DECLARED"
+  | "PENDING"
+  | "ACTIVATING"
+  | "ACTIVE"
+  | "RETIRING"
+  | "DRAINING"
+  | "DISPOSING"
+  | "FAILED"
+  | "DISPOSED";
+```
 
-Logical shape:
+Fiber record includes:
+
+- fiber id;
+- component id/version;
+- parent fiber;
+- Context id;
+- config revision;
+- committed dependency/provider view;
+- effect diagnostics;
+- state;
+- failure;
+- drain status.
+
+Provider retirement removes it from new resolution before disposal.
+
+## 7. Service requirement/provision
+
+```ts
+type ServiceRequirement = {
+  key: string;
+  versionRange: string;
+  optional?: boolean;
+  qualifier?: Record<string, string>;
+};
+
+type ServiceProvision = {
+  key: string;
+  contractVersion: string;
+  qualifier?: Record<string, string>;
+};
+```
+
+Default service semantics:
+
+- one direct provider per Service Key/realm;
+- multi-provider behavior requires a broker/registry service.
+
+## 8. Effect classification
+
+### E0 PURE
+
+No external mutation.
+
+### E1 REVERTIBLE_COMPONENT
+
+Fiber-owned local effect with disposer.
+
+Examples:
+
+- service contribution;
+- Capability Binding registration;
+- Agent Provider registration;
+- event listener;
+- interceptor;
+- timer/watcher.
+
+### E2 MANAGED_RESOURCE
+
+Explicit resource lifecycle and recovery.
+
+Examples:
+
+- worktree;
+- Host Session;
+- process/PTY;
+- Worker allocation;
+- resource lease.
+
+### E3 DURABLE_EXTERNAL
+
+External mutation with verification/idempotency/deduplication/compensation semantics.
+
+Examples:
+
+- file write;
+- git commit;
+- model/project mutation;
+- external API update.
+
+### E4 IRREVERSIBLE_ELEVATED
+
+High-risk/non-reversible action.
+
+Examples:
+
+- git push/release;
+- firmware flash;
+- hardware actuation;
+- host system mutation.
+
+Rules:
+
+- only E1 is automatic Fiber cleanup;
+- E2 belongs to Run/resource manager;
+- E3/E4 use Invocation Ledger;
+- E4 normally requires elevated Policy/Approval.
+
+## 9. Capability contract
 
 ```ts
 type CapabilityEffect =
@@ -133,29 +330,24 @@ type CapabilityDescriptor = {
   scope: string;
   effect: CapabilityEffect;
   verification: VerificationContract;
-  executionModes: ExecutionMode[];
+  executionModes: SecurityMode[];
   resourceRequirements?: ResourceRequirement[];
-  timeoutDefaults?: TimeoutPolicy;
-  tags?: string[];
 };
 ```
 
-### 4.2 Rules
+Rules:
 
-- Capability id is semantic, not an implementation filename.
-- Capability version changes only when the public semantic contract changes incompatibly.
-- Provider/script/tool replacement normally changes Binding version, not Capability id.
-- Every executable Capability declares effect and verification semantics.
-- The Catalog is the single metadata source of truth.
+- Capability id is semantic;
+- contract version changes on semantic incompatibility;
+- implementation replacement changes Binding, not Capability id;
+- effect/verification semantics belong to contract.
 
-## 5. Capability Binding contract
-
-Logical shape:
+## 10. Capability Binding contract
 
 ```ts
 type BindingType =
   | "core"
-  | "plugin-adapter"
+  | "component-adapter"
   | "verified-asset"
   | "agent-backed"
   | "composed";
@@ -166,27 +358,25 @@ type CapabilityBinding = {
   capabilityId: string;
   capabilityVersionRange: string;
   type: BindingType;
-  ownerId: string;
+  ownerFiberId?: string;
+  ownerPackageId?: string;
   implementationRef: string;
   workspaceKinds?: string[];
-  executionModes: ExecutionMode[];
+  securityModes: SecurityMode[];
   softwareConstraints?: SoftwareConstraint[];
-  verificationEvidence?: string[];
-  state: "AVAILABLE" | "DEGRADED" | "DISABLED";
+  state: "AVAILABLE" | "DRAINING" | "DEGRADED" | "DISABLED";
 };
 ```
 
 Rules:
 
-- Resolver selects Binding only after Policy/compatibility checks.
-- Selected Binding id/version is persisted per invocation.
-- Resume/retry does not silently change Binding.
-- A fallback Binding is an explicit recovery decision.
-- Binding cannot widen Capability authority.
+- dynamic Binding registration is E1;
+- resolver selects only authorized compatible ACTIVE Binding;
+- selection records/pins Binding id/version;
+- retiring Binding accepts no new Invocation;
+- fallback Binding requires explicit recovery decision.
 
-## 6. Invocation contract
-
-Every attempt has a durable metadata record:
+## 11. Invocation contract
 
 ```ts
 type InvocationRecord = {
@@ -206,27 +396,39 @@ type InvocationRecord = {
 };
 ```
 
-Retry rules are derived from Capability effect class plus policy.
+Crash ambiguity for non-idempotent external effects becomes UNKNOWN until verified/inspected.
 
-P05 MUST treat crash ambiguity explicitly. If a NON_IDEMPOTENT external operation may have succeeded before the
-crash, recovery state is UNKNOWN until verification/human inspection resolves it.
+## 12. Plugin Package contract
 
-## 7. Asset contract
+Plugin Package contains:
 
-Asset = reusable material, not execution output.
+- package id/version;
+- API compatibility;
+- publisher/trust metadata;
+- Component definitions;
+- Assets;
+- schemas/docs;
+- requested package permissions.
 
-Logical fields:
+Plugin Package is not the live runtime object.
+
+Component/Fiber provide live lifecycle semantics.
+
+## 13. Asset contract
+
+Asset = reusable versioned implementation/input material.
+
+Fields:
 
 - asset id;
 - revision/version;
 - content hash;
-- owner plugin/project;
+- owner package/project;
 - runtime/media type;
-- software/toolchain constraints;
-- input/output schema where executable;
-- verification definition/result;
-- lifecycle state;
-- created/verified metadata.
+- toolchain constraints;
+- schema where executable;
+- verification evidence;
+- lifecycle state.
 
 Lifecycle:
 
@@ -234,170 +436,117 @@ Lifecycle:
 DRAFT -> VERIFIED -> ACTIVE -> DEPRECATED
 ```
 
-Rules:
+Changed content hash requires new revision/reverification.
 
-- changed content hash means a new revision;
-- unverified revision cannot back ACTIVE production Binding;
-- Asset does not make policy decisions;
-- file path is not stable Asset identity;
-- active Binding pins an Asset revision/hash.
+Asset does not decide Policy.
 
-## 8. Artifact contract
+## 14. Artifact contract
 
-Artifact = retained output produced by execution.
+Artifact = output produced by Run.
 
-Logical fields:
+Fields:
 
 - artifact id;
-- producing run/invocation id;
-- artifact type;
+- producing Run/Invocation;
+- type;
 - content hash;
-- content/storage reference;
-- byte size;
+- storage reference;
+- size;
 - media/schema metadata;
 - retention;
-- verification/signature metadata;
-- created timestamp.
+- verification/signature metadata.
 
-Examples:
+Artifact may become Asset only through explicit promotion.
 
-- build binary;
-- test report;
-- patch;
-- firmware image;
-- MATLAB export;
-- generated configuration.
+## 15. Agent Provider contract
 
-Artifact may later be promoted into an Asset only through an explicit verification/promotion flow.
+Provider registration is a Component/Fiber-owned contribution.
 
-## 9. Agent Provider contract
+Provider descriptor may declare:
 
-### 9.1 Provider descriptor
+- interactive terminal required;
+- persistent session;
+- resume/reattach;
+- structured output;
+- tool bridge;
+- supported security modes;
+- toolchain/model constraints.
 
-```ts
-type AgentProviderDescriptor = {
-  id: string;
-  version: string;
-  label: string;
-  capabilities: {
-    interactiveTerminal: boolean;
-    persistentSession: boolean;
-    resumableSession: boolean;
-    structuredOutput: boolean;
-    toolBridge: boolean;
-  };
-  executionModes: ExecutionMode[];
-  softwareConstraints?: SoftwareConstraint[];
-};
-```
-
-### 9.2 Provider operations
-
-Conceptual interface:
+Provider operations conceptually:
 
 ```text
-health()
-start(agentRequest, hostAllocation)
-submit(session, task)
-status(session)
-output(session, cursor)
-stop(session, mode)
-resume(session)       // optional
+health
+start
+submit
+status
+output
+stop
+resume?
 ```
 
-Provider-specific command lines, prompts and transport details stay inside the Provider.
+Provider-specific command/prompt/transport details do not leak into generic Agent contract.
 
-## 10. Agent request and session contract
+## 16. Agent request/session
 
-### 10.1 Agent request
-
-Declares:
+Agent request declares:
 
 - objective;
-- role/requirements;
-- target Workspace/device;
+- role;
+- Workspace/device;
 - read/write intent;
-- required/allowed Capability ids;
-- execution/security mode constraints;
-- time/token/cost budgets where measurable;
+- required/allowed Capabilities;
+- security/work isolation requirements;
+- time/cost/token budget where measurable;
 - output schema;
-- Definition of Done;
-- parent Task/Skill/run;
-- artifact/context refs;
-- optional explicit provider preference.
+- DoD;
+- parent Run/artifacts;
+- optional provider preference.
 
-### 10.2 Agent Session
+Agent Session:
 
-Agent Session fields:
+- has durable Run identity;
+- records provider id/version;
+- references Work Isolation;
+- may own Host Sessions;
+- records output/artifacts/recovery.
 
-- agent session id;
-- Run id;
-- provider id/version;
+Provider Fiber loss does not delete Session record.
+
+## 17. Handoff contract
+
+Bounded Handoff Package:
+
+- source Run;
+- target role;
 - objective;
-- immutable Execution Context;
-- isolation id;
-- capability envelope;
-- Host Session ids;
-- state;
-- output cursor;
-- artifact/result refs;
-- recovery state.
+- context summary;
+- Artifact refs;
+- change refs;
+- unresolved items;
+- constraints;
+- output schema;
+- DoD.
 
-Agent Session is not an MCP session and not a Host Session.
+Full prior conversation is not forwarded by default.
 
-## 11. Handoff contract
+Handoff does not increase authority.
 
-Handoff transfers responsibility/context explicitly.
+## 18. Skill contract
 
-Logical Handoff Package:
+Skill definition includes:
 
-```ts
-type HandoffPackage = {
-  handoffId: string;
-  sourceRunId: string;
-  targetRole: string;
-  objective: string;
-  contextSummary: string;
-  artifactRefs: string[];
-  changeRefs?: string[];
-  unresolvedItems: string[];
-  constraints: string[];
-  requiredOutputSchema?: JsonSchema;
-  definitionOfDone: string[];
-};
-```
+- id/version;
+- description;
+- typed input/output;
+- Capability requirements;
+- Agent requirements;
+- workflow graph;
+- DoD;
+- budgets;
+- recovery;
+- approval points.
 
-Rules:
-
-- full conversation history is not forwarded by default;
-- package must be bounded;
-- Handoff creates lineage;
-- Handoff never increases authority;
-- target Provider is normally late-bound.
-
-## 12. Skill definition contract
-
-Logical shape:
-
-```ts
-type SkillDefinition = {
-  id: string;
-  version: string;
-  description: string;
-  inputSchema: JsonSchema;
-  outputSchema: JsonSchema;
-  capabilityRequirements: CapabilityRequirement[];
-  agentRequirements?: AgentRequirement[];
-  graph: WorkflowGraph;
-  definitionOfDone: CompletionRule[];
-  budgets: BudgetPolicy;
-  recovery: RecoveryPolicy;
-};
-```
-
-Skill version is immutable once ACTIVE.
-
-### Allowed workflow node types
+Allowed nodes:
 
 - capability;
 - agent;
@@ -412,89 +561,56 @@ Skill version is immutable once ACTIVE.
 - fallback;
 - handoff;
 - reconcile;
-- complete;
-- fail.
+- complete/fail/cancel.
 
-Arbitrary executable script/code is not a workflow node type.
+Arbitrary executable code is not a workflow-node type.
 
-## 13. Skill validation contract
+## 19. Skill validation
 
-Activation requires successful static validation.
+Activation checks:
 
-Validator checks:
+1. schemas;
+2. graph reachability;
+3. bounded loops;
+4. Capability version compatibility;
+5. no forbidden provider/path coupling;
+6. retry compatibility with effect class;
+7. Approval requirements;
+8. parallel writer isolation/reconciliation;
+9. output reachability;
+10. DoD/budgets.
 
-1. input/output schemas valid;
-2. graph reachable and terminates structurally;
-3. all loops bounded;
-4. Capability references exist and versions are compatible;
-5. no forbidden implementation filenames/provider commands;
-6. retries compatible with Capability effect class;
-7. required approvals are present;
-8. parallel writers require isolation/reconciliation;
-9. output can be produced;
-10. DoD exists;
-11. budgets/timeouts are finite where required.
+In-flight Skill Run pins Skill version.
 
-## 14. Skill Run contract
+## 20. Task / Orchestrator contract
 
-A Skill Run:
+Task Plan contains:
 
-- is a durable Run;
-- pins Skill version;
-- records step states;
-- records child Run ids;
-- records chosen Bindings/Providers;
-- records verification and approval state;
-- persists enough information to resume deterministically.
-
-In-flight Skill Runs do not silently adopt newer Skill definitions.
-
-## 15. Task / Orchestrator contract
-
-### 15.1 Task Plan
-
-```ts
-type TaskPlan = {
-  taskId: string;
-  objective: string;
-  workspaceConstraints: string[];
-  deviceConstraints?: string[];
-  nodes: TaskNode[];
-  edges: TaskEdge[];
-  budgets: BudgetPolicy;
-  completion: CompletionRule[];
-};
-```
-
-Task nodes may reference:
-
-- Skill;
-- Capability;
-- Agent role;
-- approval;
-- reconcile/join.
-
-### 15.2 Orchestrator guarantees
+- objective;
+- Workspace/device constraints;
+- nodes/edges;
+- Skill/Capability/Agent-role requirements;
+- budgets;
+- approvals;
+- completion rules.
 
 Orchestrator guarantees:
 
 - dependency ordering;
 - bounded parallelism;
 - isolation allocation;
-- lease acquisition/release;
+- resource leases;
 - child Run lineage;
 - explicit retry/fallback;
-- approval waiting;
+- Approval waiting;
 - Handoff persistence;
-- reconciliation before integration;
+- reconciliation;
 - cancellation propagation;
 - completion evaluation.
 
-Orchestrator does NOT guarantee that external effects are reversible.
+Orchestrator cannot make irreversible effects reversible.
 
-## 16. Isolation contract
-
-### 16.1 Work isolation
+## 21. Work Isolation contract
 
 ```ts
 type WorkIsolation = {
@@ -509,20 +625,22 @@ type WorkIsolation = {
 };
 ```
 
-Parallel Git writers default to git-worktree.
+Parallel Git writers default to worktree.
 
-### 16.2 Security execution mode
+## 22. Security Mode contract
 
 ```ts
-type ExecutionMode =
+type SecurityMode =
   | "trusted-host"
   | "constrained-host"
   | "isolated-worker";
 ```
 
-WorkIsolation and ExecutionMode are independent fields.
+Work Isolation and Security Mode are independent.
 
-## 17. Resource lease contract
+Context isolation is neither one.
+
+## 23. Resource Lease contract
 
 ```ts
 type ResourceRequirement =
@@ -531,28 +649,20 @@ type ResourceRequirement =
   | { mode: "bounded"; resource: string; max: number };
 ```
 
-Lease record includes:
+Lease is durable metadata linked to owner Run.
 
-- lease id;
-- resource;
-- owning run;
-- mode;
-- created/expiry;
-- heartbeat/renewal data if used;
-- recovery state.
+Interrupted/expired leases recover conservatively.
 
-Expired/interrupted leases are recovered conservatively.
+## 24. Reconciliation contract
 
-## 18. Reconciliation contract
+Input:
 
-Reconciliation input:
-
-- source isolation/result;
+- source Work Isolation/result;
 - target Workspace;
 - originating Run lineage;
-- change/artifact refs;
-- required verification;
-- expected target/base revision.
+- change/Artifact refs;
+- verification;
+- expected base/target revision.
 
 Result:
 
@@ -564,103 +674,72 @@ REWORK_REQUIRED
 FAILED
 ```
 
-A reconciliation record identifies what was reviewed and what entered the target.
+No parallel writer silently enters target Workspace.
 
-## 19. Approval contract
+## 25. Approval contract
 
-Approval record:
+Approval record contains:
 
 - approval id;
-- requesting run/actor;
-- action digest;
-- description;
+- requesting Run/actor;
+- normalized action digest;
 - Capability/effect/risk;
 - Workspace/device/resource scope;
-- requested at;
-- expiry;
+- requested time/expiry;
 - resolution;
-- resolver identity/source;
-- single-use/bounded authorization token reference where needed.
+- resolver identity/source.
 
-Approval data is durable; credential/secret values are not.
+Approval secrets/credentials are not stored.
 
-## 20. Worker contract
+## 26. Composition scope contract
 
-Worker Provider abstracts a security/execution environment.
+Scopes:
 
-Examples:
+- Root Context;
+- Workspace Context;
+- Agent Context;
+- Run Context;
+- Shadow Context.
 
-- local trusted Windows host;
-- future constrained Windows host;
-- Windows Sandbox;
-- VM/container;
-- remote P05 node.
+Rules:
 
-Conceptual operations:
+- scoped contributions resolve through Context;
+- scope disposal removes owned E1 contributions;
+- scope does not modify durable authority;
+- Shadow Context cannot become live without explicit promotion/reconciliation.
 
-```text
-allocate(request)
-exec(session, request)
-status(session)
-artifacts(session)
-stop(session)
-release(session)
-```
-
-Worker Provider cannot broaden Workspace/Capability authority.
-
-## 21. Protocol adaptation contract
-
-External protocols adapt to the application contracts.
-
-For MCP:
-
-- P05 Run ids remain canonical;
-- MCP Task is optional representation;
-- protocol reconnect does not change Run identity;
-- MRTR/input-required may resolve P05 WAITING_INPUT/WAITING_APPROVAL;
-- trace context maps to P05 trace context;
-- client protocol version does not mutate domain contracts.
-
-## 22. Dependency summary
+## 27. Dependency direction
 
 ```text
+Protocol
+  -> public services
+
 Orchestrator
-  -> Skill Runtime
+  -> Skill
   -> Agent Runtime
   -> Capability Resolver
-  -> Approval / Resource / Isolation
-  -> Run Kernel
-
-Skill Runtime
-  -> Capability Resolver
-  -> Agent Runtime
-  -> Run Kernel
-
-Agent Runtime
-  -> Agent Provider
-  -> Host Session / Isolation
   -> Run Kernel
 
 Capability Resolver
+  -> live Context graph
   -> Binding
-     -> Core / Plugin / Asset / Agent-backed implementation
+      -> Core / Component / Asset / Agent-backed implementation
 
-Everything executable
-  -> Policy
-  -> Execution Runtime
-  -> Audit / Trace
+Component Runtime
+  -> Trust Kernel contracts
+  X cannot override Policy/Approval/Run history
 ```
 
-## 23. Contract-level forbidden couplings
+## 28. Forbidden couplings
 
+- Context -> authority grant.
+- Fiber -> durable Run identity.
 - Skill -> script filename.
 - Skill -> concrete Agent executable.
-- Agent Provider -> policy override.
+- Component -> Policy force-allow.
 - Asset -> authorization.
-- Protocol session -> Run identity.
-- Worktree -> security claim.
-- Orchestrator -> MATLAB/STM32 business logic.
-- Plugin -> arbitrary self-granted host permission.
-- retry -> NON_IDEMPOTENT side effect without recovery decision.
-- Agent handoff -> implicit full-history leakage.
+- Orchestrator -> application-specific MATLAB/STM32 logic.
+- worktree -> sandbox claim.
+- E3/E4 effect -> Fiber auto-disposer.
+- Composition Profile -> Permission Profile elevation.
+- ordinary HMR -> Trust Kernel replacement.

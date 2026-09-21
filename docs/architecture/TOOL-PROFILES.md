@@ -199,3 +199,66 @@ Current expected suites include:
 - downstream MCP smoke test.
 
 See `PROJECT_STATUS.md` for the latest verified counts.
+
+## Architecture V3: Permission Profile vs Composition Profile
+
+V3 introduces declarative Component Profiles/Bundles.
+
+They are intentionally different from this Tool/Permission Profile.
+
+### Permission / Tool Profile
+
+Answers:
+
+> What authority/tool exposure is available to the caller?
+
+Examples:
+
+- discovery;
+- readonly;
+- developer;
+- full.
+
+It is fail-closed and participates in authorization.
+
+### Composition Profile
+
+Answers:
+
+> What Components/services should exist in this deployment or Context?
+
+Example bundles:
+
+- `p05/base`;
+- `apps/matlab`;
+- `agents/coding`;
+- `ui/operator-console`.
+
+Composition configuration may add/remove implementations, but it cannot elevate the active Tool/Permission Profile.
+
+A deployment with a `matlab` Component loaded does not imply permission to execute every MATLAB Capability.
+A `developer` Tool Profile does not imply that every optional Component is installed.
+
+### Scoped presentation vs authority
+
+A V3 Agent Context may restrict or shadow the model-visible tool/capability presentation.
+
+Such scoped composition can narrow or change presentation/implementation.
+
+It does not bypass call-time Core Policy.
+
+The same Capability invocation remains subject to:
+
+- ExecutionContext;
+- Workspace;
+- Tool/Permission Profile;
+- Capability risk/effect class;
+- Approval state;
+- security execution mode.
+
+### Source of truth rule
+
+The semantic Capability Catalog remains canonical.
+
+Dynamic Component/Fiber contributions provide/remove Capability Bindings and presentation layers.
+They do not create a second independent policy registry.

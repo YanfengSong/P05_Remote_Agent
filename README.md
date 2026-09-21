@@ -43,14 +43,21 @@ Implemented baseline: [Target Architecture V2](docs/architecture/TARGET_ARCHITEC
 
 Long-term target: [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md).
 
-V3 technical research: [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md).
+V3 technical research:
+- [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md)
+- [DeepSeek Harness / Cordis Benchmark](docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md)
 
-V3 is the complete target architecture: stateless Protocol Edge, Durable Run Kernel, transactional state, execution
-and isolation substrate, one semantic Capability Catalog with versioned Bindings, Agent Runtime, Verified Assets,
-bounded Skills, deterministic Orchestrator, approvals/resource leases, artifacts and multi-device evolution.
+V3 is now defined as a **two-kernel architecture**:
 
-[Target Architecture V3-A](docs/architecture/TARGET_ARCHITECTURE_V3A.md) is only an implementation slice derived from
-V3; it is not the definition of the target architecture.
+- Trust / Durable Kernel — identity, Workspace authority, immutable ExecutionContext, Policy/Approval, Durable Run,
+  State/Invocation/Audit and security execution modes;
+- Composition Kernel — Context, typed Services, Components/Fibers, structural E1 cleanup, reactive dependencies,
+  scoped composition and declarative graph reconciliation/hot replacement.
+
+Agent, Skill, semantic Capability/Binding, Application and Worker services compose above those kernels.
+
+[Target Architecture V3-A](docs/architecture/TARGET_ARCHITECTURE_V3A.md) remains an implementation slice derived from
+V3; it does not define or narrow the complete target architecture.
 
 ## Tool profiles
 
@@ -158,6 +165,15 @@ Policy consumes that catalog instead of maintaining another metadata table.
 
 Application-specific integration does not belong in Agent Core.
 
+Foundation V2 implements this through Plugins. Architecture V3 refines the model:
+
+- Plugin = package/distribution/ownership;
+- Component = runtime compositional unit;
+- Fiber = one live Component instance.
+
+Dynamic activation/dependency/cleanup belongs to the Composition Kernel, while authorization remains in the
+Trust / Durable Kernel.
+
 P05 has a plugin layer with:
 - manifest/API version;
 - permissions;
@@ -203,26 +219,34 @@ This is 583 explicit assertions/checks, plus build/typecheck and downstream smok
 
 ## Architecture direction
 
-Foundation V2 remains the implemented stable substrate. Architecture V3 is the complete research-backed target and
-defines the contracts that future implementation slices must follow.
+Foundation V2 remains the implemented stable substrate. Architecture V3 is the complete research-backed target.
 
-Key V3 decisions include:
+The next-generation design combines two independent mechanisms:
 
-- MCP is a stateless Protocol Edge, not P05 lifecycle state;
-- one Durable Run Kernel and transactional State Store serve all long-running domains;
-- Process, Terminal, Work Isolation and Security Isolation are separate primitives;
-- one semantic Capability Catalog uses versioned implementation Bindings;
-- Assets, Artifacts, Agents, Skills and Tasks have distinct contracts;
-- ChatGPT provides high-level reasoning while the Orchestrator performs deterministic coordination.
+1. **Durable execution** — Run/State/Invocation/Approval/Audit preserve work and authority across reconnect/restart.
+2. **Dynamic composition** — Context/Component/Fiber/Effect/Coeffect make implementations scoped, dependency-aware,
+   cleanly unloadable and hot-replaceable.
 
-Implementation sequencing is documented in V3/V3-A but does not narrow the target architecture.
+Hard boundaries:
 
+- Context is dynamic composition; ExecutionContext is immutable authority/execution scope.
+- Fiber is a live implementation instance; Run is durable work.
+- only E1 local effects are automatic Fiber cleanup;
+- E2 resources and E3/E4 engineering mutations use durable resource/Capability/Approval semantics;
+- Composition Profiles never imply Permission/Tool Profiles;
+- Trust Kernel modules are excluded from ordinary self-HMR.
+
+DeepSeek Harness/Cordis is used as a technical benchmark for composition semantics, not copied as a security model.
+
+Implementation sequencing is subordinate to these target contracts and should be frozen only after the listed V3 POCs.
 ## Canonical documents
 
 - [Project Status](PROJECT_STATUS.md)
 - [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
+- [Context Component Runtime](docs/architecture/CONTEXT-COMPONENT-RUNTIME.md)
 - [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md)
-- [V3 Capability / Agent / Skill / Asset / Run Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
+- [DeepSeek Harness / Cordis Benchmark](docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md)
+- [V3 Run / Context / Capability / Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
 - [Target Architecture V3-A — implementation slice](docs/architecture/TARGET_ARCHITECTURE_V3A.md)
 - [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
 - [Permission Model](docs/architecture/PERMISSION-MODEL.md)
@@ -238,4 +262,5 @@ Implementation sequencing is documented in V3/V3-A but does not narrow the targe
 - [ADR-0015 Durable Run Kernel and State](docs/adr/ADR-0015-durable-run-kernel-state.md)
 - [ADR-0016 Host Session / Terminal / Isolation](docs/adr/ADR-0016-host-session-terminal-isolation.md)
 - [ADR-0017 Capability Bindings and Assets](docs/adr/ADR-0017-capability-bindings-assets.md)
+- [ADR-0018 Trust Kernel / Context Component Runtime](docs/adr/ADR-0018-trust-kernel-context-component-runtime.md)
 - [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)

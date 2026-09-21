@@ -299,6 +299,44 @@ Canonical V3 documents:
 - `docs/adr/ADR-0016-host-session-terminal-isolation.md`
 - `docs/adr/ADR-0017-capability-bindings-assets.md`
 
+## V3 composition-kernel refinement
+
+The complete V3 target now adds a second, orthogonal runtime mechanism below Agent/Skill/Application layers:
+
+- **Trust / Durable Kernel** — identity, Workspace authority, immutable ExecutionContext, Policy/Approval, Durable Run, State/Invocation/Audit and security execution modes;
+- **Composition Kernel** — Context, typed Service graph, Component/Fiber lifecycle, E1 local-effect ownership, reactive dependencies, scoped composition and graph reconciliation.
+
+Critical boundaries:
+
+- Context is live composition state; ExecutionContext is immutable execution/authority state.
+- Fiber is one live Component instance; Run is durable work.
+- Plugin is package/distribution/ownership; Component is the runtime composition unit.
+- only E1 local effects are automatic Fiber cleanup.
+- E2 resources and E3/E4 engineering mutations remain durable execution/resource effects.
+- provider retirement blocks new selection before bounded drain/quiescence.
+- Composition Profiles/Bundles never imply Permission/Tool Profiles.
+- the Trust/Durable Kernel is excluded from ordinary self-HMR.
+
+DeepSeek Harness/Cordis is the benchmark for Context/Fiber/Effect/reactive-dependency semantics, not a security model copied wholesale.
+
+Additional canonical documents:
+
+- `docs/architecture/CONTEXT-COMPONENT-RUNTIME.md`
+- `docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md`
+- `docs/adr/ADR-0018-trust-kernel-context-component-runtime.md`
+
+Additional composition POCs:
+
+7. typed Context/Service graph with provide/require/isolate/intercept;
+8. Fiber structural cleanup and async drain;
+9. dependency loss/reappearance lifecycle;
+10. Agent/Workspace scoped Capability/Tool contribution layers;
+11. provider hot replacement while durable Run metadata survives;
+12. Shadow Context candidate validation;
+13. declarative Component graph reconciliation;
+14. E1/E2/E3/E4 effect-class enforcement.
+
+V3-A remains an implementation slice derived from the complete V3 target and cannot redefine or narrow these contracts.
 Technical POCs still required before freezing implementation technology:
 
 1. MCP 2026-07-28 + current tunnel/client compatibility;
