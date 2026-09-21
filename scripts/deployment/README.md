@@ -1,107 +1,126 @@
-# P05 Host Deployment
+# P05 Repo-local Deployment
 
-本目录保存 P05 的可版本化主机部署脚本。主机授权状态仍由 Windows Task Scheduler 持有；脚本本身进入 Git。
+P05 is deployed from one Git repository. Runtime binaries, tunnel profiles, logs,
+health files and per-runtime state are machine-local under `<repo>/.p05` and are
+ignored by Git.
 
-## Files
+## Target layout
 
-- `common.ps1`：从 `.env` 和 tunnel-client alias metadata 解析机器本地 Node、tunnel-client、alias、profile、tunnel id、health/log 路径。
-- `run-runtime.ps1`：启动/恢复当前 alias 对应的 Tunnel + P05 stdio MCP。
-- `run-runtime.cmd`：兼容包装器，实际调用 `run-runtime.ps1`。
-- `restart-runtime.ps1`：只停止当前 P05 alias 和 `dist/index.js` MCP，不杀 Operator Console 或其它 Node。
-- `run-operator.ps1`：确保本地 Operator Console 在 loopback 上运行，不自动弹浏览器。
-- `install-host-tasks.ps1`：安装/更新 `P05-Runtime`、`P05-RestartBroker`、`P05-Operator`。
-- `uninstall-host-tasks.ps1`：移除上述三个任务。
-
-## Machine-local .env
-
-至少需要：
-
-```dotenv
-P05_TOOL_PROFILE=developer
-P05_OPERATOR_TUNNEL_ALIAS=<this-machine-alias>
-P05_OPERATOR_RUNTIME_TASK=P05-Runtime
-P05_OPERATOR_RESTART_TASK=P05-RestartBroker
-P05_OPERATOR_TASK=P05-Operator
+```text
+P05_Remote_Agent/
+├─ bootstrap.ps1
+├─ P05-Operator.cmd
+├─ src/
+├─ dist/
+├─ scripts/deployment/
+└─ .p05/
+   ├─ tools/
+   │  ├─ node/
+   │  └─ tunnel-client/
+   ├─ tunnel/
+   │  ├─ profiles/
+   │  ├─ health/
+   │  └─ logs/
+   ├─ runtime-a/state/
+   └─ runtime-b/state/
 ```
 
-当 Node/tunnel-client 不在 PATH 时，增加：
+No Windows Scheduled Task is required by the normal runtime path.
 
-```dotenv
-P05_NODE_PATH=<absolute node.exe>
-P05_OPERATOR_TUNNEL_CLIENT=<absolute tunnel-client.exe>
-```
+## Fresh machine
 
-`CONTROL_PLANE_API_KEY` 不写入 `.env`；deployment 从当前进程或 `HKCU\Environment` 读取。
+Prerequisites:
 
-## Install
+- Windows x64
+- Git
+- PowerShell
+- outbound HTTPS access to Node.js, GitHub/OpenAI and `api.openai.com`
+- two pre-created OpenAI Tunnel IDs, one for `@Boonray-A` and one for `@Boonray-B`
+- one control-plane API key
 
-在已建立 tunnel alias、P05 已 build、`.env` 已配置后：
+Clone the repository, then run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\install-host-tasks.ps1 -StartNow
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-任务语义：
+The script securely prompts for:
 
-- `P05-Runtime`：当前用户登录后延迟 8 秒启动；
-- `P05-Operator`：当前用户登录后延迟 12 秒启动；
-- `P05-RestartBroker`：无自动 trigger，仅由固定 `runtime_restart` / Operator Console 重启按钮调用。
+1. Tunnel ID A
+2. Tunnel ID B
+3. OpenAI control-plane API key
 
-所有 Task Action 必须指向当前 Repo 内 `scripts\deployment\`，不依赖 Repo 外业务脚本。
+By default the outer authorization root is the P05 repository itself. An explicit
+larger authorization perimeter can be supplied with `-AllowedRoots`.
 
-## Verify
+Bootstrap:
 
-检查任务：
+- downloads pinned Node.js and tunnel-client releases;
+- verifies SHA-256 checksums from their published checksum manifests;
+- installs them into `.p05/tools`;
+- creates the Git-ignored machine-local `.env`;
+- runs `npm ci` and `npm run build`;
+- creates repo-local A/B tunnel profiles;
+- creates separate A/B state directories;
+- does **not** start Operator or either Runtime;
+- does **not** install automatic startup.
 
-```powershell
-Get-ScheduledTask -TaskName P05-Runtime,P05-RestartBroker,P05-Operator
+## Daily use
+
+Double-click:
+
+```text
+P05-Operator.cmd
 ```
 
-检查 Operator：
+Operator Console starts from the repo-local Node executable and opens:
 
-```powershell
-Invoke-WebRequest http://127.0.0.1:56301/healthz -UseBasicParsing
+```text
+http://127.0.0.1:56301/
 ```
 
-检查 Tunnel：
+From the GUI:
 
-```powershell
-<tunnel-client> runtimes status <alias> --json
-```
+- Runtime A controls `@Boonray-A`.
+- Runtime B controls `@Boonray-B`.
+- Each Runtime has independent start/stop/restart and Workspace binding.
+- Closing Operator does not stop A or B.
+- Restarting A does not affect B, and vice versa.
 
-最终应满足：Operator Console 持续在线；Runtime restart 时 MCP PID 变化但 Operator PID 不变；Tunnel `ready=true`；ChatGPT Connector 可重新 `ping`。
+Runtime state is persistent under `.p05/runtime-a/state` and
+`.p05/runtime-b/state`. Workspace bindings survive Runtime restart.
 
-## Security boundary
+## Runtime scripts
 
-- Repo 内脚本可以版本管理和自开发；
-- `.env`、`.p05`、Runtime API key 不进 Git；
-- 新增/修改 Windows Scheduled Task 属于主机级持久变更，需要 operator 明确授权；
-- Workspace 授权扩展仍必须单独批准。
+- `launch-runtime.mjs`: one shared P05 launcher; receives slot A or B.
+- `run-runtime-slot.ps1`: starts one repo-local tunnel/runtime.
+- `stop-runtime-slot.ps1`: stops only the selected slot and its child P05 process.
+- `restart-runtime-slot.ps1`: stop + start for one slot.
+- `request-restart-runtime-slot.ps1`: delayed detached restart used by the MCP `runtime_restart` tool.
+- `write-runtime-profiles.ps1`: generates A/B profiles under `.p05/tunnel/profiles`.
+- `run-operator.ps1`: starts Operator directly, without Task Scheduler.
+- `open-operator.ps1`: ensures Operator is running and opens the browser.
 
+The legacy names `run-runtime.ps1`, `run-runtime-b.ps1` and
+`restart-runtime.ps1` are thin wrappers around the slot scripts.
 
-## Machine-local overrides
+## Secrets
 
-The default restart task name is `P05-RestartBroker`. A host with a legacy task ACL or a different broker name may set:
+`.env` and the complete `.p05/` tree are Git-ignored. The tunnel profiles store
+`env:CONTROL_PLANE_API_KEY`, not the key value itself.
 
-```dotenv
-P05_OPERATOR_RESTART_TASK=P05-RestartBroker-V2
-```
+For fresh installs, `bootstrap.ps1` stores the supplied key in the local
+Git-ignored `.env`. Do not commit or share that file.
 
-The MCP caller still cannot choose a task name at runtime; only machine-local configuration can select the provisioned broker.
+## Legacy cleanup
 
-If a host requires a control-plane proxy, keep it in that host's local `.env` rather than in source-controlled scripts:
+Older installations may still have:
 
-```dotenv
-CONTROL_PLANE_HTTP_PROXY=http://127.0.0.1:7892
-HTTPS_PROXY=http://127.0.0.1:7892
-HTTP_PROXY=http://127.0.0.1:7892
-```
+- `D:\Tools\...`
+- `D:\Project_Git\_p05_deploy`
+- tunnel-client profiles under the user profile
+- `P05-Runtime`, `P05-Operator`, or RestartBroker Scheduled Tasks
 
-Machines that do not need a proxy should omit these variables.
-
-
-## State directory stability
-
-P05 no longer derives its default state location from the process working directory. When `P05_STATE_DIR` is not set, the runtime anchors state to `<repo>/.p05`. This keeps device identity and persistent audit/recovery metadata stable whether P05 is launched from Task Scheduler, a terminal, tunnel-client, or another working directory.
-
-Deployment may still set `P05_STATE_DIR=<repo>/.p05` explicitly for clarity.
+The repo-local runtime does not require them. Do not delete legacy paths until the
+repo-local A/B and Operator have been validated on that machine. Cleanup is a
+separate host-level action.

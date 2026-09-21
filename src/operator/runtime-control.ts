@@ -7,34 +7,86 @@ import { p05StateDir } from "../state.js";
 
 const execFileAsync = promisify(execFile);
 
-const RUNTIME_TASK = process.env.P05_OPERATOR_RUNTIME_TASK ?? "P05-Runtime";
-const RESTART_TASK = process.env.P05_OPERATOR_RESTART_TASK ?? "P05-RestartBroker";
-const TUNNEL_ALIAS = process.env.P05_OPERATOR_TUNNEL_ALIAS ?? "p05";
+const P05_ROOT = p05StateDir();
 const TUNNEL_CLIENT =
   process.env.P05_OPERATOR_TUNNEL_CLIENT ??
-  "tunnel-client.exe";
+  path.join(P05_ROOT, "tools", "tunnel-client", "tunnel-client.exe");
+const TUNNEL_PROFILE_DIR =
+  process.env.P05_TUNNEL_PROFILE_DIR ??
+  path.join(P05_ROOT, "tunnel", "profiles");
 
-const HEALTH_URL_FILE =
-  process.env.P05_OPERATOR_HEALTH_URL_FILE ??
-  path.join(
-    os.homedir(),
-    ".local",
-    "state",
-    "tunnel-client",
-    "health",
-    `${TUNNEL_ALIAS}.url`
-  );
+export type RuntimeSlotId = "A" | "B";
 
-const TUNNEL_LOG =
-  process.env.P05_OPERATOR_TUNNEL_LOG ??
-  path.join(
-    os.homedir(),
-    ".local",
-    "state",
-    "tunnel-client",
-    "logs",
-    `${TUNNEL_ALIAS}.log`
+type RuntimeSlotConfig = {
+  id: RuntimeSlotId;
+  connector: string;
+  profileName: string;
+  stateDir: string;
+  healthUrlFile: string;
+  tunnelLog: string;
+};
+
+function slotProfileName(slot: RuntimeSlotId): string {
+  return slot === "A"
+    ? process.env.P05_RUNTIME_A_PROFILE?.trim() || "p05-a"
+    : process.env.P05_RUNTIME_B_PROFILE?.trim() || "p05-b";
+}
+
+function operatorRoot(): string {
+  const override = process.env.P05_OPERATOR_ROOT?.trim();
+  return override ? path.resolve(override) : p05StateDir();
+}
+
+function makeRuntimeSlot(slot: RuntimeSlotId, connector: string): RuntimeSlotConfig {
+  const root = operatorRoot();
+  const lower = slot.toLowerCase();
+  const profileName = slotProfileName(slot);
+  return {
+    id: slot,
+    connector,
+    profileName,
+    stateDir: path.join(root, `runtime-${lower}`, "state"),
+    healthUrlFile: path.join(root, "tunnel", "health", `${profileName}.url`),
+    tunnelLog: path.join(root, "tunnel", "logs", `${profileName}.log`)
+  };
+}
+
+function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
+  return slot === "A"
+    ? makeRuntimeSlot("A", "@Boonray-A")
+    : makeRuntimeSlot("B", "@Boonray-B");
+}
+
+const ACTIVE_WORKSPACE_BINDING_FILE = "active-workspace.txt";
+
+export function persistRuntimeSlotWorkspace(
+  slot: RuntimeSlotId,
+  workspaceId: string
+): void {
+  const id = workspaceId.trim();
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id) || id === "operator-session") {
+    throw new Error("Only a registered Workspace can be bound to a Runtime slot.");
+  }
+  const stateDir = runtimeSlotConfig(slot).stateDir;
+  fs.mkdirSync(stateDir, { recursive: true });
+  const target = path.join(stateDir, ACTIVE_WORKSPACE_BINDING_FILE);
+  const temp = target + ".tmp-" + process.pid;
+  fs.writeFileSync(temp, id + "\n", "utf8");
+  fs.rmSync(target, { force: true });
+  fs.renameSync(temp, target);
+}
+
+export function runtimeSlotWorkspaceBinding(
+  slot: RuntimeSlotId
+): string | undefined {
+  const target = path.join(
+    runtimeSlotConfig(slot).stateDir,
+    ACTIVE_WORKSPACE_BINDING_FILE
   );
+  if (!fs.existsSync(target)) return undefined;
+  const id = fs.readFileSync(target, "utf8").trim();
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id) ? id : undefined;
+}
 
 type BridgeMetadata = {
   version: number;
@@ -122,7 +174,7 @@ async function processStatus() {
       }
     >(
       `$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |` +
-      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and $_.CommandLine -like '*${TUNNEL_ALIAS}*') -or ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*P05_Remote_Agent*') } |` +
+      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
       `Select-Object ProcessId,Name,CreationDate,ExecutablePath,CommandLine;` +
       `@($p)|ConvertTo-Json -Compress`
     );
@@ -151,20 +203,20 @@ async function processStatus() {
   }
 }
 
-async function healthStatus() {
-  if (!fs.existsSync(HEALTH_URL_FILE)) {
+async function healthStatus(urlFile = runtimeSlotConfig("A").healthUrlFile) {
+  if (!fs.existsSync(urlFile)) {
     return {
-      urlFile: HEALTH_URL_FILE,
+      urlFile,
       baseUrl: null,
       live: false,
       ready: false
     };
   }
 
-  const baseUrl = fs.readFileSync(HEALTH_URL_FILE, "utf8").trim();
+  const baseUrl = fs.readFileSync(urlFile, "utf8").trim();
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(baseUrl)) {
     return {
-      urlFile: HEALTH_URL_FILE,
+      urlFile,
       baseUrl,
       live: false,
       ready: false,
@@ -190,7 +242,7 @@ async function healthStatus() {
       fetchText("/readyz")
     ]);
     return {
-      urlFile: HEALTH_URL_FILE,
+      urlFile,
       baseUrl,
       live: health.ok,
       ready: ready.ok,
@@ -199,7 +251,7 @@ async function healthStatus() {
     };
   } catch (error) {
     return {
-      urlFile: HEALTH_URL_FILE,
+      urlFile,
       baseUrl,
       live: false,
       ready: false,
@@ -213,8 +265,7 @@ type BridgeMetadataCandidate = BridgeMetadata & {
   modifiedMs: number;
 };
 
-function bridgeMetadataCandidates(): BridgeMetadataCandidate[] {
-  const stateDir = p05StateDir();
+function bridgeMetadataCandidates(stateDir = runtimeSlotConfig("A").stateDir): BridgeMetadataCandidate[] {
   if (!fs.existsSync(stateDir)) return [];
 
   const candidates: BridgeMetadataCandidate[] = [];
@@ -297,11 +348,11 @@ async function requestBridge(
   return payload;
 }
 
-async function resolveBridge(): Promise<{
+async function resolveBridge(stateDir = runtimeSlotConfig("A").stateDir): Promise<{
   metadata: BridgeMetadata;
   overview: unknown;
 }> {
-  const candidates = bridgeMetadataCandidates();
+  const candidates = bridgeMetadataCandidates(stateDir);
   for (const candidate of candidates) {
     if (!processAlive(candidate.pid)) continue;
     try {
@@ -331,6 +382,32 @@ export async function bridgeRequest(
   const resolved = await resolveBridge();
   if (pathname === "/api/overview" && !init) return resolved.overview;
   return requestBridge(resolved.metadata, pathname, init);
+}
+
+export async function bridgeRequestForSlot(
+  slot: RuntimeSlotId,
+  pathname: string,
+  init?: RequestInit
+): Promise<unknown> {
+  const config = runtimeSlotConfig(slot);
+  const resolved = await resolveBridge(config.stateDir);
+  if (pathname === "/api/overview" && !init) return resolved.overview;
+  return requestBridge(resolved.metadata, pathname, init);
+}
+
+async function bridgeOverviewForStateDir(stateDir: string) {
+  try {
+    const resolved = await resolveBridge(stateDir);
+    return {
+      online: true,
+      data: resolved.overview
+    };
+  } catch (error) {
+    return {
+      online: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 async function bridgeOverview() {
@@ -435,10 +512,13 @@ async function gitStatus(root: string | undefined) {
   }
 }
 
-function logTail(limit = 30): string[] {
-  if (!fs.existsSync(TUNNEL_LOG)) return [];
+function logTail(
+  limit = 30,
+  logFile = runtimeSlotConfig("A").tunnelLog
+): string[] {
+  if (!fs.existsSync(logFile)) return [];
   try {
-    const text = fs.readFileSync(TUNNEL_LOG, "utf8");
+    const text = fs.readFileSync(logFile, "utf8");
     const lines = text.split(/\r?\n/).filter(Boolean);
     return lines.slice(-Math.max(1, Math.min(limit, 100)));
   } catch {
@@ -446,15 +526,57 @@ function logTail(limit = 30): string[] {
   }
 }
 
+export async function runtimeSlotOverview(slot: RuntimeSlotId) {
+  const config = runtimeSlotConfig(slot);
+  const [health, bridge] = await Promise.all([
+    healthStatus(config.healthUrlFile),
+    bridgeOverviewForStateDir(config.stateDir)
+  ]);
+
+  const bridgeData =
+    bridge.online && bridge.data && typeof bridge.data === "object"
+      ? bridge.data as Record<string, unknown>
+      : undefined;
+
+  return {
+    id: config.id,
+    connector: config.connector,
+    tunnelAlias: config.profileName,
+    boundWorkspaceId: runtimeSlotWorkspaceBinding(slot),
+    connected: Boolean(health.ready && bridge.online),
+    health,
+    bridge: {
+      online: bridge.online,
+      ...(bridge.online
+        ? {}
+        : { error: bridge.error })
+    },
+    workspace:
+      bridgeData?.workspace && typeof bridgeData.workspace === "object"
+        ? bridgeData.workspace
+        : undefined,
+    device:
+      bridgeData?.device && typeof bridgeData.device === "object"
+        ? bridgeData.device
+        : undefined
+  };
+}
+
+export async function runtimeSlotsOverview() {
+  const [A, B] = await Promise.all([
+    runtimeSlotOverview("A"),
+    runtimeSlotOverview("B")
+  ]);
+  return { A, B };
+}
+
 export async function operatorOverview() {
-  const [runtimeTask, restartTask, processes, health, bridge] =
-    await Promise.all([
-      taskStatus(RUNTIME_TASK),
-      taskStatus(RESTART_TASK),
-      processStatus(),
-      healthStatus(),
-      bridgeOverview()
-    ]);
+  const [processes, health, bridge, slots] = await Promise.all([
+    processStatus(),
+    healthStatus(),
+    bridgeOverview(),
+    runtimeSlotsOverview()
+  ]);
 
   const bridgeData =
     bridge.online && bridge.data && typeof bridge.data === "object"
@@ -475,8 +597,16 @@ export async function operatorOverview() {
     timestamp: new Date().toISOString(),
     connection: {
       connected: Boolean(health.ready && bridge.online),
-      runtimeTask,
-      restartTask,
+      runtimeTask: {
+        exists: false,
+        name: "manual-slot-a",
+        state: "manual"
+      },
+      restartTask: {
+        exists: false,
+        name: "manual-restart",
+        state: "manual"
+      },
       health,
       bridge: {
         online: bridge.online,
@@ -487,86 +617,140 @@ export async function operatorOverview() {
       processes
     },
     git,
+    slots,
     logTail: logTail(25)
   };
 }
 
-export async function connectRuntime() {
-  await execFileAsync(
-    "schtasks.exe",
-    ["/Run", "/TN", RUNTIME_TASK],
+export async function chooseWorkspaceFolder(): Promise<{ selected: boolean; path?: string }> {
+  if (process.platform !== "win32") {
+    throw new Error("Native folder selection is only available on Windows.");
+  }
+
+  const pickerScript = [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '[System.Windows.Forms.Application]::EnableVisualStyles()',
+    '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+    '$dialog.Description = "选择 MCP 工作目录"',
+    '$dialog.ShowNewFolderButton = $false',
+    '$result = $dialog.ShowDialog()',
+    'if ($result -eq [System.Windows.Forms.DialogResult]::OK) {',
+    '  [System.IO.File]::WriteAllText($env:P05_PICKER_RESULT, $dialog.SelectedPath, [System.Text.Encoding]::UTF8)',
+    '}'
+  ].join("; ");
+  const encodedPicker = Buffer.from(pickerScript, "utf16le").toString("base64");
+  const launcherScript = [
+    '$ErrorActionPreference = "Stop"',
+    '$resultFile = [System.IO.Path]::GetTempFileName()',
+    '$env:P05_PICKER_RESULT = $resultFile',
+    `$picker = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoLogo","-NoProfile","-STA","-EncodedCommand","${encodedPicker}") -WindowStyle Normal -PassThru`,
+    '$picker.WaitForExit()',
+    '$selected = ""',
+    'if (Test-Path -LiteralPath $resultFile) {',
+    '  $selected = [System.IO.File]::ReadAllText($resultFile, [System.Text.Encoding]::UTF8)',
+    '  Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue',
+    '}',
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    '[Console]::Write($selected)'
+  ].join("; ");
+
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", launcherScript],
     {
       windowsHide: true,
-      timeout: 10_000,
+      timeout: 10 * 60 * 1000,
       maxBuffer: 64 * 1024
     }
   );
-  return { ok: true, action: "connect", message: "P05 runtime start requested." };
+  const selectedPath = stdout.trim();
+  return selectedPath
+    ? { selected: true, path: selectedPath }
+    : { selected: false };
+}
+async function runSlotControlScript(
+  scriptName: "run-runtime-slot.ps1" | "stop-runtime-slot.ps1" | "restart-runtime-slot.ps1",
+  slot: RuntimeSlotId
+) {
+  const script = path.resolve(
+    process.cwd(),
+    "scripts",
+    "deployment",
+    scriptName
+  );
+  await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-Slot",
+      slot
+    ],
+    {
+      windowsHide: true,
+      timeout: 45_000,
+      maxBuffer: 256 * 1024
+    }
+  );
+}
+
+export async function connectRuntime() {
+  return connectRuntimeSlot("A");
 }
 
 export async function restartRuntime() {
-  await execFileAsync(
-    "schtasks.exe",
-    ["/Run", "/TN", RESTART_TASK],
-    {
-      windowsHide: true,
-      timeout: 10_000,
-      maxBuffer: 64 * 1024
-    }
-  );
-  return { ok: true, action: "restart", message: "P05 restart broker requested." };
+  return restartRuntimeSlot("A");
 }
 
 export async function disconnectRuntime() {
-  const warnings: string[] = [];
+  return disconnectRuntimeSlot("A");
+}
 
-  if (!path.isAbsolute(TUNNEL_CLIENT) || fs.existsSync(TUNNEL_CLIENT)) {
-    try {
-      await execFileAsync(
-        TUNNEL_CLIENT,
-        ["runtimes", "stop", TUNNEL_ALIAS],
-        {
-          windowsHide: true,
-          timeout: 15_000,
-          maxBuffer: 128 * 1024
-        }
-      );
-    } catch (error) {
-      warnings.push(
-        "Tunnel runtime stop returned an error: " +
-        (error instanceof Error ? error.message : String(error))
-      );
-    }
-  } else {
-    warnings.push("tunnel-client executable was not found.");
-  }
+export async function connectRuntimeSlot(slot: RuntimeSlotId) {
+  await runSlotControlScript("run-runtime-slot.ps1", slot);
+  return {
+    ok: true,
+    action: "connect",
+    slot,
+    message: `Runtime ${slot} connected.`
+  };
+}
 
-  try {
-    await execFileAsync(
-      "schtasks.exe",
-      ["/End", "/TN", RUNTIME_TASK],
-      {
-        windowsHide: true,
-        timeout: 10_000,
-        maxBuffer: 64 * 1024
-      }
-    );
-  } catch {
-    // It may already be stopped.
-  }
-
+export async function disconnectRuntimeSlot(slot: RuntimeSlotId) {
+  await runSlotControlScript("stop-runtime-slot.ps1", slot);
   return {
     ok: true,
     action: "disconnect",
-    message: "P05 disconnect requested.",
-    warnings
+    slot,
+    message: `Runtime ${slot} disconnected.`
+  };
+}
+
+export async function restartRuntimeSlot(slot: RuntimeSlotId) {
+  await runSlotControlScript("restart-runtime-slot.ps1", slot);
+  return {
+    ok: true,
+    action: "restart",
+    slot,
+    message: `Runtime ${slot} restarted.`
   };
 }
 
 export const operatorConfigView = {
-  runtimeTask: RUNTIME_TASK,
-  restartTask: RESTART_TASK,
-  tunnelAlias: TUNNEL_ALIAS,
-  healthUrlFile: HEALTH_URL_FILE,
-  tunnelLog: TUNNEL_LOG
+  mode: "repo-local-manual",
+  tunnelClient: TUNNEL_CLIENT,
+  profileDir: TUNNEL_PROFILE_DIR,
+  runtimeA: {
+    profile: runtimeSlotConfig("A").profileName,
+    stateDir: runtimeSlotConfig("A").stateDir
+  },
+  runtimeB: {
+    profile: runtimeSlotConfig("B").profileName,
+    stateDir: runtimeSlotConfig("B").stateDir
+  }
 };

@@ -19,7 +19,7 @@ import {
   toolDecision,
   toolProfileReport
 } from "../policy/tool-profile.js";
-import { DEFAULT_RESTART_BROKER_TASK_NAME, restartBrokerTaskName, runtimeRestartInvocation } from "../tools/runtime.js";
+import { runtimeRestartInvocation } from "../tools/runtime.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
 delete process.env.P05_TEMP_READONLY_ROOT;
@@ -142,18 +142,31 @@ throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "r
 check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "developer");
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
 
-// ---------------------------------------------------------------- external restart broker
+// ---------------------------------------------------------------- repo-local runtime restart
 {
-  const invocation = runtimeRestartInvocation();
-  check("runtime-restart: invocation is fixed to schtasks", invocation.executable === "schtasks.exe", invocation.executable);
-  sameSet("runtime-restart: default invocation has only broker-run arguments", invocation.args, ["/Run", "/TN", DEFAULT_RESTART_BROKER_TASK_NAME]);
-  check("runtime-restart: default broker remains backward compatible", DEFAULT_RESTART_BROKER_TASK_NAME === "P05-RestartBroker");
-  check("runtime-restart: machine-local broker override is allowed", restartBrokerTaskName("P05-RestartBroker-V2") === "P05-RestartBroker-V2");
-  throws("runtime-restart: invalid broker override is refused", () => restartBrokerTaskName("\\Task\\Escape"), "simple Scheduled Task name");
-  const forbiddenBrokerArgs = new Set(["/Create", "/RU", "/RP", "/RL"]);
-  check("runtime-restart: no create/elevate/credential switch is reachable",
-    !invocation.args.some((arg) => forbiddenBrokerArgs.has(arg)),
-    invocation.args.join(" "));
+  const a = runtimeRestartInvocation("A");
+  const b = runtimeRestartInvocation("B");
+  check("runtime-restart: uses PowerShell", a.executable === "powershell.exe", a.executable);
+  check(
+    "runtime-restart: uses repo-local request script",
+    a.args.some((arg) => /request-restart-runtime-slot\.ps1$/i.test(arg)),
+    a.args.join(" ")
+  );
+  check(
+    "runtime-restart: slot A is fixed",
+    a.args.includes("-Slot") && a.args.includes("A"),
+    a.args.join(" ")
+  );
+  check(
+    "runtime-restart: slot B is fixed",
+    b.args.includes("-Slot") && b.args.includes("B"),
+    b.args.join(" ")
+  );
+  throws(
+    "runtime-restart: invalid slot is refused",
+    () => runtimeRestartInvocation("C"),
+    "must be A or B"
+  );
 }
 
 // ---------------------------------------------------------------- dangerous commands

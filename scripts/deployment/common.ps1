@@ -1,4 +1,4 @@
-# P05 deployment helpers. Machine-local values come from .env and tunnel-client metadata.
+# P05 repo-local deployment helpers.
 Set-StrictMode -Version Latest
 
 function Get-P05RepoRoot {
@@ -25,76 +25,82 @@ function Import-P05DotEnv {
 
 function Import-P05RuntimeKey {
     if ($env:CONTROL_PLANE_API_KEY) { return }
+
+    # Backward-compatible migration fallback. Fresh bootstrap stores the key
+    # in the Git-ignored repo-local .env, so new installs do not require HKCU.
     $reg = Get-ItemProperty -Path 'HKCU:\Environment' -Name 'CONTROL_PLANE_API_KEY' -ErrorAction SilentlyContinue
     if ($reg -and $reg.CONTROL_PLANE_API_KEY) {
         $env:CONTROL_PLANE_API_KEY = [string]$reg.CONTROL_PLANE_API_KEY
     }
     if (-not $env:CONTROL_PLANE_API_KEY) {
-        throw 'CONTROL_PLANE_API_KEY is not available in process or HKCU environment.'
+        throw 'CONTROL_PLANE_API_KEY is unavailable. Run bootstrap.ps1 or set it in .env.'
     }
 }
 
 function Resolve-P05Node {
     param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\node\node.exe'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
     if ($env:P05_NODE_PATH -and (Test-Path -LiteralPath $env:P05_NODE_PATH -PathType Leaf)) {
         return (Resolve-Path $env:P05_NODE_PATH).Path
     }
-    $command = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    throw 'Node.js was not found. Set P05_NODE_PATH in .env or put node.exe on PATH.'
+    throw 'Repo-local Node.js is missing. Run bootstrap.ps1.'
 }
 
 function Resolve-P05TunnelClient {
     param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\tunnel-client\tunnel-client.exe'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
     if ($env:P05_OPERATOR_TUNNEL_CLIENT -and (Test-Path -LiteralPath $env:P05_OPERATOR_TUNNEL_CLIENT -PathType Leaf)) {
         return (Resolve-Path $env:P05_OPERATOR_TUNNEL_CLIENT).Path
     }
-    $command = Get-Command tunnel-client.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    $candidate = Get-ChildItem -LiteralPath $RepoRoot -Filter tunnel-client.exe -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match 'tunnel-client-' } |
-        Select-Object -First 1
-    if ($candidate) { return $candidate.FullName }
-    throw 'tunnel-client.exe was not found. Set P05_OPERATOR_TUNNEL_CLIENT in .env or put it on PATH.'
+    throw 'Repo-local tunnel-client is missing. Run bootstrap.ps1.'
 }
 
-function Get-P05RuntimeMetadata {
-    param([string]$TunnelClient,[string]$Alias)
-    if (-not $Alias) { throw 'P05_OPERATOR_TUNNEL_ALIAS is required in .env.' }
-    $raw = & $TunnelClient runtimes list --json
-    if ($LASTEXITCODE -ne 0) { throw 'tunnel-client runtimes list failed.' }
-    $parsed = $raw | ConvertFrom-Json
-    $entry = @($parsed.aliases) | Where-Object { $_.alias -eq $Alias } | Select-Object -First 1
-    if (-not $entry) { throw "Runtime alias '$Alias' was not found in tunnel-client metadata." }
-    if (-not $entry.tunnel_id) { throw "Runtime alias '$Alias' has no tunnel_id." }
-    if (-not $entry.profile_name) { throw "Runtime alias '$Alias' has no profile_name." }
-    return $entry
-}
-
-function Get-P05DeploymentContext {
-    param([string]$ScriptRoot)
+function Get-P05SlotContext {
+    param(
+        [string]$ScriptRoot,
+        [ValidateSet('A','B')][string]$Slot
+    )
     $repo = Get-P05RepoRoot -ScriptRoot $ScriptRoot
     Import-P05DotEnv -RepoRoot $repo
-    Import-P05RuntimeKey
     $node = Resolve-P05Node -RepoRoot $repo
     $tunnel = Resolve-P05TunnelClient -RepoRoot $repo
-    $alias = $env:P05_OPERATOR_TUNNEL_ALIAS
-    $meta = Get-P05RuntimeMetadata -TunnelClient $tunnel -Alias $alias
-    $state = Join-Path $repo '.p05'
-    $logs = Join-Path $state 'logs'
-    New-Item -ItemType Directory -Path $logs -Force | Out-Null
+    $slotLower = $Slot.ToLowerInvariant()
+    $profileName = if ($Slot -eq 'A') {
+        if ($env:P05_RUNTIME_A_PROFILE) { $env:P05_RUNTIME_A_PROFILE } else { 'p05-a' }
+    } else {
+        if ($env:P05_RUNTIME_B_PROFILE) { $env:P05_RUNTIME_B_PROFILE } else { 'p05-b' }
+    }
+    if ($profileName -notmatch '^[A-Za-z0-9._-]{1,64}$') {
+        throw "Invalid runtime profile name: $profileName"
+    }
+
+    $p05 = Join-Path $repo '.p05'
+    $profileDir = Join-Path $p05 'tunnel\profiles'
+    $healthDir = Join-Path $p05 'tunnel\health'
+    $logDir = Join-Path $p05 'tunnel\logs'
+    $stateDir = Join-Path $p05 ("runtime-$slotLower\state")
+    foreach ($dir in @($profileDir,$healthDir,$logDir,$stateDir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
     return [pscustomobject]@{
+        Slot = $Slot
         RepoRoot = $repo
         Node = $node
         TunnelClient = $tunnel
-        Alias = $alias
-        Profile = [string]$meta.profile_name
-        TunnelId = [string]$meta.tunnel_id
-        ProfileDir = Split-Path -Parent ([string]$meta.profile_path)
-        HealthUrlFile = [string]$meta.health_url_file
-        TunnelLog = Join-Path $env:USERPROFILE ".local\state\tunnel-client\logs\$alias.log"
-        StateDir = $state
-        LogDir = $logs
+        ProfileName = $profileName
+        ProfileDir = $profileDir
+        ProfilePath = Join-Path $profileDir ($profileName + '.yaml')
+        HealthUrlFile = Join-Path $healthDir ($profileName + '.url')
+        TunnelLog = Join-Path $logDir ($profileName + '.log')
+        StateDir = $stateDir
+        Launcher = Join-Path $repo 'scripts\deployment\launch-runtime.mjs'
         McpEntry = Join-Path $repo 'dist\index.js'
         EnvFile = Join-Path $repo '.env'
     }

@@ -27,6 +27,13 @@ import {
   WorkspaceManager,
   parseWorkspaceRegistry
 } from "./workspace/manager.js";
+import {
+  loadPersistentWorkspaceEntries,
+  mergePersistentWorkspaces,
+  savePersistentWorkspaceEntries,
+  toPersistentWorkspaceEntry,
+  type PersistentWorkspaceEntry
+} from "./workspace/persistence.js";
 
 const { profile, profileSource } = resolveToolProfile(
   readOwnEnv("P05_TOOL_PROFILE")
@@ -59,14 +66,38 @@ serveStdio(() => {
     version: config.version
   });
 
+  const configuredWorkspaces = parseWorkspaceRegistry(
+    readOwnEnv("P05_WORKSPACES_JSON"),
+    config.allowedRoots,
+    config.defaultCwd
+  );
+  const persistentWorkspacePath = p05StatePath("workspaces.json");
+  let persistentWorkspaceEntries: PersistentWorkspaceEntry[] =
+    loadPersistentWorkspaceEntries(persistentWorkspacePath);
   const workspaceManager = new WorkspaceManager(
-    parseWorkspaceRegistry(
-      readOwnEnv("P05_WORKSPACES_JSON"),
+    mergePersistentWorkspaces(
+      configuredWorkspaces,
+      persistentWorkspaceEntries,
       config.allowedRoots,
       config.defaultCwd
     ),
     readOwnEnv("P05_ACTIVE_WORKSPACE_ID")
   );
+
+  const persistWorkspace = (workspace: Parameters<typeof toPersistentWorkspaceEntry>[0]): void => {
+    const nextEntries = [
+      ...persistentWorkspaceEntries,
+      toPersistentWorkspaceEntry(workspace)
+    ];
+    mergePersistentWorkspaces(
+      configuredWorkspaces,
+      nextEntries,
+      config.allowedRoots,
+      config.defaultCwd
+    );
+    savePersistentWorkspaceEntries(persistentWorkspacePath, nextEntries);
+    persistentWorkspaceEntries = nextEntries;
+  };
 
   const pluginRegistry = new PluginRegistry(BUILTIN_PLUGINS);
   const pluginRuntime = new PluginRuntime(
@@ -129,7 +160,7 @@ serveStdio(() => {
   registerExecutionTools(exposer, workspaceManager);
   registerGatewayTools(exposer, downstreamRegistry);
   registerTemporaryTools(exposer);
-  pluginRuntime.registerTools(exposer);
+  pluginRuntime.registerTools(exposer, downstreamRegistry);
 
   const exposureReport = exposer.report();
   logExposure(exposureReport);
@@ -143,7 +174,9 @@ serveStdio(() => {
     liveActivity,
     exposure: () => exposer.report(),
     profile,
-    profileSource
+    profileSource,
+    allowedRoots: config.allowedRoots,
+    persistWorkspace
   }).then((bridge) => {
     activeLocalControlBridge = bridge;
     process.stderr.write(

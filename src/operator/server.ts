@@ -2,11 +2,17 @@ import http from "node:http";
 import { randomBytes } from "node:crypto";
 import {
   bridgeRequest,
+  bridgeRequestForSlot,
+  chooseWorkspaceFolder,
   connectRuntime,
+  connectRuntimeSlot,
   disconnectRuntime,
+  disconnectRuntimeSlot,
   operatorConfigView,
   operatorOverview,
-  restartRuntime
+  persistRuntimeSlotWorkspace,
+  restartRuntime,
+  restartRuntimeSlot
 } from "./runtime-control.js";
 import { operatorPage } from "./ui.js";
 
@@ -183,6 +189,16 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/operator/shutdown") {
+      json(response, 200, {
+        ok: true,
+        action: "shutdown",
+        message: "Operator Console shutdown requested."
+      });
+      setTimeout(() => close("operator-ui"), 100);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/status") {
       const overview = await operatorOverview();
       settleAction(overview);
@@ -215,6 +231,94 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const slotActionMatch = url.pathname.match(/^\/api\/slot\/(A|B)\/action\/(connect|disconnect|restart)$/);
+    if (request.method === "POST" && slotActionMatch) {
+      const slot = slotActionMatch[1] as "A" | "B";
+      const action = slotActionMatch[2];
+      const result =
+        action === "connect"
+          ? await connectRuntimeSlot(slot)
+          : action === "disconnect"
+            ? await disconnectRuntimeSlot(slot)
+            : await restartRuntimeSlot(slot);
+      json(response, 200, result);
+      return;
+    }
+
+    const slotMatch = url.pathname.match(/^\/api\/slot\/(A|B)\/workspace\/(select|pick|root|register)$/);
+    if (request.method === "POST" && slotMatch) {
+      const slot = slotMatch[1] as "A" | "B";
+      const action = slotMatch[2];
+
+      if (action === "pick") {
+        json(response, 200, await chooseWorkspaceFolder());
+        return;
+      }
+
+      if (action === "select") {
+        const body = await bodyJson(request);
+        const id = typeof body.id === "string" ? body.id.trim() : "";
+        if (!id) throw new Error("Workspace id is required.");
+        const result = await bridgeRequestForSlot(slot, "/api/workspace/select", {
+          method: "POST",
+          body: JSON.stringify({ id })
+        });
+        persistRuntimeSlotWorkspace(slot, id);
+        json(response, 200, result);
+        return;
+      }
+
+      if (action === "root") {
+        const body = await bodyJson(request);
+        const root = typeof body.root === "string" ? body.root.trim() : "";
+        if (!root) throw new Error("Workspace root is required.");
+        let result = await bridgeRequestForSlot(slot, "/api/workspace/root", {
+          method: "POST",
+          body: JSON.stringify({ root })
+        });
+        let workspaceId =
+          result &&
+          typeof result === "object" &&
+          "workspace" in result &&
+          typeof (result as { workspace?: { id?: unknown } }).workspace?.id === "string"
+            ? (result as { workspace: { id: string } }).workspace.id
+            : "";
+        if (workspaceId === "operator-session") {
+          result = await bridgeRequestForSlot(slot, "/api/workspace/register", {
+            method: "POST",
+            body: "{}"
+          });
+          workspaceId =
+            result &&
+            typeof result === "object" &&
+            "workspace" in result &&
+            typeof (result as { workspace?: { id?: unknown } }).workspace?.id === "string"
+              ? (result as { workspace: { id: string } }).workspace.id
+              : "";
+        }
+        if (!workspaceId) throw new Error("Workspace binding did not return a registered id.");
+        persistRuntimeSlotWorkspace(slot, workspaceId);
+        json(response, 200, result);
+        return;
+      }
+
+      const result = await bridgeRequestForSlot(slot, "/api/workspace/register", {
+        method: "POST",
+        body: "{}"
+      });
+      const workspaceId =
+        result &&
+        typeof result === "object" &&
+        "workspace" in result &&
+        typeof (result as { workspace?: { id?: unknown } }).workspace?.id === "string"
+          ? (result as { workspace: { id: string } }).workspace.id
+          : "";
+      if (!workspaceId) throw new Error("Workspace registration did not return an id.");
+      persistRuntimeSlotWorkspace(slot, workspaceId);
+      json(response, 200, result);
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/workspace/select") {
       const body = await bodyJson(request);
       const id = typeof body.id === "string" ? body.id.trim() : "";
@@ -222,6 +326,32 @@ const server = http.createServer(async (request, response) => {
       const result = await bridgeRequest("/api/workspace/select", {
         method: "POST",
         body: JSON.stringify({ id })
+      });
+      json(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace/pick") {
+      json(response, 200, await chooseWorkspaceFolder());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace/root") {
+      const body = await bodyJson(request);
+      const root = typeof body.root === "string" ? body.root.trim() : "";
+      if (!root) throw new Error("Workspace root is required.");
+      const result = await bridgeRequest("/api/workspace/root", {
+        method: "POST",
+        body: JSON.stringify({ root })
+      });
+      json(response, 200, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace/register") {
+      const result = await bridgeRequest("/api/workspace/register", {
+        method: "POST",
+        body: "{}"
       });
       json(response, 200, result);
       return;

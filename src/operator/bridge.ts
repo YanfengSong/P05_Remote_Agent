@@ -10,6 +10,7 @@ import type { PluginRuntime } from "../plugin/runtime.js";
 import type { ToolProfileReport } from "../policy/tool-profile.js";
 import { p05StatePath } from "../state.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
+import type { WorkspaceDescriptor } from "../workspace/types.js";
 
 export type LocalControlBridge = {
   url: string;
@@ -26,6 +27,8 @@ type BridgeDeps = {
   exposure: () => ToolProfileReport;
   profile: string;
   profileSource: string;
+  allowedRoots: readonly string[];
+  persistWorkspace?: (workspace: WorkspaceDescriptor) => void;
   metadataPath?: string;
   port?: number;
 };
@@ -131,6 +134,38 @@ export async function startLocalControlBridge(
         json(response, 200, {
           workspace: {
             ...selected,
+            root: current.root
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/workspace/root") {
+        const payload = await bodyJson(request);
+        const root = typeof payload.root === "string" ? payload.root.trim() : "";
+        if (!root) throw new Error("Workspace root is required.");
+        const selected = deps.workspaceManager.setSessionRoot(root, deps.allowedRoots);
+        const current = deps.workspaceManager.current();
+        json(response, 200, {
+          workspace: {
+            ...selected,
+            root: current.root
+          }
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/workspace/register") {
+        if (!deps.persistWorkspace) {
+          throw new Error("Persistent workspace registration is unavailable.");
+        }
+        const candidate = deps.workspaceManager.persistentRegistrationCandidate();
+        deps.persistWorkspace(candidate);
+        const registered = deps.workspaceManager.registerPersistentWorkspace(candidate);
+        const current = deps.workspaceManager.current();
+        json(response, 200, {
+          workspace: {
+            ...registered,
             root: current.root
           }
         });

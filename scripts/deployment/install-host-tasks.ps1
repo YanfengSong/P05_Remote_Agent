@@ -24,29 +24,18 @@ function New-P05PowerShellAction([string]$script) {
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -StartWhenAvailable
 
-$runtimeTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-$runtimeTrigger.Delay = 'PT8S'
-$runtimeTask = New-ScheduledTask -Action (New-P05PowerShellAction $runtimeScript) -Trigger $runtimeTrigger -Principal $principal -Settings $settings -Description 'P05 tunnel/MCP runtime. Source-controlled action; starts at user logon.'
+$runtimeTask = New-ScheduledTask -Action (New-P05PowerShellAction $runtimeScript) -Principal $principal -Settings $settings -Description 'P05 tunnel/MCP runtime. Manual on-demand task; no automatic trigger.'
 Register-ScheduledTask -TaskName $runtimeName -InputObject $runtimeTask -Force | Out-Null
 
 $restartSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $restartTask = New-ScheduledTask -Action (New-P05PowerShellAction $restartScript) -Principal $principal -Settings $restartSettings -Description 'P05 fixed restart broker. No trigger; callable on demand.'
 Register-ScheduledTask -TaskName $restartName -InputObject $restartTask -Force | Out-Null
 
-$operatorTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-$operatorTrigger.Delay = 'PT12S'
-$operatorTask = New-ScheduledTask -Action (New-P05PowerShellAction $operatorScript) -Trigger $operatorTrigger -Principal $principal -Settings $settings -Description 'P05 local Operator Console on loopback.'
+$operatorTask = New-ScheduledTask -Action (New-P05PowerShellAction $operatorScript) -Principal $principal -Settings $settings -Description 'P05 local Operator Console on loopback. Manual on-demand task; no automatic trigger.'
 Register-ScheduledTask -TaskName $operatorName -InputObject $operatorTask -Force | Out-Null
 
 if ($StartNow) {
     Start-ScheduledTask -TaskName $operatorName
-    $ctx = Get-P05DeploymentContext -ScriptRoot $PSScriptRoot
-    $statusRaw = & $ctx.TunnelClient runtimes status $ctx.Alias --json
-    $running = $false
-    if ($LASTEXITCODE -eq 0) {
-        try { $running = [bool](($statusRaw | ConvertFrom-Json).process_running) } catch {}
-    }
-    if (-not $running) { Start-ScheduledTask -TaskName $runtimeName }
 }
 
 Get-ScheduledTask -TaskName $runtimeName,$restartName,$operatorName |

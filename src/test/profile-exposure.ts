@@ -60,7 +60,11 @@ function sameSet(label: string, actual: readonly string[], expected: readonly st
 function childEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string" && !key.startsWith("P05_")) env[key] = value;
+    if (
+      typeof value === "string" &&
+      !key.startsWith("P05_") &&
+      !key.startsWith("MATLAB_")
+    ) env[key] = value;
   }
   env.REMOTE_AGENT_ALLOWED_ROOTS = ROOT;
   env.REMOTE_AGENT_DEFAULT_CWD = ROOT;
