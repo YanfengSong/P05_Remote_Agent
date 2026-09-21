@@ -7,7 +7,11 @@ Primary refinement: ADR-0018 — Trust Kernel and Context Component Runtime
 
 ## 1. Definition
 
-P05 V3 is a local-first, durable, dynamically composable engineering Agent platform.
+P05 V3 development is Core-first. The normative minimum Core contract is defined in `V3_CORE_CONTRACT.md`.
+
+The Core is the always-available MCP control and recovery plane. Agent, Skill, Workflow, MATLAB, STM32 and other domain capabilities are optional layers and MUST NOT become Core startup dependencies.
+
+The broader V3 platform target remains a local-first, durable, dynamically composable engineering Agent platform, but those higher-level capabilities are implemented only after the Core survivability contract is satisfied.
 
 Its value is not a large collection of MCP tools. Its value is a reusable execution and composition system that can:
 
