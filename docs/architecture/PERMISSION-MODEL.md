@@ -161,3 +161,94 @@ Remote push remains a separate elevated action.
 - ADR-0009: Foundation V1
 - ADR-0010: Foundation V2
 - ADR-0011: Core / Plugin Framework Boundary
+
+## Architecture V3 composition boundary
+
+Architecture V3 introduces a dynamic Context/Component Runtime, but it does not replace this permission model.
+
+### Context visibility is not authority
+
+A V3 Context may make a Service/Capability implementation visible to a Component or Agent scope.
+
+That means only:
+
+> an implementation is compositionally reachable.
+
+It does **not** mean:
+
+> the caller is authorized to execute every operation that implementation can perform.
+
+Execution still requires immutable ExecutionContext + Policy/Approval evaluation.
+
+### Context isolation is not OS isolation
+
+Context `isolate`/realm semantics can cause the same logical Service Key to resolve to different implementations for:
+
+- different Workspaces;
+- different Agents;
+- Shadow Contexts;
+- test environments.
+
+This is service-resolution isolation only.
+
+It is not:
+
+- filesystem confinement;
+- Windows token restriction;
+- process sandboxing;
+- network sandboxing.
+
+Hard confinement still requires restricted account/container/VM/Worker/Broker mechanisms.
+
+### Component permission declarations
+
+A Component may declare requested permissions/capabilities as metadata.
+
+Those declarations are inputs to Policy/review.
+They are not grants.
+
+No Component may:
+
+- force Policy allow;
+- approve itself;
+- widen Workspace roots;
+- convert a Tool Profile to a more privileged one;
+- replace Approval verification through ordinary hot reload.
+
+### Monotonic restrictions
+
+Composition interceptors/guards may add restrictions.
+
+They must not turn a Core Policy denial into allow.
+
+This preserves one-way authority narrowing through the Composition Kernel.
+
+### Effect boundary
+
+Only runtime-local E1 effects are automatically reverted on Fiber unload.
+
+E2/E3/E4 effects such as:
+
+- process/worktree/resource allocations;
+- file/Git mutations;
+- external remote writes;
+- firmware flashing;
+- host/system changes;
+
+continue to use durable resource/Capability/Approval rules.
+
+A disposer is not a security proof and does not make an external mutation safely reversible.
+
+### Trust Kernel
+
+The following remain outside ordinary self-HMR by default:
+
+- identity/authentication;
+- Workspace authority;
+- Policy;
+- Approval verification;
+- durable State Store integrity;
+- Audit integrity;
+- Broker trust anchors.
+
+Changes to these modules use the verified self-development/restart path rather than Component-level hot replacement.

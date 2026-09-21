@@ -522,3 +522,254 @@ The original V3 layering direction is valid, but it needs four architectural upg
 
 With those changes, V3 can support local-first engineering today while retaining a clean path to Tasks, agent identity,
 multi-device execution, isolated workers and richer MCP messaging later.
+
+# 11. Composition-kernel research addendum — DeepSeek Harness / Cordis
+
+A second V3 research pass benchmarks DeepSeek Harness and the Cordis context paradigm.
+
+Detailed benchmark:
+
+- `docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md`
+
+Research source:
+
+- `https://github.com/deepseek-ai/deepseek-harness`
+- Yifan Shi, Wei Zhang, Tianyi Cui, *A Programming Paradigm for Spatiotemporal Composability*, 2026.
+
+## 11.1 New finding: lifecycle ownership should be structural
+
+The previous V3 architecture correctly separated Agent, Skill, Capability, Asset and Orchestrator, but still left a
+risk: each registry/runtime could independently own startup order, registration cleanup and provider availability.
+
+Cordis demonstrates a stronger primitive:
+
+- Context selects a service graph/scope;
+- Fiber owns one live Component instance;
+- local registrations are Effects owned by that Fiber;
+- dependencies are declared and reactively drive activation/deactivation.
+
+P05 should adopt this composition model below domain runtimes.
+
+## 11.2 New finding: Context must not replace ExecutionContext
+
+DeepSeek Harness derived Contexts are effective for scoped registrations and service routing.
+
+P05 has a stronger durability/security requirement.
+
+Therefore:
+
+- Context = mutable live composition state;
+- ExecutionContext = immutable captured execution/authority state.
+
+A durable Run can observe implementation availability changes without having its Workspace/authority retargeted.
+
+## 11.3 New finding: Fiber must not replace Run
+
+Fiber lifetime answers:
+
+> Which Component implementation is live now?
+
+Run lifetime answers:
+
+> What durable work exists, and what happened to it?
+
+The two are orthogonal.
+
+A Provider Fiber can be replaced while an Agent/Skill/Task Run remains durable.
+
+## 11.4 New finding: effect taxonomy needs two meanings
+
+Cordis-style revertible effects are ideal for local lifecycle resources:
+
+- service registration;
+- tool/capability contribution;
+- event listener;
+- interceptor;
+- timer/watcher.
+
+P05 also controls external engineering effects that may not be reversible.
+
+V3 therefore refines effects into:
+
+- E0 pure;
+- E1 revertible Component effect;
+- E2 managed resource;
+- E3 durable external mutation;
+- E4 irreversible/elevated mutation.
+
+Only E1 is automatic Fiber cleanup.
+
+## 11.5 New finding: composition access control and sandboxing are separate
+
+The Cordis paper explicitly distinguishes:
+
+1. dependency/capability access mediated by the Context;
+2. sandboxing untrusted code from the host.
+
+The latter requires an execution boundary beyond ordinary language-level composition.
+
+This aligns with P05 Foundation V2:
+
+- Context/Service scope is a composition boundary;
+- Policy is an authorization boundary;
+- restricted account/container/VM/Worker/Broker is a technical host-confinement boundary.
+
+## 11.6 New finding: plugin should be packaging, Component should be runtime
+
+V2 Plugin currently mixes:
+
+- package identity;
+- manifest;
+- runtime lifecycle.
+
+V3 target separates:
+
+- Plugin Package = distribution/ownership/version/signature/Assets;
+- Component = declarative runtime unit;
+- Fiber = one live Component instance.
+
+A package may contribute multiple Components.
+
+## 11.7 New finding: provider replacement needs drain/quiescence
+
+Simple "dispose old provider" is insufficient for engineering workloads.
+
+When a provider retires:
+
+1. stop new resolution;
+2. notify dependents;
+3. wait for bounded drain/quiescence;
+4. transfer/reattach E2 resources where supported;
+5. interrupt unrecoverable resources explicitly;
+6. dispose E1 effects.
+
+This is required for Agent Providers, Terminal Drivers, application connections and other services used by durable Runs.
+
+# 12. Additional V3 research decisions
+
+### R-11 — Two kernels
+
+Adopt:
+
+- Trust / Durable Kernel;
+- Composition Kernel.
+
+Trust/Durable Kernel owns authority and persistent execution truth.
+Composition Kernel owns live implementation graph/lifecycle.
+
+### R-12 — Context is composition, not authority
+
+Visibility or injection of a Service cannot grant the right to execute it.
+
+### R-13 — Component lifecycle is dependency-driven
+
+Components declare typed required/provided Service contracts.
+Manual startup ordering is not the long-term model.
+
+### R-14 — Local registrations are Fiber-owned effects
+
+Dynamic registrations must have exactly one owner and structural cleanup.
+
+### R-15 — Trust root is excluded from ordinary self-HMR
+
+Self-evolution may hot-replace eligible Components.
+Policy/Approval/State integrity/Broker trust changes remain on verified process-level restart paths.
+
+# 13. Additional composition POCs
+
+### POC-07 — Typed Context / Service Graph
+
+Prove:
+
+- provide/require;
+- child Context;
+- scoped provider resolution;
+- isolation realm;
+- interception;
+- deterministic duplicate/conflict handling.
+
+### POC-08 — Fiber structural cleanup
+
+Prove:
+
+- registration cleanup;
+- reverse-order disposers;
+- async cleanup;
+- nested Components;
+- cleanup after activation failure;
+- idempotent dispose.
+
+### POC-09 — Reactive dependencies
+
+Prove:
+
+- missing dependency -> PENDING;
+- provider appears -> ACTIVE;
+- provider retires -> dependent retirement;
+- provider returns -> reactivation;
+- no stale service handle after transition.
+
+### POC-10 — Provider drain/quiescence
+
+Prove:
+
+- provider excluded from new selection at RETIRING;
+- current consumers drain;
+- bounded timeout;
+- explicit interruption on drain failure.
+
+### POC-11 — Scoped Agent/Workspace contributions
+
+Prove:
+
+- global + Workspace + Agent contribution layers;
+- nearest scope wins where appropriate;
+- scope disposal removes contributions;
+- Capability Policy is still evaluated independently.
+
+### POC-12 — Shadow Context
+
+Prove a candidate Component can:
+
+- load;
+- satisfy dependencies;
+- register services;
+- run contract tests;
+- dispose cleanly;
+
+without replacing the live provider.
+
+### POC-13 — Declarative graph reconciliation
+
+Prove desired configuration changes produce deterministic:
+
+- INSERT;
+- KEEP;
+- REPLACE;
+- RETIRE;
+- REMOVE;
+
+with dependency-aware ordering.
+
+### POC-14 — Effect-class enforcement
+
+Prove E3/E4 operations cannot be hidden in an E1 disposer API and that external side effects always create
+Invocation/Policy/Audit records.
+
+# 14. Revised research conclusion
+
+The next-generation V3 architecture now requires six major upgrades over Foundation V2:
+
+1. stateless Protocol Edge;
+2. shared Durable Run Kernel + transactional State Store;
+3. Process/Terminal/Work/Security execution separation;
+4. one semantic Capability Catalog + versioned Bindings;
+5. Context/Component/Fiber Composition Kernel with reactive dependencies and structural local-effect cleanup;
+6. explicit Trust/Durable Kernel that composition cannot replace or self-authorize through.
+
+The key synthesis is:
+
+> **Durable Run makes work survive implementation change; Context/Fiber makes implementation change safe.**
+
+Together they support a self-evolving engineering Agent platform without confusing hot reload with authorization or
+local disposers with rollback of real-world engineering effects.

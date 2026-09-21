@@ -1,252 +1,257 @@
 # P05 Target Architecture V3
 
 Status: target architecture baseline
-Date: 2026-09-20
+Date: 2026-09-21
 Implemented baseline: Foundation V2
-Research basis: docs/research/V3_TECHNICAL_RESEARCH.md
+Primary refinement: ADR-0018 — Trust Kernel and Context Component Runtime
 
 ## 1. Definition
 
-P05 V3 is a local-first, durable, extensible engineering Agent platform.
+P05 V3 is a local-first, durable, dynamically composable engineering Agent platform.
 
-Its durable value is not a large MCP tool collection. Its value is a reusable execution system that can:
+Its value is not a large collection of MCP tools. Its value is a reusable execution and composition system that can:
 
-- receive work from ChatGPT or another authorized client;
-- preserve explicit application state across reconnect/restart;
+- receive work from ChatGPT or other authorized clients;
+- preserve explicit state across reconnect/restart;
 - coordinate long-running engineering operations;
+- dynamically add/remove/replace implementation components;
 - run multiple isolated Agents;
-- reuse verified engineering capabilities instead of regenerating scripts;
+- reuse semantic Capabilities across implementation changes;
 - execute bounded Skills;
 - reconcile parallel results;
-- control applications and hardware through Plugins;
-- enforce one authority model across local, remote and future multi-device execution.
+- control applications and hardware;
+- enforce one authority model across local, remote and future multi-device execution;
+- evolve parts of itself without making the authority root self-replaceable.
 
-V3 is the complete target architecture. Release slices such as V3-A are implementation plans derived from this
-architecture and are not the definition of the target.
+The central V3 architecture is:
+
+```text
+ Client / ChatGPT / Operator UI
+              |
+              v
++-------------------------------------------+
+|              Protocol Edge                |
+| MCP / local API / compatibility / trace   |
++----------------------+--------------------+
+                       |
+                       v
++==================================================================+
+|                     TRUST / DURABLE KERNEL                       |
+| Identity | Workspace Authority | ExecutionContext | Policy       |
+| Approval | Durable Run | State Store | Invocation Ledger         |
+| Audit | Security Execution Mode | Broker Trust Anchors           |
++===============================+==================================+
+                                |
+                                | authorized contracts
+                                v
++==================================================================+
+|                     COMPOSITION KERNEL                           |
+| Context | Service Graph | Component | Fiber | Effect | Coeffect  |
+| Scope | Intercept | Events | Loader | Config Reconciliation      |
++===============================+==================================+
+                                |
+            +-------------------+-------------------+
+            |                   |                   |
+            v                   v                   v
+   Capability Services     Agent/Skill Layer   Application Services
+   Catalog/Bindings        Orchestrator        MATLAB/STM32/etc.
+            |                   |                   |
+            +-------------------+-------------------+
+                                |
+                                v
++------------------------------------------------------------------+
+|                     EXECUTION SUBSTRATE                          |
+| Host Session | Process | Terminal | Work Isolation | Worker      |
+| Downstream MCP | Resource Lease | Artifact/Blob | Reconcile      |
++-------------------------------+----------------------------------+
+                                |
+          +---------------------+----------------------+
+          |                     |                      |
+          v                     v                      v
+   Trusted Windows       Constrained Host       Isolated/Remote
+      Host/Apps             future mode             Worker/Node
+```
+
+V3 combines two different kinds of composability:
+
+1. **runtime composition** — Components/services can appear, disappear and be replaced safely;
+2. **engineering execution durability** — Tasks/Runs/side effects survive failures and remain auditable.
+
+Neither substitutes for the other.
 
 ## 2. Architectural invariants
 
 ### V3-I01 — Protocol is an edge
 
-MCP is an external protocol adapter, not the P05 application state model.
+MCP or another client protocol is never the authoritative P05 lifecycle/state model.
 
-MCP protocol sessions, protocol revisions or extension lifecycles MUST NOT define P05 Task, Skill, Agent or Host
-Session semantics.
+### V3-I02 — Context and authority are separate
 
-### V3-I02 — Explicit execution context
+A live Context controls service composition.
+An immutable ExecutionContext controls execution identity/authorization scope.
 
-Every long-lived or asynchronous operation owns an immutable Execution Context captured at creation.
+Service visibility never grants authority.
 
-Later changes to the interactive Workspace, profile or client connection MUST NOT retarget an existing run.
+### V3-I03 — Fiber and Run are separate
 
-### V3-I03 — One durable run substrate
+Fiber is a live implementation instance.
+Run is durable work.
 
-Task, Skill, Agent, Process, Search and future long-running runtimes share a Durable Run Kernel for identity,
-persistence, parent/child lineage, cancellation, event sequencing, interruption and recovery.
+A Fiber may be replaced while a Run exists.
 
-Domain runtimes do not invent independent durability models.
+### V3-I04 — One durable Run substrate
 
-### V3-I04 — One capability catalog
+Task, Skill, Agent, Host Session, Search, Reconciliation and future long-running domains use one Durable Run Kernel.
 
-There is one semantic Capability Catalog.
+### V3-I05 — One semantic Capability Catalog
 
-Implementation replacement is modeled through versioned Capability Bindings, not a second competing
-"Meta-Capability catalog".
+Capability describes what can be done.
+Versioned Bindings describe how.
 
-### V3-I05 — Policy cannot be bypassed
+No second competing Meta-Capability registry is required.
 
-Protocol, Plugin, Agent, Asset, Skill, Orchestrator, Worker and downstream execution all converge on Core
-authorization/execution/audit.
+### V3-I06 — Local component effects are structurally owned
 
-No layer grants itself authority.
+Dynamic registrations/listeners/services/interceptors have exactly one Fiber owner and dispose automatically.
 
-### V3-I06 — Work isolation and security isolation are separate
+### V3-I07 — Real-world side effects are explicit
 
-Git worktrees/session roots prevent writer collisions.
+External engineering effects are classified and recorded.
+P05 does not claim arbitrary effects are reversible or exactly-once.
 
-OS isolation constrains host authority.
+### V3-I08 — Policy cannot be bypassed
 
-Neither may be described as the other.
+Plugin, Component, Agent, Skill, Orchestrator, Asset, Worker and downstream execution all converge on Trust/Durable Kernel authorization.
 
-### V3-I07 — Side effects are explicit
+### V3-I09 — Work isolation and security isolation are distinct
 
-P05 does not promise generic exactly-once external side effects.
+Worktree/session roots prevent mutable-state collisions.
+OS/Worker isolation constrains authority.
 
-Capability contracts classify effect/idempotency semantics and constrain retry/recovery.
+### V3-I10 — Reconciliation is explicit
 
-### V3-I08 — Reconciliation is explicit
+Parallel writers do not silently integrate results.
 
-Parallel writers never silently integrate results.
+### V3-I11 — Skills are bounded
 
-Integration requires inspection, verification and a recorded reconciliation decision.
+Skill is typed/versioned/declarative/bounded.
+Arbitrary executable logic belongs in Capabilities/Assets/Agents, not workflow control.
 
-### V3-I09 — Skills are bounded
+### V3-I12 — Reasoning and coordination are separate
 
-A Skill is a typed, versioned, declarative and bounded workflow.
+ChatGPT or another reasoning Agent may plan.
+P05 Orchestrator executes/persists deterministic coordination.
 
-Arbitrary code belongs in Capabilities, Verified Assets or Agent tasks, not in workflow control definitions.
+### V3-I13 — Trust root is not ordinary hot-reloadable code
 
-### V3-I10 — Reasoning and coordination are separate
+Policy, Approval verification, durable state integrity and Broker trust anchors cannot be replaced by ordinary Component configuration.
 
-ChatGPT or another reasoning Agent may decide goals/plans.
+## 3. Foundation V2 relationship
 
-The P05 Orchestrator is deterministic coordination machinery. It does not silently invent business logic through
-hidden LLM calls.
+Foundation V2 remains the implemented security/runtime substrate.
 
-## 3. Target system topology
+V2 already establishes:
 
-```text
- ChatGPT / Other MCP Client / Local Admin
-                 |
-                 v
-+-------------------------------------------+
-|              Protocol Edge                |
-| MCP 2026 / compatibility / auth / trace   |
-| explicit handles / Tasks adapter / MRTR   |
-+----------------------+--------------------+
-                       |
-                       v
-+--------------------------------------------------------------+
-|                    P05 Control Plane                         |
-|                                                              |
-|  +----------------+     +----------------+                    |
-|  | Orchestrator   |---->| Skill Runtime  |----+               |
-|  +-------+--------+     +----------------+    |               |
-|          |                                     |               |
-|          +------------------+                  v               |
-|                             |        +----------------------+  |
-|                             +------->| Capability Resolver  |  |
-|                                      +----+-----------+-----+  |
-|                                           |           |        |
-|                                           |           +-------> Agent Runtime
-|                                           |                        |
-|                                           v                        v
-|                                  Capability Binding          Agent Provider
-+-------------------------------------------+------------------------+
-                                            |
-                                            v
-+-------------------------------------------------------------------+
-|                     P05 Core Execution Plane                      |
-| Execution Context / Policy / Durable Run Kernel / Execution       |
-| State Store / Audit / Trace / Approval / Resource Leases          |
-+---------------------------+---------------------------------------+
-                            |
-          +-----------------+--------------------+
-          |                 |                    |
-          v                 v                    v
-+----------------+  +------------------+  +-----------------------+
-| Core Primitive |  | Application      |  | Verified Asset        |
-| Files/Git/etc. |  | Plugin Adapter   |  | Executor              |
-+-------+--------+  +---------+--------+  +-----------+-----------+
-        |                     |                       |
-        +---------------------+-----------------------+
-                              |
-                              v
-+-------------------------------------------------------------------+
-|                       Execution Substrate                         |
-| Host Session / Process Driver / Terminal Driver / Isolation       |
-| Worker Driver / Downstream MCP / Broker / Artifact Store          |
-+---------------------------+---------------------------------------+
-                            |
-          +-----------------+-------------------+
-          |                 |                   |
-          v                 v                   v
-   Trusted Host      Constrained Host     Isolated/Remote Worker
- Windows/apps/HW      future boundary      Sandbox/VM/device
-```
+- registered Workspaces;
+- active-workspace boundary for structured tools;
+- exactly one platform-source Workspace;
+- Capability Catalog;
+- common Policy/Execution Runtime;
+- metadata-only Audit/Recovery;
+- structured Git mutation;
+- Plugin Framework;
+- downstream MCP;
+- explicit trusted-shell limitation;
+- external restart broker.
 
-Cross-cutting services:
+V3 evolves these ideas rather than discarding them.
 
-- Workspace Registry;
-- Device Registry;
-- Plugin Registry;
-- Capability Catalog / Binding Registry;
-- Asset Registry;
-- Skill Registry;
-- Agent Provider Registry;
-- State Store;
-- Artifact Store;
-- Audit / Trace;
-- Approval / Broker;
-- Resource Lease Manager.
+Major V3 refinements:
+
+- mutable global active Workspace is no longer sufficient for long-lived execution;
+- Plugin lifecycle becomes Component/Fiber lifecycle;
+- ad-hoc registries converge on Context-scoped service contributions;
+- JSON-like per-subsystem persistence converges on durable state;
+- Process/Terminal/Agent lifetimes separate from durable Run state;
+- Capability implementation becomes Binding resolution;
+- self-development can eventually use component-level replacement below the Trust Kernel.
 
 ## 4. Layer 0 — Protocol Edge
 
-### 4.1 Responsibility
+Protocol Edge translates client protocols into stable P05 application requests.
 
-Protocol Edge translates an external client protocol into stable internal P05 requests.
-
-Initial adapter:
+Initial protocol:
 
 - MCP.
 
-Possible future adapters:
+Possible future protocols:
 
-- local administrative CLI;
-- HTTP API;
+- local administrative CLI/API;
 - peer P05 node protocol;
 - automation/event trigger adapter.
 
-### 4.2 MCP target
+Responsibilities:
 
-V3 targets MCP 2026-07-28 semantics while allowing compatibility adapters for older clients.
-
-The edge owns:
-
-- protocol-version handling;
+- protocol version compatibility;
 - authentication identity extraction;
-- client capability discovery;
-- MCP tool/resource representation;
+- request/result representation;
 - explicit P05 handle mapping;
-- optional MCP Tasks extension adaptation;
-- Multi Round-Trip input/approval adaptation;
+- client capability negotiation;
 - trace-context import/export;
-- result shaping and compatibility.
+- compatibility fallbacks.
 
-The edge MUST NOT own:
+Protocol Edge MUST NOT own:
 
 - Task/Skill/Agent lifecycle truth;
-- Workspace authorization decisions;
+- Workspace authorization;
 - workflow state;
+- component dependency state;
 - application business logic.
 
-### 4.3 Explicit application handles
-
-P05 application handles are ordinary data:
+Internal identifiers such as:
 
 ```text
+run_id
 task_run_id
 skill_run_id
 agent_session_id
 host_session_id
+fiber_id
 artifact_id
 approval_id
 ```
 
-An MCP Task handle, when used, maps to a P05 run but is not its canonical identity.
+remain P05 application identities regardless of transport.
 
-If a client does not support MCP Tasks, P05 may expose explicit status/output/cancel tools over the same internal
-Run contract.
+## 5. Trust / Durable Kernel
 
-### 4.4 External tool surface
+Trust/Durable Kernel is deliberately small.
 
-The external surface SHOULD remain smaller than the internal Capability Catalog.
+### 5.1 Device and identity
 
-The edge may expose:
+Owns:
 
-- stable low-level Core tools;
-- discovery/describe operations;
-- Task/Skill/Agent control tools;
-- selected high-level semantic Capabilities.
+- stable device identity;
+- authenticated client/delegation identity;
+- local node trust relationships.
 
-Generic dispatch MUST NOT become a policy bypass. Any capability-id based invocation still performs descriptor lookup,
-schema validation, authorization, binding resolution and audit by that Capability ID.
+### 5.2 Workspace authority
 
-## 5. Layer 1 — Core Context, Authority and Durable Run Kernel
+Workspace remains the logical project authorization boundary.
 
-### 5.1 Execution Context
+A Workspace defines:
 
-Target logical shape:
+- canonical root;
+- type/kind;
+- platform-source role where applicable;
+- plugin/component activation policy;
+- authorization metadata.
+
+### 5.3 ExecutionContext
+
+Every non-trivial or long-lived execution captures immutable ExecutionContext.
+
+Conceptual fields:
 
 ```ts
 type ExecutionContext = {
@@ -254,14 +259,15 @@ type ExecutionContext = {
   deviceId: string;
   workspaceId: string;
   actor: {
-    type: "interactive" | "agent" | "plugin" | "skill" | "system";
+    type: "interactive" | "agent" | "skill" | "component" | "system";
     id: string;
   };
   parentRunId?: string;
   taskRunId?: string;
   skillRunId?: string;
   agentSessionId?: string;
-  isolationId?: string;
+  workIsolationId?: string;
+  securityMode: "trusted-host" | "constrained-host" | "isolated-worker";
   authority: {
     profile: string;
     delegatedAuthorityId?: string;
@@ -275,457 +281,346 @@ type ExecutionContext = {
 };
 ```
 
-The concrete TypeScript shape may evolve, but these semantics are fixed.
+ExecutionContext is data.
+It cannot approve an operation by itself.
 
-Context is immutable identity/scope data. It does not itself grant authority.
+Changing the interactive Workspace does not mutate existing Contexts for Runs.
 
-### 5.2 Durable Run Kernel
+### 5.4 Policy
 
-A Run is the common durable envelope for long-lived work.
+Authorization considers:
 
-Run kinds include:
+- actor;
+- profile;
+- Workspace;
+- Capability;
+- requested Binding;
+- Plugin/Component provenance;
+- execution/security mode;
+- work isolation;
+- resource requirements;
+- effect class;
+- Approval state;
+- delegated authority.
+
+No Component can force Policy allow.
+
+### 5.5 Approval
+
+Approval is first-class durable state.
+
+Approval record includes:
+
+- requesting Run/actor;
+- bounded action description/digest;
+- target Workspace/device/resource;
+- effect/risk;
+- expiry;
+- resolver identity/source;
+- outcome.
+
+The requesting Agent cannot satisfy its own human/host approval requirement.
+
+### 5.6 Durable Run Kernel
+
+A Run is the generic durable envelope for long-lived work.
+
+Run kinds may include:
 
 - task;
 - skill;
 - agent;
 - host-session;
 - search;
-- reconcile;
-- future domain run types.
+- reconcile.
 
-Generic lifecycle:
+Generic states:
 
 ```text
 CREATED
-   |
-   v
-READY -> RUNNING ------------------------------+
-           |   |   |                          |
-           |   |   +-> WAITING_INPUT ---------+
-           |   +-----> WAITING_APPROVAL ------+
-           +---------> PAUSED -----------------+
-           |
-           +-> RECONCILING
-           |
-           +-> SUCCEEDED
-           +-> FAILED
-           +-> CANCELLED
-           +-> INTERRUPTED
+  -> READY
+  -> RUNNING
+      -> WAITING_INPUT
+      -> WAITING_APPROVAL
+      -> WAITING_DEPENDENCY
+      -> PAUSED
+      -> RECONCILING
+      -> SUCCEEDED
+      -> FAILED
+      -> CANCELLED
+      -> INTERRUPTED
 ```
 
-Not every Run kind uses every state.
+Kernel owns:
 
-Kernel-owned fields:
-
-- run id;
-- run kind;
-- parent run id;
-- immutable creation context;
-- current generic state;
+- id;
+- kind;
+- parent/child lineage;
+- immutable creation ExecutionContext;
+- generic state;
 - timestamps;
 - event sequence;
-- cancellation state;
+- cancellation;
 - interruption/recovery classification;
-- owner/runtime type;
 - trace correlation.
 
-Domain-owned state remains in the domain runtime.
+Domain runtimes own domain-specific state.
 
-### 5.3 State Store
+### 5.7 State Store
 
-V3 defines a Storage interface.
+V3 defines a Storage abstraction.
 
-Reference local backend:
+Reference local backend SHOULD be SQLite.
 
-- SQLite.
+Required semantics:
 
-Logical data groups:
-
-- runs;
-- run events;
-- execution attempts;
-- approvals;
-- leases;
-- registries/version metadata;
-- isolation allocations;
-- reconciliation records;
-- artifact metadata.
-
-Requirements:
-
-- atomic state + event transitions;
-- schema migrations;
+- atomic state transition + event append;
+- schema migration;
 - crash recovery;
-- bounded retention policies;
 - concurrent readers;
+- bounded metadata;
 - no secret values;
-- no unbounded raw terminal/prompt/file payloads.
+- no unbounded raw prompt/file/terminal bodies.
 
-The reference SQLite deployment is local-host state. It is not stored on a network share.
+Large outputs/artifacts belong in Artifact/Blob storage.
 
-### 5.4 Event and snapshot model
+### 5.8 Invocation Ledger
 
-Every durable transition appends a monotonic Run event and updates the current snapshot transactionally.
-
-Example:
-
-```text
-run.created
-run.started
-step.started
-step.completed
-approval.requested
-approval.resolved
-child.started
-child.completed
-run.reconciling
-run.completed
-```
-
-The event log supports:
-
-- recovery inspection;
-- deterministic resume decisions;
-- diagnostics;
-- state migration tooling.
-
-P05 does not require Temporal-style code replay. The active snapshot is authoritative; event history supplies lineage
-and recovery evidence.
-
-### 5.5 Cancellation
-
-Cancellation is cooperative first and forceful only where the underlying Driver supports it.
-
-Cancellation propagates explicitly through parent/child Run links according to the domain policy.
-
-A cancelled parent does not imply that an already committed external effect was undone.
-
-## 6. Layer 2 — Policy, Approval, Effects and Resource Leases
-
-### 6.1 Policy inputs
-
-Authorization considers at least:
-
-- actor;
-- tool profile;
-- Workspace;
-- Capability;
-- Plugin/provider activation;
-- requested execution mode;
-- isolation allocation;
-- delegated authority;
-- approval state;
-- resource requirements;
-- external-effect class.
-
-### 6.2 Capability effect classes
-
-Every executable Capability declares an effect classification:
-
-```text
-PURE
-READ_ONLY
-IDEMPOTENT
-DEDUPLICATABLE
-NON_IDEMPOTENT
-EXTERNAL_IRREVERSIBLE
-```
-
-This classification is part of the runtime contract.
-
-Retry rules:
-
-- PURE/READ_ONLY: automatic retry may be allowed.
-- IDEMPOTENT: automatic retry may be allowed within policy.
-- DEDUPLICATABLE: retry requires an idempotency/deduplication key.
-- NON_IDEMPOTENT: automatic replay is normally prohibited.
-- EXTERNAL_IRREVERSIBLE: explicit approval/recovery policy is required.
-
-### 6.3 Invocation ledger
-
-Every capability attempt records metadata such as:
+Every side-effecting Capability attempt records:
 
 - invocation id;
-- run/step id;
-- capability id/version;
-- selected binding id/version;
+- Run/step id;
+- Capability id/version;
+- Binding id/version;
 - input digest;
 - idempotency key when applicable;
-- start/end state;
+- attempt;
+- state;
 - result/artifact refs;
-- verification result.
+- verification.
 
-On recovery, P05 consults the invocation record and verification contract before deciding whether an operation can be
-repeated.
+This protects recovery from blind replay.
 
-### 6.4 Approval
+### 5.9 Audit
 
-Approval is a first-class durable object.
+Audit remains metadata-first and security-oriented.
 
-An Approval Request includes:
+Audit, Run state, trace and artifacts are separate concepts linked by ids.
 
-- approval id;
-- requesting actor/run;
-- capability/action summary;
-- scope;
-- effect/risk;
-- target Workspace/device/resource;
-- expiry;
-- action digest or bounded normalized intent.
+## 6. Composition Kernel
 
-Approval may be surfaced through MCP MRTR, UI, CLI or an external broker.
+Composition Kernel manages the live implementation graph.
 
-**The requesting Agent cannot satisfy its own human/host approval requirement.**
+Normative detail:
+- `docs/architecture/CONTEXT-COMPONENT-RUNTIME.md`
 
-### 6.5 Resource Lease Manager
+Core concepts:
 
-Engineering operations often require exclusive resources unrelated to filesystem isolation.
+- Context;
+- Service Key;
+- Component;
+- Fiber;
+- Effect;
+- Coeffect/dependency requirement;
+- Scope/realm;
+- Event/interceptor;
+- Component Loader;
+- Config Reconciler.
+
+### 6.1 Context
+
+Context is a live hierarchical service-resolution and ownership object.
+
+It can be derived for:
+
+- Workspace;
+- Agent;
+- Run;
+- Shadow/candidate validation.
+
+Context may:
+
+- extend metadata;
+- isolate service resolution;
+- intercept service behavior within contract.
+
+Context is never a security sandbox.
+
+### 6.2 Component
+
+Component is a declarative runtime unit with:
+
+- stable id/version;
+- required services;
+- provided services;
+- permission declaration;
+- config schema;
+- activation body.
+
+### 6.3 Fiber
+
+Fiber is one live Component instance.
+
+Lifecycle:
+
+```text
+DECLARED
+  -> PENDING
+  -> ACTIVATING
+  -> ACTIVE
+  -> RETIRING
+  -> DRAINING
+  -> DISPOSING
+  -> DISPOSED
+
+ACTIVATING -> FAILED
+ACTIVE/RETIRING/DRAINING -> FAILED
+```
+
+Required services control whether activation is possible.
+
+### 6.4 E1 Revertible Component Effect
+
+Local runtime registrations are Fiber-owned effects.
 
 Examples:
 
-- physical ST-Link probe;
-- CAN interface;
-- a named MATLAB instance/license-sensitive session;
-- hardware-in-loop bench;
-- exclusive integration branch;
-- a GUI desktop session.
+- service contribution;
+- Capability Binding contribution;
+- Agent Provider registration;
+- event listener;
+- interceptor;
+- timer/watcher;
+- child Component mount.
 
-Capabilities may declare resource requirements:
+Every E1 effect returns/owns an idempotent disposer.
 
-```text
-shared(resource)
-exclusive(resource)
-bounded-count(resource, n)
-```
+Fiber unload automatically removes E1 effects.
 
-The Lease Manager persists lease ownership/expiry/recovery metadata and prevents unsafe parallel scheduling.
+### 6.5 Coeffect/dependency resolution
 
-## 7. Layer 3 — Execution Substrate
+A Component declares required Service Keys.
 
-### 7.1 Host Session
+Activation happens only when requirements are visible and compatible.
 
-Host Session is a logical runtime container for execution on one Worker/host.
+If dependencies disappear:
 
-It is not identical to:
+- provider retires;
+- dependents are notified/retired according to lifecycle;
+- reactivation can occur when requirements return.
 
-- an MCP connection;
-- an Agent Session;
-- a single PID.
+The component itself does not implement ad-hoc dependency polling.
 
-A Host Session may own a process tree, terminal, environment, output stream and security boundary.
+### 6.6 Retirement/drain
 
-### 7.2 Process Driver
+Retiring provider:
 
-For non-interactive commands.
+1. disappears from new resolution;
+2. accepts no new consumers/leases;
+3. notifies dependents;
+4. waits for bounded quiescence;
+5. transfers/reattaches managed resources where supported;
+6. interrupts what cannot be transferred;
+7. disposes E1 effects;
+8. becomes DISPOSED.
 
-Responsibilities:
+This avoids destroying implementations under in-flight durable work.
 
-- start executable/arguments;
-- stdin where applicable;
-- stdout/stderr events;
-- exit status;
-- timeout;
-- graceful/force stop;
-- process-tree supervision;
-- resource limits where available.
+## 7. Plugin/package model
 
-It MUST NOT decide Workspace authorization.
+V2 Plugin mixed package and runtime meanings.
 
-### 7.3 Terminal Driver
+V3 separates them.
 
-For interactive TTY workloads.
+**Plugin Package**
 
-Reference Windows direction:
+Distribution/ownership unit containing:
 
-- ConPTY via node-pty or equivalent.
+- manifest;
+- version;
+- API compatibility;
+- signature/trust metadata where needed;
+- Component definitions;
+- Assets;
+- schemas/docs.
 
-Responsibilities:
+**Component**
 
-- terminal creation;
-- input/output;
-- terminal resize;
-- terminal control sequences;
-- session close;
-- bounded event stream.
+Runtime composition unit.
 
-Terminal Driver is not a sandbox.
+**Fiber**
 
-### 7.4 Process Tree Supervisor
+Live Component instance.
 
-Windows target SHOULD use Job Object semantics if POC validation succeeds.
-
-Purpose:
-
-- bind descendants to a managed process tree;
-- terminate a whole tree reliably;
-- apply selected resource limits;
-- observe tree lifecycle.
-
-The supervisor remains behind a Driver interface so the architecture is not bound to one native library.
-
-### 7.5 Output stream
-
-Long-running Session output uses:
-
-- monotonically increasing event cursor;
-- bounded in-memory window;
-- optional bounded spill file;
-- stdout/stderr/terminal/event categories;
-- truncation metadata.
-
-Run state stores output references/metadata, not unbounded output bodies.
-
-### 7.6 Restart behavior
-
-Driver capability declares whether execution is:
-
-- non-resumable;
-- inspectable after restart;
-- reattachable;
-- externally durable.
-
-A normal child process/PTY owned by P05 may become INTERRUPTED after P05 restart.
-A Broker/Worker-backed Session may be reattached if its Driver can prove identity and ownership.
-
-## 8. Layer 4 — Work Isolation and Security Isolation
-
-### 8.1 Work Isolation Manager
-
-Purpose: protect mutable engineering state from concurrent writers.
-
-Isolation kinds:
-
-- workspace-direct;
-- git-worktree;
-- session-root;
-- generated/scratch root.
-
-For Git writing Agents, git-worktree is the default.
-
-Allocation record includes:
-
-- isolation id;
-- source Workspace;
-- root;
-- owning Run/Agent;
-- branch/commit metadata;
-- created/expiry state;
-- cleanup state.
-
-### 8.2 Reconciliation
-
-Reconciliation is a first-class Run.
-
-Input:
-
-- source isolation;
-- target Workspace;
-- originating Agent/Skill/Task lineage;
-- changed files/commits/artifacts;
-- verification evidence.
-
-Flow:
-
-```text
-collect result
-  -> inspect diff/artifacts
-  -> validate expected scope
-  -> run required verification
-  -> detect target divergence/conflict
-  -> reconcile / reject / request rework
-  -> integrate
-  -> record result
-```
-
-No parallel writer directly writes into another writer's worktree.
-
-### 8.3 Security Execution Modes
-
-Security isolation is selected independently of worktree isolation.
-
-Target modes:
-
-1. `trusted-host`
-   - normal paired Windows user authority;
-   - required for many installed engineering applications;
-   - policy/behavior boundary, not OS sandbox.
-
-2. `constrained-host`
-   - future restricted token/AppContainer/other host containment.
-
-3. `isolated-worker`
-   - Windows Sandbox/container/VM/dedicated remote worker.
-
-Each Capability/Provider can declare supported/required modes.
-
-## 9. Layer 5 — Plugin Framework
-
-### 9.1 Plugin categories
-
-V3 retains one common Plugin contract with typed contributions.
-
-Plugin categories include:
+Plugin categories may still be useful organizationally:
 
 - Application Plugin;
 - Agent Provider Plugin;
 - Worker Provider Plugin;
-- future integration providers.
+- UI/Operator Plugin.
 
-A plugin may contribute:
+But all runtime activation is expressed through Components/Fibers.
 
-- Capability descriptors;
-- Capability Bindings;
-- downstream definitions;
-- Asset packages;
-- Agent Providers;
-- Worker Providers;
-- typed adapters;
-- health/lifecycle hooks.
+Remote callers never provide arbitrary executable plugin paths.
 
-### 9.2 Trust modes
+Independent third-party packages require authenticated/reviewed packaging or an isolated Plugin Host.
 
-Foundation V2 built-in plugins are reviewed in-process trusted code.
+## 8. Service graph
 
-V3 target trust classes:
+Service Key is a typed stable runtime-composition contract.
 
-- builtin-trusted;
-- installed-trusted;
-- out-of-process-isolated.
+Representative keys:
 
-The packaging/signing mechanism for independently distributed plugins remains a separate implementation decision.
+```text
+p05.capabilities
+p05.capability-resolver
+p05.agent-providers
+p05.skills
+p05.host-process
+p05.terminal
+p05.work-isolation
+p05.resource-leases
+p05.worker
+p05.downstream-mcp
+app.matlab
+app.stm32
+ui.operator-console
+```
 
-Remote callers never supply an arbitrary executable plugin path.
+Default rule:
 
-### 9.3 Failure isolation
+- one active direct provider per key per realm.
 
-Plugin failure is local where possible.
+For many implementations, use a broker/registry service.
 
-A failed Application Plugin must not crash Core.
-A failed Agent Provider invalidates its sessions/providers but not unrelated providers.
-An out-of-process Plugin Host failure is a recoverable provider failure.
+Example:
 
-## 10. Layer 6 — Capability Catalog, Bindings and Resolver
+```text
+p05.agent-providers
+     -> codex contribution
+     -> reference-agent contribution
+     -> future provider contribution
+```
 
-### 10.1 Semantic Capability
+Contributions are Fiber-owned E1 effects.
 
-Capability describes **what can be done**.
+## 9. Capability system
 
-Descriptor includes:
+P05 keeps one semantic Capability Catalog.
 
-- stable capability id;
+### 9.1 Capability Descriptor
+
+Capability owns:
+
+- stable id;
 - contract version;
-- description;
-- input schema;
-- output schema;
-- risk;
-- scope;
+- typed input/output;
+- scope/risk;
 - effect class;
 - verification contract;
 - timeout/budget defaults;
-- required/supported execution modes;
-- resource requirements;
-- tags/discovery metadata;
-- compatibility constraints.
+- required execution modes/resources;
+- discovery metadata.
 
 Examples:
 
@@ -733,75 +628,214 @@ Examples:
 core.fs.read
 core.git.commit
 matlab.model.check
-matlab.signal.export
 stm32.clean_build
-stm32.flash_verify
+stm32.flash.verify
 ```
 
-### 10.2 Capability Binding
+### 9.2 Capability Binding
 
-Binding describes **how a Capability is implemented**.
+Binding describes implementation.
 
 Binding types:
 
-- core primitive;
-- plugin adapter;
-- verified asset;
-- agent-backed;
-- composed capability.
+- Core primitive;
+- Component adapter;
+- Verified Asset;
+- Agent-backed;
+- composed.
 
-Binding metadata includes:
+Binding contribution is dynamic and Fiber-owned.
 
-- binding id/version;
-- capability id/version range;
-- owner plugin/provider;
-- implementation reference;
-- software/environment constraints;
-- supported Workspace kinds;
-- execution modes;
-- health/availability;
-- verification evidence;
-- priority/selection hints.
+The selected Binding id/version is pinned per Invocation.
 
-### 10.3 Resolver
+A retired Binding cannot receive new Invocations.
 
-Capability Resolver selects an authorized compatible binding using:
+### 9.3 Capability Resolver
 
-- active Execution Context;
+Resolver uses:
+
+- ExecutionContext;
+- live Context;
 - Workspace;
-- plugin activation;
-- software/toolchain availability;
+- Policy;
+- software/environment compatibility;
+- Component health;
 - execution mode;
 - resource availability;
-- requested constraints;
-- policy.
+- requested constraints.
 
-The selected binding is recorded in the invocation ledger.
+Live Context chooses available implementations.
+Trust Kernel determines whether selection/execution is authorized.
 
-A long-running Run MUST NOT silently switch implementation revision after restart.
-Resolved binding/version is pinned per invocation/step unless an explicit recovery migration occurs.
+### 9.4 Meta-Capability term
 
-### 10.4 Meta-Capability term
+Meta-Capability may remain a product/domain term for a stable semantic Capability with replaceable Bindings.
 
-"Meta-Capability" remains a useful product/domain term for a stable semantic engineering action.
+It is not a second registry.
 
-Architecturally it is **not a second catalog**.
-It is a Capability whose implementation is late-bound through Capability Bindings.
+## 10. Effect classes
 
-## 11. Layer 7 — Asset Registry and Artifact Store
+P05 formally distinguishes effects.
 
-### 11.1 Asset
+### E0 — Pure
 
-Asset is reusable implementation/input material.
+No external state change.
+
+### E1 — Revertible Component Effect
+
+Local registration/lifetime effect with structural disposer.
+Fiber-owned and auto-cleaned.
+
+### E2 — Managed Resource Effect
+
+Explicit acquire/release resource with durable identity/recovery.
 
 Examples:
 
-- MATLAB .m script;
-- Python/PowerShell script;
-- GDB command file;
-- build configuration;
-- template;
-- validated model-processing helper.
+- worktree;
+- PTY/process;
+- Worker allocation;
+- resource lease;
+- downstream connection.
+
+Owned by Run/resource manager, not destroyed merely because provider implementation reloads.
+
+### E3 — Durable External Mutation
+
+Mutation that can be verified/idempotent/deduplicated/compensated but is not Fiber-reversible.
+
+Examples:
+
+- file write;
+- git commit;
+- MATLAB model mutation;
+- external API update.
+
+Uses Invocation Ledger.
+
+### E4 — Irreversible/elevated mutation
+
+Examples:
+
+- git push/release publish;
+- firmware flash;
+- hardware actuation;
+- system configuration.
+
+Requires elevated Policy/Approval/verification.
+
+No E3/E4 action is registered as automatic Fiber rollback.
+
+## 11. Execution substrate
+
+### 11.1 Host Session
+
+Logical execution container on one host/Worker.
+
+Not identical to:
+
+- MCP connection;
+- Agent Session;
+- Fiber;
+- PID.
+
+### 11.2 Process Driver
+
+For non-interactive commands.
+
+Owns:
+
+- spawn/exec;
+- stdin as applicable;
+- stdout/stderr events;
+- exit;
+- stop/kill;
+- tree supervision;
+- resource limits where available.
+
+### 11.3 Terminal Driver
+
+For interactive TTY workloads.
+
+Windows reference direction:
+
+- ConPTY/node-pty or equivalent.
+
+Terminal is interaction primitive, not sandbox.
+
+### 11.4 Process tree supervisor
+
+Windows target SHOULD investigate Job Object-backed supervision.
+
+### 11.5 Output
+
+Long-running output uses:
+
+- monotonic cursor;
+- bounded window;
+- optional bounded spill;
+- truncation metadata;
+- Artifact promotion where retention is required.
+
+## 12. Work Isolation
+
+Work isolation protects mutable project state.
+
+Kinds:
+
+- workspace-direct;
+- git-worktree;
+- session-root;
+- scratch/generated root.
+
+Writing Agents in Git Workspaces default to dedicated worktrees.
+
+Worktree isolation does not limit Windows-user authority.
+
+## 13. Security execution modes
+
+Independent from work isolation:
+
+1. `trusted-host`
+2. `constrained-host`
+3. `isolated-worker`
+
+Capability/Agent Provider declares supported/required modes.
+
+Policy selects what is permitted.
+
+## 14. Resource Lease Manager
+
+Engineering resources may need exclusivity independent of filesystem isolation.
+
+Examples:
+
+- ST-Link;
+- CAN interface;
+- hardware bench;
+- MATLAB instance;
+- integration branch;
+- GUI desktop session.
+
+Requirements:
+
+```text
+shared(resource)
+exclusive(resource)
+bounded(resource, n)
+```
+
+Leases are durable metadata and recover conservatively after interruption.
+
+## 15. Asset and Artifact
+
+### Asset
+
+Reusable versioned material:
+
+- MATLAB/Python/PowerShell/GDB script;
+- config/template;
+- deterministic automation helper.
 
 Lifecycle:
 
@@ -809,374 +843,308 @@ Lifecycle:
 DRAFT -> VERIFIED -> ACTIVE -> DEPRECATED
 ```
 
-Optional human/project approval may be required between VERIFIED and ACTIVE.
+Changed hash => new revision/reverification.
 
-Asset revision contains:
+### Artifact
 
-- stable asset id;
-- revision/version;
-- content hash;
-- owner;
-- runtime type;
-- dependency/toolchain constraints;
-- input/output contract;
-- verification evidence;
-- lifecycle state.
-
-Changed content hash requires a new verified revision.
-
-### 11.2 Artifact
-
-Artifact is output produced by a Run.
-
-Examples:
+Output produced by a Run:
 
 - report;
-- build binary;
-- test result;
-- diff/patch;
-- log bundle;
+- binary;
+- patch;
+- firmware image;
 - generated code;
-- MATLAB export;
-- firmware image.
+- test result.
 
-Artifact record contains:
+Artifacts carry producing Run/Invocation lineage.
 
-- artifact id;
-- producing run/invocation;
-- type;
-- content hash;
-- storage reference;
-- size;
-- schema/media metadata;
-- retention policy;
-- verification/signature metadata where relevant.
+Artifact becomes Asset only via explicit promotion/verification.
 
-Assets and Artifacts are intentionally distinct.
+## 16. Agent Runtime
 
-### 11.3 Blob storage
+Agent is an execution actor, not Capability or Fiber.
 
-Large immutable content SHOULD be stored content-addressably outside operational SQLite state.
+Concrete Agent implementations are Provider Components.
 
-State records store references, hashes and bounded metadata.
-
-## 12. Layer 8 — Agent Runtime
-
-### 12.1 Definition
-
-Agent is an execution actor that receives an objective and works using authorized capabilities/workspace access.
-
-Agent is not itself a Capability.
-
-Concrete Agent implementations enter through Agent Provider Plugins.
-
-### 12.2 Provider-neutral contract
-
-Target internal control surface:
-
-```text
-agent.providers()
-agent.start(request)
-agent.submit(session, task)
-agent.status(session)
-agent.output(session, cursor)
-agent.stop(session)
-agent.resume(session)        // only when provider supports it
-agent.handoff(...)
-```
-
-Remote MCP tools may expose a subset.
-
-### 12.3 Agent request
-
-An Agent request declares:
+Agent request declares:
 
 - objective;
 - role/requirements;
 - Workspace;
-- write/read mode;
-- required Capability set;
-- allowed Capability set;
-- execution/security mode constraints;
+- read/write intent;
+- required/allowed Capabilities;
+- execution/security constraints;
 - budget/time limits;
 - output schema/DoD;
-- parent Task/Skill;
-- context/artifact references.
+- parent Run/artifacts/context refs.
 
-It does not name a concrete CLI unless the caller explicitly requested a provider.
+Agent Session:
 
-### 12.4 Provider capabilities
+- is durable Run-domain state;
+- references provider id/version;
+- uses Work Isolation;
+- may own Host Sessions;
+- survives provider Fiber disappearance as explicit waiting/interrupted/recovery state.
 
-Provider descriptor may declare:
+Provider registration is E1.
+Agent Session is not E1.
 
-- interactive terminal required;
-- stateless task supported;
-- persistent conversation/session supported;
-- resume/reattach supported;
-- structured output supported;
-- tool bridge mode;
-- model/provider metadata;
-- execution mode support.
+## 17. Handoff
 
-### 12.5 Agent Session
-
-Agent Session is a durable application object backed by one Run.
-
-It may own one or more Host Sessions during its lifetime.
-
-It records:
-
-- provider id/version;
-- objective/task;
-- Execution Context;
-- isolation allocation;
-- capability envelope;
-- Host Session references;
-- output/artifact references;
-- recovery state.
-
-### 12.6 Handoff package
-
-Handoff is explicit data, not implicit conversation transfer.
-
-Minimum Handoff Package:
+Handoff is bounded explicit data:
 
 - source/target role;
 - objective;
 - current status;
-- bounded context summary;
-- relevant artifact refs;
-- relevant diff/commit refs;
-- unresolved questions;
+- bounded summary;
+- Artifact/change refs;
+- unresolved items;
 - constraints;
 - required output/DoD;
-- lineage ids.
+- lineage.
 
-Full prior conversation history is not forwarded by default.
+Full previous conversation is not forwarded by default.
 
-## 13. Layer 9 — Skill / Workflow Runtime
+Handoff never increases authority.
 
-### 13.1 Skill definition
+## 18. Skill Runtime
 
-Skill is a reusable executable process over Capabilities and Agent tasks.
+Skill is reusable declarative workflow.
 
-A Skill is:
+Required:
 
-- versioned;
-- immutable once ACTIVE;
-- typed;
-- inspectable;
-- bounded;
-- declarative.
-
-Required metadata:
-
-- skill id/version;
-- description;
-- input/output schemas;
-- required Capability contracts;
+- id/version;
+- typed I/O;
+- Capability requirements;
 - optional Agent requirements;
 - workflow graph;
 - DoD;
-- stop conditions;
-- retry policy;
+- stop/retry rules;
 - budgets/timeouts;
 - approval points;
 - recovery semantics.
 
-### 13.2 Allowed workflow primitives
+Allowed primitives:
 
-Closed primitive set:
-
-- capability step;
-- agent task step;
-- sequence/dependency edge;
+- Capability step;
+- Agent task;
+- sequence;
 - condition;
 - bounded loop;
-- parallel fan-out;
+- parallel;
 - join;
 - verify;
 - approval;
-- wait/event;
+- wait;
 - retry;
 - fallback;
 - handoff;
 - reconcile;
 - complete/fail/cancel.
 
-Every loop declares:
+Static validation checks:
 
-- exit condition;
-- maximum iterations;
-- maximum elapsed time or budget.
-
-### 13.3 Skill validation
-
-Before activation, Skill compiler/validator checks:
-
-- graph validity;
-- schema compatibility;
-- Capability existence/version compatibility;
-- forbidden direct provider/file bindings;
+- graph;
+- schema;
+- Capability contracts;
 - bounded loops;
-- retry/effect compatibility;
+- retry vs effect-class safety;
 - approval requirements;
-- parallel write/isolation requirements;
-- output reachability;
-- DoD presence.
+- parallel writer isolation;
+- output/DoD reachability.
 
-### 13.4 Skill Run
+Executing Skill Run pins Skill version.
 
-Skill Run is a durable Run pinned to a Skill version.
+## 19. Orchestrator
 
-At execution, each step records:
+Orchestrator coordinates durable work.
 
-- selected Capability Binding/provider;
-- child Run ids;
-- inputs/outputs digests;
-- attempt/retry state;
-- verification state.
+It owns:
 
-Skill upgrades create a new version.
-An in-flight Skill Run does not silently move to a new definition.
-
-## 14. Layer 10 — Orchestrator
-
-### 14.1 Purpose
-
-Orchestrator coordinates work; it does not implement engineering business logic.
-
-It manages:
-
-- Task Run lifecycle;
-- Task Graph dependencies;
+- Task graph execution;
+- dependencies;
 - Skill invocation;
 - Agent assignment;
 - parallel branches;
 - resource scheduling;
-- approvals;
+- Approval waits;
 - Handoffs;
 - reconciliation;
 - retries/recovery;
-- result collection;
-- completion.
+- completion evaluation.
 
-### 14.2 Task Plan
+It MUST NOT implement MATLAB/STM32 business logic.
 
-ChatGPT or another authorized planner may submit a Task Plan.
+Orchestrator itself may be a replaceable Component service, but:
 
-Task Plan is explicit data:
+- Task/Run history lives in Trust/Durable Kernel;
+- Policy/Approval do not live inside Orchestrator;
+- replacing Orchestrator cannot rewrite completed Invocation history.
 
-- objective;
-- Workspace/device constraints;
-- nodes;
-- dependencies;
-- required Skills/Capabilities/Agent roles;
-- budgets;
+## 20. Declarative composition profiles
+
+V3 adopts desired-state Component composition.
+
+Example:
+
+```yaml
+profile: engineering-dev
+
+bundles:
+  - p05/base
+  - p05/developer
+  - apps/matlab
+  - apps/stm32
+  - agents/coding
+  - ui/operator-console
+
+components:
+  p05.terminal:
+    provider: windows-conpty
+  p05.worker:
+    provider: trusted-host
+```
+
+Composition Profile is not Tool/Permission Profile.
+
+- Composition Profile = what Components should exist.
+- Permission Profile = what remote/interactive authority is available.
+
+One never implies the other.
+
+## 21. Config reconciliation / HMR
+
+Component Loader compares desired graph to live graph.
+
+Actions:
+
+- INSERT;
+- KEEP;
+- UPDATE_CONFIG;
+- REPLACE;
+- RETIRE;
+- REMOVE.
+
+Replacement process:
+
+```text
+candidate
+  -> validate/build/test
+  -> Shadow Context
+  -> contract/effect/dependency tests
+  -> optional approval
+  -> activate candidate Fiber
+  -> redirect new resolution
+  -> retire old Fiber
+  -> drain
+  -> dispose
+```
+
+Ordinary HMR excludes Trust Kernel components.
+
+Trust Kernel updates use verified process restart/external broker.
+
+## 22. Self-evolution
+
+P05 may generate or modify Components/Assets/Skills, but promotion follows authority boundaries.
+
+Self-development is allowed.
+Self-authorization is not.
+
+Candidate code cannot:
+
+- approve its own elevation;
+- replace Policy through ordinary Component config;
+- alter Audit history;
+- widen Workspace authorization;
+- hide E3/E4 effects as E1 cleanup.
+
+Shadow Context is the default candidate-validation environment.
+
+## 23. Multi-device
+
+Each P05 Node owns:
+
+- device identity;
+- local Workspace registry;
+- local Policy;
+- local State Store;
+- local Component graph;
+- local Plugins/Providers;
+- local host authority.
+
+Cross-device work is explicit delegation.
+
+Remote Node remains authoritative for its own Policy/Approval/resource leases.
+
+A central controller does not share a mutable SQLite file with other nodes.
+
+## 24. GUI / Operator Console
+
+Operator Console is an observability/control projection over canonical runtime state.
+
+It SHOULD display:
+
+- device/node;
+- Workspace;
+- Context tree;
+- Fiber state;
+- pending dependencies;
+- service providers;
+- Component graph;
+- Run state;
+- Run-to-Binding/Fiber relationships;
+- work/security isolation;
 - approvals;
-- completion conditions.
+- leases;
+- reconciliation;
+- desired-vs-live config;
+- cleanup leaks/failures.
 
-The Orchestrator validates the plan before execution.
+UI is not a second source of truth.
 
-### 14.3 Ad-hoc vs Skill execution
+GUI automation for engineering applications is a separate Provider/Worker concern and remains optional/high-risk.
 
-Two valid modes:
+## 25. Downstream MCP
 
-1. reusable path:
-   Task -> Skill -> steps
+Downstream MCP is an implementation mechanism.
 
-2. ad-hoc path:
-   Task -> explicit Capability/Agent graph
+Rules:
 
-Successful recurring ad-hoc procedures may later be promoted to Skills, but are not automatically treated as trusted
-reusable workflows.
+- downstream belongs to Component/Plugin ownership;
+- Workspace/device binding is explicit;
+- generic downstream call remains elevated;
+- stable engineering behavior should become typed semantic Capabilities;
+- downstream protocol state does not become P05 Run state.
 
-### 14.4 Parallelism
+## 26. Audit / trace / observability
 
-The scheduler evaluates:
+Separate:
 
-- dependency readiness;
-- work isolation;
-- resource leases;
-- policy;
-- device/provider capacity;
-- budget.
-
-Parallel writing branches receive independent Isolation allocations.
-
-### 14.5 Completion
-
-Task success requires its declared completion/DoD, not merely all child processes exiting zero.
-
-Completion may require:
-
-- verification Capabilities;
-- Artifact presence;
-- reconciliation success;
-- approvals;
-- clean integration state.
-
-## 15. Audit, Trace and Observability
-
-### 15.1 Separate concerns
-
-- Durable Run state: operational truth.
-- Audit: security/operation metadata.
-- Trace: causal observability.
-- Output: transient execution stream.
-- Artifact: retained run output.
+- Run state = operational truth;
+- Audit = security/action metadata;
+- Trace = causal observability;
+- Output stream = transient execution data;
+- Artifact = retained result;
+- Fiber graph = live composition state.
 
 They correlate but are not interchangeable.
 
-### 15.2 Trace model
+## 27. Error and recovery
 
-P05 uses OpenTelemetry-compatible concepts:
-
-- trace id;
-- span id;
-- parent span;
-- links for joins/handoffs when parent-child is insufficient.
-
-MCP trace context may be imported/exported at Protocol Edge.
-
-Sensitive information is not placed in propagated baggage by default.
-
-### 15.3 Audit
-
-Audit remains metadata-first.
-
-Examples:
-
-- actor;
-- capability;
-- selected binding;
-- Workspace/device;
-- run/invocation;
-- state;
-- duration;
-- effect class;
-- approval id;
-- error classification;
-- recovery decision.
-
-Raw prompt/file/terminal bodies are not automatically retained in Audit.
-
-## 16. Error and recovery model
-
-Errors are classified at the smallest responsible layer.
-
-Categories include:
+Error categories include:
 
 - policy;
 - validation;
+- dependency-unavailable;
 - capability-unavailable;
 - binding-unavailable;
 - resource-busy;
-- timeout;
+- component;
+- provider;
 - process;
 - terminal;
-- provider;
-- plugin;
+- timeout;
 - downstream;
 - verification;
 - conflict;
@@ -1185,463 +1153,247 @@ Categories include:
 - storage;
 - unknown.
 
-Recovery action is explicit:
+Recovery actions:
 
 - retry;
 - resume;
-- inspect;
-- fallback binding/provider;
+- wait dependency;
+- fallback Binding/provider;
 - handoff;
 - reconcile;
 - request input;
-- request approval;
+- request Approval;
 - fail.
 
-Recovery does not automatically repeat unsafe external effects.
+Unsafe external effects are not blindly replayed.
 
-## 17. Multi-device target
+## 28. Dependency direction
 
-### 17.1 P05 Node
+```text
+Protocol Edge
+   -> public application services
 
-Each computer runs a P05 Node with its own:
+Orchestrator
+   -> Skill Runtime
+   -> Agent Runtime
+   -> Capability Resolver
+   -> Resource/Isolation/Approval
+   -> Durable Run Kernel
 
-- device identity;
-- local Workspace registry;
-- local policy;
-- local state store;
-- local Plugins/Providers;
-- local host authority.
+Skill Runtime
+   -> Capability Resolver
+   -> Agent Runtime
+   -> Durable Run Kernel
 
-### 17.2 Device Registry
+Agent Runtime
+   -> Agent Provider Service
+   -> Work Isolation / Host Session
+   -> Durable Run Kernel
 
-A controller may know multiple Nodes through Device descriptors:
+Capability Resolver
+   -> live Context service graph
+   -> Capability Bindings
+      -> Core primitive
+      -> Component adapter
+      -> Verified Asset
+      -> Agent-backed implementation
 
-- device id;
-- labels;
-- online state;
-- capability summary;
-- plugin/provider summary;
-- trust/auth relationship.
+Composition Kernel
+   -> Trust Kernel contracts
+   X must not override Policy/Approval/Run history
+```
 
-### 17.3 Delegated execution
+Forbidden:
 
-Cross-device work is explicit delegation.
+- Skill -> script filename;
+- Skill -> Agent executable;
+- Component -> Policy force-allow;
+- Context -> canonical authority identity;
+- Fiber -> canonical Run lifetime;
+- Asset -> authorization;
+- Orchestrator -> MATLAB/STM32 business logic;
+- worktree -> sandbox claim;
+- HMR -> Trust Kernel replacement without verified restart.
 
-The remote Node remains authoritative for its own:
+## 29. Source structure
 
-- Workspace boundary;
-- local policy;
-- approval requirements;
-- resource leases;
-- host execution.
-
-A controller cannot expand remote authority merely because it orchestrates the Task.
-
-### 17.4 State ownership
-
-Execution state is owned by the Node performing the work.
-
-A higher-level Orchestrator stores remote child references/status, not a shared mutable SQLite file.
-
-Future agent/workload identity standards may improve delegated authorization without changing these contracts.
-
-## 18. GUI / interactive desktop target
-
-GUI automation is optional and high-risk.
-
-It MUST NOT be embedded into Core File/Git/Process logic.
-
-Target model:
-
-- GUI/Computer Interaction Provider Plugin;
-- explicit interactive desktop/Worker allocation;
-- bounded screenshot/input operations;
-- policy/approval checks;
-- Artifact capture;
-- auditable session lifecycle.
-
-For applications with stable API/CLI/MCP interfaces, those interfaces remain preferred over GUI automation.
-
-## 19. Downstream MCP
-
-Downstream MCP remains an implementation/provider mechanism.
-
-Rules:
-
-- downstream server belongs to a Plugin or explicit Core integration;
-- Workspace/device binding is explicit;
-- generic downstream invocation remains elevated;
-- stable engineering functionality should graduate into typed semantic Capabilities;
-- downstream protocol state is not exposed as P05 workflow state.
-
-P05 may act as both MCP server and MCP client without coupling the two runtimes.
-
-## 20. Recommended target source structure
+Target logical layout:
 
 ```text
 src/
   protocol/
-    mcp/
-      adapter.ts
-      compatibility.ts
-      tasks.ts
 
-  context/
-    execution-context.ts
-
-  state/
-    store.ts
-    sqlite-store.ts
-    migrations/
-
-  run/
-    types.ts
-    kernel.ts
-    events.ts
-    recovery.ts
+  trust/
+    identity/
+    policy/
+    approval/
+    audit/
 
   workspace/
   device/
+
+  run/
+    kernel.ts
+    store.ts
+    events.ts
+    recovery.ts
+    invocation-ledger.ts
+
+  composition/
+    context.ts
+    service-key.ts
+    component.ts
+    fiber.ts
+    effect.ts
+    dependency.ts
+    events.ts
+    scope.ts
+    loader.ts
+    reconciler.ts
 
   capability/
     catalog.ts
     descriptor.ts
     binding.ts
     resolver.ts
-    invocation.ts
 
-  policy/
-    authorization.ts
-    effects.ts
-    approval.ts
+  plugin/
+    package.ts
+    manifest.ts
 
   resource/
     leases.ts
 
-  execution/
-    runtime.ts
-    errors.ts
-
   session/
-    host-session.ts
-    output.ts
-
   process/
-    driver.ts
-    supervisor.ts
-    drivers/
-
   terminal/
-    driver.ts
-    drivers/
-
   isolation/
-    manager.ts
-    git-worktree.ts
-    reconcile.ts
-
   worker/
-    provider.ts
-    registry.ts
-    drivers/
-
-  plugin/
-    manifest.ts
-    registry.ts
-    runtime.ts
-    host.ts
 
   asset/
-    registry.ts
-    verification.ts
-    blob-store.ts
-
   artifact/
-    registry.ts
 
   agent/
-    types.ts
-    provider.ts
-    registry.ts
-    runtime.ts
-    handoff.ts
-
   skill/
-    types.ts
-    validator.ts
-    registry.ts
-    runtime.ts
-
   orchestrator/
-    task.ts
-    graph.ts
-    scheduler.ts
-    runtime.ts
 
-  audit/
   telemetry/
 
 plugins/
   applications/
-    matlab/
-    stm32/
   agents/
-    <provider>/
   workers/
-    <provider>/
 
 skills/
-  <skill-id>/
-    skill.yaml
-    README.md
 ```
 
-Physical migration may be incremental. Dependency direction is normative; directory names are not.
+Physical migration can be incremental.
+Architectural ownership is normative.
 
-## 21. Dependency direction
-
-Allowed high-level dependencies:
-
-```text
-Protocol Edge
-   -> Orchestrator / direct public services
-
-Orchestrator
-   -> Skill Runtime
-   -> Agent Runtime
-   -> Capability Resolver
-   -> Resource / Isolation / Approval
-
-Skill Runtime
-   -> Capability Resolver
-   -> Agent Runtime
-   -> Run Kernel
-
-Agent Runtime
-   -> Agent Provider
-   -> Isolation
-   -> Host Session
-   -> Capability envelope
-   -> Run Kernel
-
-Capability Resolver
-   -> Capability Binding
-       -> Core Primitive
-       -> Plugin Adapter
-       -> Verified Asset
-       -> Agent-backed implementation
-
-All executable paths
-   -> Policy
-   -> Execution Runtime
-   -> Run Kernel / Audit / Trace
-```
-
-Forbidden reverse dependencies:
-
-- Core imports Skill;
-- Core imports MATLAB/STM32;
-- Process Driver imports Agent Provider;
-- Skill binds to provider executable path;
-- Asset decides policy;
-- Plugin expands its own authority;
-- Protocol adapter becomes lifecycle source of truth.
-
-## 22. Architecture rules
+## 30. Architecture rules
 
 | ID | Rule |
 |---|---|
-| ARC-01 | Protocol transport/session state is never P05 application state. |
-| ARC-02 | Long-lived execution captures immutable Execution Context. |
-| ARC-03 | All durable domain runtimes use the Run Kernel. |
-| ARC-04 | One semantic Capability Catalog; implementation is in Bindings. |
-| ARC-05 | Capability retry is constrained by effect/idempotency class. |
-| ARC-06 | All execution passes Policy/Execution/Audit. |
-| ARC-07 | Parallel writers use independent Work Isolation. |
-| ARC-08 | Worktree isolation must never be represented as OS sandboxing. |
-| ARC-09 | Agent Provider is late-bound and cannot grant authority. |
-| ARC-10 | Skills reference semantic contracts, never implementation filenames/paths. |
-| ARC-11 | Skill loops and retries are bounded. |
-| ARC-12 | In-flight runs pin definition/binding revisions. |
-| ARC-13 | Asset and Artifact lifecycles remain separate. |
-| ARC-14 | Parallel output requires explicit reconciliation before integration. |
-| ARC-15 | Approval cannot be self-issued by the requesting Agent. |
-| ARC-16 | Device-local policy remains authoritative in multi-device execution. |
-| ARC-17 | GUI automation is an optional provider, not Core business logic. |
-| ARC-18 | Large/raw output is bounded and referenced, not stored unbounded in state/audit. |
+| ARC-01 | Protocol state is not P05 application state. |
+| ARC-02 | Context is dynamic composition; ExecutionContext is immutable authority/execution scope. |
+| ARC-03 | Fiber lifetime is not durable Run lifetime. |
+| ARC-04 | Every dynamic registration has exactly one Fiber owner. |
+| ARC-05 | Only E1 effects use automatic Fiber disposal. |
+| ARC-06 | E2/E3/E4 effects use durable execution/resource semantics. |
+| ARC-07 | Missing required services prevent Component activation. |
+| ARC-08 | Dependency loss causes controlled retirement/reactivation. |
+| ARC-09 | Retiring providers receive no new consumers. |
+| ARC-10 | Provider disposal waits for bounded drain or records interruption. |
+| ARC-11 | One semantic Capability Catalog; implementation uses Bindings. |
+| ARC-12 | In-flight Invocation pins Binding identity/revision. |
+| ARC-13 | Policy denial cannot be reversed by composition interceptors. |
+| ARC-14 | Work isolation is not security isolation. |
+| ARC-15 | Parallel writers require explicit reconciliation. |
+| ARC-16 | Skills are typed/versioned/bounded. |
+| ARC-17 | Assets and Artifacts remain distinct. |
+| ARC-18 | Composition Profile never implies Permission Profile. |
+| ARC-19 | Trust Kernel is excluded from ordinary self-HMR. |
+| ARC-20 | Device-local authority remains authoritative in multi-device execution. |
 
-## 23. Target public application services
+## 31. Acceptance criteria for V3
 
-These names describe stable application concepts; exact MCP exposure may differ by client/version.
+V3 is complete only when all of the following are true:
 
-### System
+1. Foundation V2 authority/path/security invariants remain valid.
+2. Protocol reconnect/version changes do not redefine durable P05 Runs.
+3. Context/ExecutionContext separation is enforced.
+4. Interactive Workspace switch cannot retarget an existing Run.
+5. Durable Run state survives restart.
+6. Dynamic Component registrations clean up structurally with Fiber unload.
+7. Required-service loss produces controlled Component retirement.
+8. Workspace/Agent/Shadow Contexts can resolve scoped implementations without cloning the whole runtime.
+9. Retiring provider stops new selection before drain.
+10. Durable Run can survive compatible provider Fiber replacement.
+11. E3/E4 mutations cannot be represented as automatic Fiber rollback.
+12. Process and Terminal are separate Driver contracts.
+13. Process trees have a reliable supervisor path.
+14. Parallel writing Agents use isolated mutable roots.
+15. Security isolation is explicit and independent.
+16. Semantic Capabilities use one Catalog with versioned Bindings.
+17. In-flight Invocations pin implementation revisions.
+18. Capability effect class constrains retries/recovery.
+19. Unverified Assets cannot back active production Bindings.
+20. Artifacts retain producing-Run lineage.
+21. Multiple Agent Providers can coexist as dynamic contributions.
+22. Agent Session durability is independent of Provider Fiber lifetime.
+23. Skills are statically validated and bounded.
+24. Orchestrator supports dependencies, parallel/join, approvals, handoff and reconcile.
+25. Resource Leases prevent unsafe engineering-resource contention.
+26. Parallel results cannot silently overwrite each other.
+27. Trust Kernel boots without optional Application/Agent/Worker Components.
+28. Ordinary Component configuration cannot replace Policy/Approval/State integrity modules.
+29. Declarative composition profile deterministically reconciles to a live graph.
+30. Shadow Context can validate candidate Components without modifying live resolution.
+31. Operator Console can project the canonical Run + Context/Fiber graph without owning it.
+32. Multi-device delegation cannot broaden target-node authority.
 
-```text
-device_list
-workspace_list
-workspace_current
-capability_search
-capability_describe
-plugin_list
-activity_recent
-recovery_status
-```
-
-### Task
-
-```text
-task_start
-task_status
-task_output
-task_input
-task_pause
-task_resume
-task_cancel
-```
-
-### Skill
-
-```text
-skill_list
-skill_describe
-skill_run
-skill_status
-skill_cancel
-skill_resume
-```
-
-### Agent
-
-```text
-agent_list
-agent_start
-agent_task
-agent_status
-agent_output
-agent_stop
-agent_handoff
-```
-
-### Capability
-
-Typed direct capability tools may coexist with:
-
-```text
-capability_describe
-capability_invoke
-```
-
-A generic invocation endpoint MUST enforce the referenced Capability's exact policy/schema/effect contract and is not a
-generic arbitrary downstream proxy.
-
-### Approval / reconciliation
-
-```text
-approval_status
-reconcile_status
-reconcile_apply
-```
-
-Approval resolution may be external to the Agent-facing tool surface.
-
-## 24. V3 acceptance criteria
-
-V3 architecture is implemented only when all of the following are true:
-
-1. Foundation V2 security/Workspace invariants remain valid.
-2. Protocol Edge can evolve independently of Core application state.
-3. MCP reconnect does not lose or retarget durable P05 Runs.
-4. Long-lived Runs do not depend on mutable global active Workspace identity.
-5. Durable Run state survives P05 restart with explicit recovery classification.
-6. State transitions are transactionally persisted.
-7. Process and Terminal are separate Driver contracts.
-8. Host process trees have a reliable supervisor implementation.
-9. Parallel writing Agents receive isolated mutable roots.
-10. Security isolation mode is explicit and separate from work isolation.
-11. Multiple Agent Providers can coexist.
-12. Agent Provider failure is local and recoverable.
-13. Semantic Capabilities use one Catalog with replaceable Bindings.
-14. Binding/Asset revisions are pinned for in-flight execution.
-15. Capability effect classification controls retries.
-16. Unverified Assets cannot back ACTIVE production bindings.
-17. Artifacts carry producing-run lineage and content identity.
-18. Skills are typed, versioned, bounded and statically validated.
-19. Skills do not reference implementation paths/providers when semantic abstraction exists.
-20. Orchestrator supports dependency graphs, parallel/join, approvals, handoffs and reconciliation.
-21. Parallel writers cannot silently overwrite/integrate one another.
-22. Resource Leases prevent unsafe parallel access to exclusive engineering resources.
-23. Audit/Trace/Run/Artifact are separately modeled and correlated.
-24. Core boots without Application, Agent or Worker plugins.
-25. Multi-device delegation cannot broaden target-device authority.
-26. GUI/isolated worker support can be added without redesigning Core Runtime.
-27. The architecture works whether or not a client supports the MCP Tasks extension.
-28. No subsystem requires raw unbounded prompt/terminal/file content in durable metadata state.
-
-## 25. Implementation sequencing
-
-Implementation should be incremental, but sequencing is subordinate to this complete target.
-
-Recommended dependency order:
-
-1. Protocol/state model and Execution Context.
-2. Durable Run Kernel + transactional State Store.
-3. Process/Terminal/Host Session Drivers.
-4. Work Isolation + Resource Leases + reconciliation.
-5. Capability Binding/Resolver and Asset/Artifact model.
-6. Agent Runtime + reference Provider.
-7. Skill validator/runtime.
-8. Orchestrator.
-9. application Meta-Capabilities and domain Skills.
-10. multi-device / isolated workers / GUI providers.
-
-TARGET_ARCHITECTURE_V3A.md may continue to describe an early delivery slice, but it MUST NOT narrow or redefine the
-V3 target described here.
-
-## 26. Research and decisions
-
-Normative research basis:
+## 32. Research / canonical documents
 
 - `docs/research/V3_TECHNICAL_RESEARCH.md`
+- `docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md`
+- `docs/architecture/CONTEXT-COMPONENT-RUNTIME.md`
+- `docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md`
+- `docs/architecture/PLUGIN-FRAMEWORK.md`
+- `docs/architecture/PERMISSION-MODEL.md`
+- `docs/architecture/TOOL-PROFILES.md`
+- `docs/architecture/TARGET_ARCHITECTURE_V3A.md` (implementation slice only)
+- `docs/adr/ADR-0014-protocol-edge-explicit-handles.md`
+- `docs/adr/ADR-0015-durable-run-kernel-state.md`
+- `docs/adr/ADR-0016-host-session-terminal-isolation.md`
+- `docs/adr/ADR-0017-capability-bindings-assets.md`
+- `docs/adr/ADR-0018-trust-kernel-context-component-runtime.md`
 
-Related decisions:
+## 33. End state
 
-- ADR-0012 — Agent / Skill / Asset / Orchestrator Layering
-- ADR-0013 — V3-A Execution & Agent Foundation
-- later V3 ADRs for Protocol Edge, Durable Run/State, and Execution/Isolation contracts
+The mature P05 is not "a larger remote MCP server".
 
-## 27. End state
-
-The mature system is:
+It is:
 
 ```text
-Human / ChatGPT reasoning
-        |
-        v
+reasoning client
+     |
 stateless protocol edge
-        |
-        v
-durable task/orchestration state
-        |
-   +----+------------------+
-   |                       |
- Skill Runtime         Agent Runtime
-   |                       |
-   +--------+--------------+
-            v
-  semantic Capability Resolver
-            |
-   +--------+----------+----------------+
-   |                   |                |
- Core primitive   Plugin adapter   Verified Asset
-   |                   |                |
-   +-------------------+----------------+
-                       v
-           authorized execution
-                       |
-           Host/Terminal/Worker
-                       |
-        Engineering software/hardware
+     |
+trusted durable execution state
+     |
+dynamic context/component graph
+     |
+semantic capability resolution
+     |
+Agent / Skill / Application providers
+     |
+authorized execution substrate
+     |
+engineering software / hardware / remote nodes
 ```
 
-P05 V3 therefore becomes an engineering execution platform with explicit state, replaceable implementations,
-recoverable coordination and controlled authority — not merely a remote desktop replacement or a larger MCP server.
+The Trust/Durable Kernel makes authority and work history stable.
+The Composition Kernel makes implementations replaceable, scoped and cleanly unloadable.
+
+Together they provide the foundation for a self-evolving engineering Agent platform without making self-authorization
+or unsafe external rollback part of the composition model.

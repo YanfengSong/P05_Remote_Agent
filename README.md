@@ -582,9 +582,17 @@ node dist/test/policy-profiles.js
 
 长期目标：
 
+V3 采用双 Kernel 方向：
+- Trust / Durable Kernel：身份、Workspace 权限、ExecutionContext、Policy/Approval、Durable Run、State/Invocation/Audit；
+- Composition Kernel：Context、Service、Component/Fiber、Effect/Coeffect、依赖解析与声明式重组。
+
 - [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
+- [Context Component Runtime](docs/architecture/CONTEXT-COMPONENT-RUNTIME.md)
 - [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
 - [Agent / Skill / Orchestrator ADR](docs/adr/ADR-0012-agent-skill-orchestrator.md)
+- [Trust Kernel / Context Component Runtime ADR](docs/adr/ADR-0018-trust-kernel-context-component-runtime.md)
+- [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md)
+- [DeepSeek Harness / Cordis Benchmark](docs/research/DEEPSEEK_HARNESS_CORDIS_BENCHMARK.md)
 
 部署细节：
 
