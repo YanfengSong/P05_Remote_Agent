@@ -27,7 +27,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "git_push", minProfile: "full", risk: "write", scope: "external", summary: "Push the current branch to a named Git remote without force or arbitrary refspec." },
 
   { name: "command_run", minProfile: "developer", risk: "execute", scope: "platform", summary: "Run one server-side allowlisted P05 platform validation action." },
-  { name: "runtime_restart", minProfile: "developer", risk: "execute", scope: "host", summary: "Restart only the provisioned P05 runtime through the external broker." },
+  { name: "runtime_restart", minProfile: "developer", risk: "execute", scope: "host", summary: "Restart only the current P05 runtime slot through the repo-local restart controller." },
 
   { name: "mcp_status", minProfile: "developer", risk: "read", scope: "downstream", summary: "Show configured downstream MCP servers and their connection state." },
   { name: "mcp_list_tools", minProfile: "developer", risk: "read", scope: "downstream", summary: "Connect to a downstream MCP server and list its tools." },

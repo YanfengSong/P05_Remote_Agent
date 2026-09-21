@@ -1,24 +1,48 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(moduleDir, "..", "..");
 
-export const RESTART_BROKER_TASK_NAME = "P05-RestartBroker";
+function runtimeSlot(raw = process.env.P05_RUNTIME_SLOT): "A" | "B" {
+  const value = raw?.trim().toUpperCase();
+  if (value !== "A" && value !== "B") {
+    throw new Error(
+      "P05_RUNTIME_SLOT must be A or B for repo-local runtime restart."
+    );
+  }
+  return value;
+}
 
-export function runtimeRestartInvocation(): { executable: string; args: readonly string[] } {
+export function runtimeRestartInvocation(
+  rawSlot = process.env.P05_RUNTIME_SLOT
+): { executable: string; args: readonly string[] } {
+  const slot = runtimeSlot(rawSlot);
+  const script = path.join(
+    repoRoot,
+    "scripts",
+    "deployment",
+    "request-restart-runtime-slot.ps1"
+  );
   return {
-    executable: "schtasks.exe",
-    args: ["/Run", "/TN", RESTART_BROKER_TASK_NAME]
+    executable: "powershell.exe",
+    args: [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-Slot",
+      slot
+    ]
   };
 }
 
-/**
- * Trigger the pre-provisioned external restart broker.
- *
- * The broker task is installed once by an administrator outside the Agent writable
- * workspace. The MCP caller cannot supply a task name, command, path or arguments.
- * This keeps restart authority external to the self-modifying Agent.
- */
 export async function requestRuntimeRestart(): Promise<string> {
   const invocation = runtimeRestartInvocation();
   try {
@@ -29,9 +53,9 @@ export async function requestRuntimeRestart(): Promise<string> {
     });
   } catch {
     throw new Error(
-      "Could not start the external P05 restart broker. Ensure P05-RestartBroker is provisioned and runnable."
+      "Could not schedule the repo-local P05 runtime restart."
     );
   }
 
-  return "RESTART_SCHEDULED: external P05 restart broker started.";
+  return "RESTART_SCHEDULED: repo-local P05 runtime restart requested.";
 }

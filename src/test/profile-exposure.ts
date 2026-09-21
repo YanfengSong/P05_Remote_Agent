@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Tool profile exposure end-to-end check.
  *
  * Spawns the real server over stdio for each profile and asserts what a remote client
@@ -26,7 +26,7 @@ const REPO = path.resolve(here, "..", "..");
 const ROOT = path.join(REPO, "_p05_test_allowed_root");
 const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
 const OUTSIDE_FIXTURES = path.join(REPO, "_p05_test_outside_root");
-const STATE_DIR = path.join(REPO, ".p05");
+const STATE_DIR = path.join(REPO, "_p05_test_state");
 
 await fs.mkdir(ROOT, { recursive: true });
 await fs.mkdir(OUTSIDE_FIXTURES, { recursive: true });
@@ -60,7 +60,11 @@ function sameSet(label: string, actual: readonly string[], expected: readonly st
 function childEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string" && !key.startsWith("P05_")) env[key] = value;
+    if (
+      typeof value === "string" &&
+      !key.startsWith("P05_") &&
+      !key.startsWith("MATLAB_")
+    ) env[key] = value;
   }
   env.REMOTE_AGENT_ALLOWED_ROOTS = ROOT;
   env.REMOTE_AGENT_DEFAULT_CWD = ROOT;
@@ -70,6 +74,7 @@ function childEnv(extra: Record<string, string>): Record<string, string> {
 
 type Session = {
   client: Client;
+  pid: number | null;
   stderrText: () => string;
 };
 
@@ -84,7 +89,32 @@ async function openSession(env: Record<string, string>): Promise<Session> {
   const chunks: string[] = [];
   transport.stderr?.on("data", (chunk: Buffer | string) => chunks.push(String(chunk)));
   await client.connect(transport);
-  return { client, stderrText: () => chunks.join("") };
+  return { client, pid: transport.pid, stderrText: () => chunks.join("") };
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+}
+
+async function closeSession(session: Session): Promise<void> {
+  const pid = session.pid;
+  await session.client.close().catch(() => undefined);
+  if (!pid) return;
+
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`stdio test child process ${pid} did not exit within 5 seconds`);
 }
 
 function textOf(result: unknown): string {
@@ -183,7 +213,7 @@ for (const scenario of scenarios) {
     const policyInfo = await outcome(() => session.client.callTool({ name: "policy_info", arguments: {} }));
     check(`[${scenario.label}] policy_info is not part of any profile`, policyInfo.failed);
   } finally {
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log(`ok  ${scenario.label} -> [${[...scenario.expected].sort().join(", ")}]`);
 }
@@ -200,7 +230,7 @@ for (const scenario of scenarios) {
     const ping = await session.client.callTool({ name: "ping", arguments: {} });
     check("DoD: discovery can still answer ping", textOf(ping).includes('"ok"'), textOf(ping).slice(0, 120));
   } finally {
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  TASK-001 DoD (discovery exposes device_info + ping only)");
 }
@@ -216,7 +246,7 @@ for (const scenario of scenarios) {
     const info = JSON.parse(textOf(await session.client.callTool({ name: "device_info", arguments: {} }))) as { deviceId: string };
     check("device_id: reported id matches the stored identity", info.deviceId === storedId, `${info.deviceId} != ${storedId}`);
   } finally {
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   check("device_id: identity file is unchanged by a server start", (await fs.readFile(identityPath, "utf8")) === before);
   console.log(`ok  device_id stable (${storedId.slice(0, 12)}...)`);
@@ -377,7 +407,7 @@ for (const scenario of scenarios) {
     await fs.rm(outsideTarget, { recursive: true, force: true }).catch(() => undefined);
     await fs.rm(PROBE_DIR, { recursive: true, force: true }).catch(() => undefined);
     await fs.rm(path.join(REPO, "p05-relative-write-probe.txt"), { force: true }).catch(() => undefined);
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  developer write + path guards");
 }
@@ -405,7 +435,7 @@ for (const scenario of scenarios) {
     check("downstream: the failure text does not disclose the command path",
       !failed.message.includes(ROOT) && !failed.message.includes("no-such-matlab-mcp"), failed.message.slice(0, 200));
   } finally {
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  downstream config and errors stay path-free");
 }
@@ -447,7 +477,7 @@ for (const scenario of scenarios) {
       platformCheck.includes("ACTION check OK"), platformCheck.slice(0, 300));
   } finally {
     await fs.rm(crossProbe, { force: true }).catch(() => undefined);
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  platform-source remains fixed while business workspace is active");
 }
@@ -481,7 +511,7 @@ for (const scenario of scenarios) {
   } finally {
     try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  developer grants shell_run, and its cwd goes through the same guard");
 }
@@ -499,7 +529,7 @@ for (const scenario of scenarios) {
     sameSet("a blank default cwd starts on the first allowed root",
       tools.map((tool) => tool.name), DISCOVERY_TOOLS);
   } finally {
-    await session.client.close().catch(() => undefined);
+    await closeSession(session);
   }
   console.log("ok  blank (or unset) default cwd uses the first allowed root");
 }
@@ -548,5 +578,6 @@ async function spawnExpectingFailure(env: Record<string, string>): Promise<{ cod
 
 await fs.rm(ROOT, { recursive: true, force: true }).catch(() => undefined);
 await fs.rm(OUTSIDE_FIXTURES, { recursive: true, force: true }).catch(() => undefined);
+await fs.rm(STATE_DIR, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 console.log("ok  workspace-local test fixtures cleaned");
 console.log(`PROFILE_EXPOSURE_OK (${checks} checks)`);

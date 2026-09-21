@@ -1,4 +1,5 @@
 import type { DownstreamDefinition } from "../downstream/types.js";
+import type { DownstreamRegistry } from "../downstream/registry.js";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type { PluginRegistry } from "./registry.js";
@@ -52,7 +53,7 @@ export class PluginRuntime {
     return !definition.pluginId || this.isAllowedForCurrentWorkspace(definition.pluginId);
   }
 
-  registerTools(exposer: Exposer): void {
+  registerTools(exposer: Exposer, downstreamRegistry?: DownstreamRegistry): void {
     for (const plugin of this.registry.plugins()) {
       if (!plugin.manifest.enabled || !plugin.registerTools) continue;
 
@@ -74,7 +75,10 @@ export class PluginRuntime {
         report: () => exposer.report()
       };
 
-      plugin.registerTools(guardedExposer, { workspaceManager: this.workspaceManager });
+      plugin.registerTools(guardedExposer, {
+        workspaceManager: this.workspaceManager,
+        ...(downstreamRegistry ? { downstreamRegistry } : {})
+      });
     }
   }
 

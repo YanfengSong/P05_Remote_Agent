@@ -16,6 +16,7 @@ export const DEVELOPER_ACTIONS = [
   "test_git_mutations",
   "test_plugin_framework",
   "test_output_schema",
+  "test_operator_console",
   "smoke_downstream",
   "verify"
 ] as const;
@@ -96,6 +97,8 @@ async function runSingle(action: Exclude<DeveloperAction, "verify">, platformRoo
       return runNodeScript("test_plugin_framework", "dist/test/plugin-framework.js", [], platformRoot);
     case "test_output_schema":
       return runNodeScript("test_output_schema", "dist/test/output-schema.js", [], platformRoot);
+    case "test_operator_console":
+      return runNodeScript("test_operator_console", "dist/test/operator-console.js", [], platformRoot);
     case "smoke_downstream":
       return runNodeScript("smoke_downstream", "dist/test/downstream-smoke.js", [], platformRoot);
   }
@@ -122,7 +125,8 @@ export async function runDeveloperAction(requestedAction: string, platformRoot: 
     "test_foundation",
     "test_git_mutations",
     "test_plugin_framework",
-    "test_output_schema"
+    "test_output_schema",
+    "test_operator_console"
   ];
   const results: string[] = [];
   for (const step of steps) results.push(await runSingle(step, platformRoot));

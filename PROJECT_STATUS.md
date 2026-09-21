@@ -1,4 +1,4 @@
-# Project Status
+﻿# Project Status
 
 Updated: 2026-09-20
 
@@ -109,6 +109,29 @@ Regression:
 - full + temporary tool surface is checked for output schemas;
 - representative tools are called and verified to return structured objects.
 
+### Operator Console
+
+V2 local Operator Console is implemented on the `feat/v2-operator-console` branch.
+
+Implemented:
+- independent loopback GUI process on `127.0.0.1:56301`;
+- connect / disconnect / restart controls;
+- GUI survives P05 MCP/Tunnel restart;
+- local token-protected control bridge from MCP runtime to GUI;
+- live Workspace selection;
+- Runtime/Tunnel/MCP/process status;
+- structured Git visibility;
+- Plugin/downstream visibility;
+- persistent Audit/Recovery;
+- memory-only sanitized Live Activity;
+- MCP capability/exposure visibility;
+- one-click local launcher.
+
+Current automated regression:
+- `OPERATOR_CONSOLE_OK (16 checks)`.
+
+Current V2+Operator validation baseline: **602 minimum explicit checks**; hosts with the NTFS 8.3 short-name probe execute **603**. Build/typecheck and downstream smoke are additional gates.
+
 ### Plugins / Downstream
 
 Application-specific integrations use the Plugin layer.
@@ -191,13 +214,14 @@ Latest full verification:
     ACTION check                  PASS
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            238 checks
-    PROFILE_EXPOSURE_OK           162 checks
+    POLICY_PROFILES_OK            240 checks
+    PROFILE_EXPOSURE_OK           161-162 checks
     TEMP_READONLY_OK              49 checks
-    FOUNDATION_OK                 33 checks
+    FOUNDATION_OK                 35 checks
     GIT_MUTATIONS_OK              13 checks
     PLUGIN_FRAMEWORK_OK           17 checks
     OUTPUT_SCHEMA_OK              71 checks
+    OPERATOR_CONSOLE_OK           16 checks
 
 Key V2 acceptance verified:
 - cross-Workspace absolute structured write refused;

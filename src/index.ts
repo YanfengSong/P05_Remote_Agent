@@ -4,7 +4,12 @@ import { AuditStore } from "./audit/store.js";
 import { CAPABILITIES, CapabilityCatalog } from "./capability/registry.js";
 import { config, readOwnEnv } from "./config.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
+import { LiveActivityStore } from "./monitor/live-activity.js";
 import { registerGatewayTools } from "./gateway-tools.js";
+import {
+  startLocalControlBridge,
+  type LocalControlBridge
+} from "./operator/bridge.js";
 import { PluginRegistry } from "./plugin/registry.js";
 import { PluginRuntime } from "./plugin/runtime.js";
 import { createExposer, logExposure } from "./policy/expose.js";
@@ -18,55 +23,123 @@ import { registerFsTools } from "./tools/register-fs.js";
 import { registerGitTools } from "./tools/register-git.js";
 import { registerTemporaryTools } from "./tools/register-temporary.js";
 import { registerDeviceTools } from "./tools/device.js";
-import { WorkspaceManager, parseWorkspaceRegistry } from "./workspace/manager.js";
+import {
+  WorkspaceManager,
+  parseWorkspaceRegistry
+} from "./workspace/manager.js";
+import {
+  loadPersistentWorkspaceEntries,
+  mergePersistentWorkspaces,
+  savePersistentWorkspaceEntries,
+  toPersistentWorkspaceEntry,
+  type PersistentWorkspaceEntry
+} from "./workspace/persistence.js";
 
-const { profile, profileSource } = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE"));
+const { profile, profileSource } = resolveToolProfile(
+  readOwnEnv("P05_TOOL_PROFILE")
+);
 
 let activeDownstreamRegistry: DownstreamRegistry | undefined;
 let activePluginRuntime: PluginRuntime | undefined;
+let activeLocalControlBridge: LocalControlBridge | undefined;
 
 async function closeRuntime(): Promise<void> {
   await Promise.all([
+    activeLocalControlBridge?.close(),
     activeDownstreamRegistry?.closeAll(),
     activePluginRuntime?.stopAll()
   ]);
 }
 
-process.once("SIGINT", () => void closeRuntime().finally(() => process.exit(0)));
-process.once("SIGTERM", () => void closeRuntime().finally(() => process.exit(0)));
+process.once(
+  "SIGINT",
+  () => void closeRuntime().finally(() => process.exit(0))
+);
+process.once(
+  "SIGTERM",
+  () => void closeRuntime().finally(() => process.exit(0))
+);
 
 serveStdio(() => {
-  const server = new McpServer({ name: config.name, version: config.version });
+  const server = new McpServer({
+    name: config.name,
+    version: config.version
+  });
 
+  const configuredWorkspaces = parseWorkspaceRegistry(
+    readOwnEnv("P05_WORKSPACES_JSON"),
+    config.allowedRoots,
+    config.defaultCwd
+  );
+  const persistentWorkspacePath = p05StatePath("workspaces.json");
+  let persistentWorkspaceEntries: PersistentWorkspaceEntry[] =
+    loadPersistentWorkspaceEntries(persistentWorkspacePath);
   const workspaceManager = new WorkspaceManager(
-    parseWorkspaceRegistry(
-      readOwnEnv("P05_WORKSPACES_JSON"),
+    mergePersistentWorkspaces(
+      configuredWorkspaces,
+      persistentWorkspaceEntries,
       config.allowedRoots,
       config.defaultCwd
     ),
     readOwnEnv("P05_ACTIVE_WORKSPACE_ID")
   );
 
+  const persistWorkspace = (workspace: Parameters<typeof toPersistentWorkspaceEntry>[0]): void => {
+    const nextEntries = [
+      ...persistentWorkspaceEntries,
+      toPersistentWorkspaceEntry(workspace)
+    ];
+    mergePersistentWorkspaces(
+      configuredWorkspaces,
+      nextEntries,
+      config.allowedRoots,
+      config.defaultCwd
+    );
+    savePersistentWorkspaceEntries(persistentWorkspacePath, nextEntries);
+    persistentWorkspaceEntries = nextEntries;
+  };
+
   const pluginRegistry = new PluginRegistry(BUILTIN_PLUGINS);
-  const pluginRuntime = new PluginRuntime(pluginRegistry, workspaceManager);
+  const pluginRuntime = new PluginRuntime(
+    pluginRegistry,
+    workspaceManager
+  );
   activePluginRuntime = pluginRuntime;
   void pluginRuntime.startAll();
 
   const capabilityCatalog = new CapabilityCatalog(CAPABILITIES);
-  capabilityCatalog.registerMany(pluginRegistry.capabilities(), "application plugins");
+  capabilityCatalog.registerMany(
+    pluginRegistry.capabilities(),
+    "application plugins"
+  );
 
   const downstreamRegistry = new DownstreamRegistry(
     pluginRegistry.downstreamDefinitions(),
     () => ({
-      active: { id: workspaceManager.current().id, root: workspaceManager.currentRoot() },
-      platform: { id: workspaceManager.platform().id, root: workspaceManager.platformRoot() }
+      active: {
+        id: workspaceManager.current().id,
+        root: workspaceManager.currentRoot()
+      },
+      platform: {
+        id: workspaceManager.platform().id,
+        root: workspaceManager.platformRoot()
+      }
     }),
     (definition) => pluginRuntime.downstreamAllowed(definition)
   );
   activeDownstreamRegistry = downstreamRegistry;
 
-  const auditStore = new AuditStore(200, p05StatePath("audit.json"));
-  const executionRuntime = new ExecutionRuntime(auditStore, () => workspaceManager.current().id, capabilityCatalog);
+  const auditStore = new AuditStore(
+    200,
+    p05StatePath("audit.json")
+  );
+  const liveActivity = new LiveActivityStore(300);
+  const executionRuntime = new ExecutionRuntime(
+    auditStore,
+    () => workspaceManager.current().id,
+    capabilityCatalog,
+    liveActivity
+  );
   const exposer = createExposer(
     server,
     profile,
@@ -76,14 +149,52 @@ serveStdio(() => {
   );
 
   registerDeviceTools(exposer);
-  registerControlTools(exposer, workspaceManager, auditStore, pluginRuntime);
+  registerControlTools(
+    exposer,
+    workspaceManager,
+    auditStore,
+    pluginRuntime
+  );
   registerFsTools(exposer, workspaceManager);
   registerGitTools(exposer, workspaceManager);
   registerExecutionTools(exposer, workspaceManager);
   registerGatewayTools(exposer, downstreamRegistry);
   registerTemporaryTools(exposer);
-  pluginRuntime.registerTools(exposer);
+  pluginRuntime.registerTools(exposer, downstreamRegistry);
 
-  logExposure(exposer.report());
+  const exposureReport = exposer.report();
+  logExposure(exposureReport);
+
+  void startLocalControlBridge({
+    workspaceManager,
+    auditStore,
+    pluginRuntime,
+    downstreamRegistry,
+    capabilityCatalog,
+    liveActivity,
+    exposure: () => exposer.report(),
+    profile,
+    profileSource,
+    allowedRoots: config.allowedRoots,
+    persistWorkspace
+  }).then((bridge) => {
+    activeLocalControlBridge = bridge;
+    process.stderr.write(
+      JSON.stringify({
+        event: "p05.operator_bridge",
+        url: bridge.url
+      }) + "\n"
+    );
+  }).catch((error) => {
+    process.stderr.write(
+      JSON.stringify({
+        event: "p05.operator_bridge_error",
+        error: error instanceof Error
+          ? error.message
+          : String(error)
+      }) + "\n"
+    );
+  });
+
   return server;
 });

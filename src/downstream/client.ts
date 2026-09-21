@@ -119,7 +119,11 @@ export class DownstreamMcpClient {
 
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
     await this.connect();
-    return this.client!.callTool({ name, arguments: args });
+    const timeout = this.definition.requestTimeoutMs ?? 60_000;
+    return this.client!.callTool(
+      { name, arguments: args },
+      { timeout, maxTotalTimeout: timeout }
+    );
   }
 
   async close(): Promise<void> {

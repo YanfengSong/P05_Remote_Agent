@@ -78,3 +78,14 @@ The Core entrypoint has no MATLAB-specific import or configuration.
 
 MATLAB contributes a downstream MCP adapter and declares its workspace-binding requirement through the common
 plugin contract.
+
+The MATLAB plugin also acts as an adapter for the locally installed MathWorks Agentic Toolkit:
+- discovers `~/.matlab/agentic-toolkits` by default, with local environment overrides;
+- discovers the MathWorks-managed MATLAB MCP executable;
+- automatically adds the Simulink `tools/tools.json` extension when present;
+- binds MATLAB calls to the active P05 Workspace and validates explicit path arguments against that Workspace;
+- exposes installed MATLAB/Simulink `SKILL.md` files through read-only `matlab.skill_list` and `matlab.skill_read` capabilities.
+
+Those MathWorks `SKILL.md` files are treated as plugin-provided guidance assets. They are not promoted to P05 V3
+executable Skills and do not implement `skill_run`; promotion into the generic Skill Runtime requires the normal
+Skill contract (typed I/O, Capability dependencies, state/DoD/stop/retry/budget semantics).

@@ -1,241 +1,616 @@
 # P05 Remote Agent
 
-P05 is a local-first remote engineering Agent for controlled access to a Windows engineering workstation.
+P05 是一个面向 Windows 工程工作站的本地优先 Remote Agent。它让 ChatGPT 通过受控 MCP Tunnel 操作本机 Workspace、文件、Git、Shell、MATLAB/Simulink 等工程能力，同时保留明确的 Workspace 边界、审计、恢复与插件架构。
 
-Design target:
+当前版本：**0.3.1**
 
-**Remote Desktop Commander-like engineering ergonomics + explicit Workspace, policy, lifecycle, audit and plugin architecture.**
+当前部署模型：**Repo-local / Dual Runtime / Manual Control**
 
-## Current baseline
+---
 
-Version: 0.3.1
-Foundation: **V2**
-Validated: 2026-09-20
-Primary host: Windows + Node.js 22+
+## 1. 当前架构
 
-The core path is operational:
+P05 当前固定为两个独立 Runtime Slot：
 
-    ChatGPT
-      -> tunnel / MCP
-      -> P05 Agent
-      -> Workspace / Policy
-      -> Runtime
-      -> Files / Git / Shell / Plugins / Downstream MCP
-      -> Audit / Recovery
+```text
+ChatGPT Chat A
+    ↓
+@Boonray-A
+    ↓
+Tunnel A
+    ↓
+P05 Runtime A
+    ↓
+Workspace A
 
-P05 can modify, build, test, restart and reconnect to itself through the controlled developer surface.
 
-## Foundation V2
+ChatGPT Chat B
+    ↓
+@Boonray-B
+    ↓
+Tunnel B
+    ↓
+P05 Runtime B
+    ↓
+Workspace B
+```
 
-The stable foundation contracts are:
+A/B 使用**同一份 P05 代码**，只是启动两个独立进程实例。
 
-- Workspace Context + explicit authorization semantics;
-- exactly one stable `platform-source` workspace;
-- active-workspace confinement for structured tools;
-- single core Capability Catalog;
-- modular tool registration;
-- common execution lifecycle;
-- persistent metadata-only Audit/Recovery;
-- application Plugin architecture;
-- Workspace-aware downstream MCP binding.
+它们分别拥有自己的：
 
-Implemented baseline: [Target Architecture V2](docs/architecture/TARGET_ARCHITECTURE_V2.md).
+- Tunnel ID / Tunnel Profile
+- Device ID
+- State
+- Audit / Recovery
+- Workspace binding
+- Plugin / downstream runtime state
 
-Long-term target: [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md).
+不存在两份 P05 Runtime 源码。
 
-V3 technical research: [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md).
+```text
+同一份 dist/index.js
+        │
+        ├── launch-runtime.mjs A
+        │      └── Runtime A
+        │
+        └── launch-runtime.mjs B
+               └── Runtime B
+```
 
-V3 is the complete target architecture: stateless Protocol Edge, Durable Run Kernel, transactional state, execution
-and isolation substrate, one semantic Capability Catalog with versioned Bindings, Agent Runtime, Verified Assets,
-bounded Skills, deterministic Orchestrator, approvals/resource leases, artifacts and multi-device evolution.
+---
 
-[Target Architecture V3-A](docs/architecture/TARGET_ARCHITECTURE_V3A.md) is only an implementation slice derived from
-V3; it is not the definition of the target architecture.
+## 2. 一仓库部署目标
 
-## Tool profiles
+P05 的正常运行链路已经收口到单一 Git 仓库：
 
-Profiles are cumulative and fail closed.
+```text
+P05_Remote_Agent/
+├─ bootstrap.ps1
+├─ P05-Operator.cmd
+├─ package.json
+├─ package-lock.json
+├─ src/
+├─ dist/
+├─ scripts/
+└─ .p05/                     # machine-local, Git ignored
+   ├─ tools/
+   │  ├─ node/
+   │  └─ tunnel-client/
+   ├─ tunnel/
+   │  ├─ profiles/
+   │  ├─ health/
+   │  └─ logs/
+   ├─ runtime-a/
+   │  └─ state/
+   └─ runtime-b/
+      └─ state/
+```
 
-| Profile | Main implemented capabilities |
+正常运行不再依赖：
+
+- `D:\Tools`
+- `D:\Project_Git\_p05_deploy`
+- 用户目录中的旧 tunnel-client profile
+- Windows Scheduled Task
+
+这些位置在旧机器上可能仍然存在，但已经不是当前 Repo-local 运行路径的一部分。
+
+---
+
+## 3. 新电脑部署
+
+### 3.1 前置条件
+
+新电脑只需要：
+
+- Windows x64
+- Git
+- PowerShell
+- 可访问 Node.js、GitHub/OpenAI 与 `api.openai.com` 的网络
+- 两个已创建的 Tunnel ID
+  - `@Boonray-A` 对应 Tunnel A
+  - `@Boonray-B` 对应 Tunnel B
+- 一个 OpenAI Control Plane API Key
+
+A/B 可以共用同一个 API Key。
+
+### 3.2 Clone
+
+```powershell
+git clone <P05_Remote_Agent repository>
+cd P05_Remote_Agent
+```
+
+### 3.3 一键 Bootstrap
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+Bootstrap 会交互式要求：
+
+```text
+Tunnel ID for @Boonray-A
+Tunnel ID for @Boonray-B
+OpenAI Control Plane API Key
+```
+
+API Key 使用安全输入，不建议作为命令行参数直接传入。
+
+Bootstrap 会：
+
+1. 下载固定版本 Node.js。
+2. 下载固定版本 tunnel-client。
+3. 根据发布方 checksum manifest 做 SHA-256 校验。
+4. 将运行工具安装到 `.p05/tools`。
+5. 创建本机私有 `.env`。
+6. 写入 A/B Tunnel 配置。
+7. 执行 `npm ci`。
+8. 执行 `npm run build`。
+9. 生成 A/B repo-local tunnel profiles。
+10. 创建 A/B 独立 state 目录。
+
+Bootstrap **不会**：
+
+- 自动启动 Operator Console；
+- 自动启动 Runtime A；
+- 自动启动 Runtime B；
+- 安装开机自启；
+- 安装 Scheduled Task。
+
+如果需要扩大 P05 可以访问的宿主目录，可显式提供：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 `
+  -AllowedRoots "D:\Project_Git"
+```
+
+默认 authorization root 仅为当前 P05 仓库。
+
+> 当前状态：Repo-local 部署代码、当前主机迁移、A/B Runtime、GUI 控制和回归测试均已验证。完整的“另一台全新 Windows 主机从零下载并部署”仍建议在删除旧环境前做一次最终验收。
+
+---
+
+## 4. 日常使用
+
+P05 默认采用**完全手动模式**。
+
+电脑启动以后：
+
+```text
+Operator Console  OFF
+Runtime A         OFF
+Runtime B         OFF
+```
+
+需要使用时，双击仓库根目录：
+
+```text
+P05-Operator.cmd
+```
+
+它会启动本地 Operator Console 并打开：
+
+```text
+http://127.0.0.1:56301/
+```
+
+Operator Console 使用 repo-local Node：
+
+```text
+<repo>\.p05\tools\node\node.exe
+```
+
+不依赖系统 Node。
+
+---
+
+## 5. Operator Console
+
+Operator Console 是 P05 的本地控制面。
+
+它只绑定：
+
+```text
+127.0.0.1
+```
+
+当前主要控制关系：
+
+```text
+P05 Operator Console
+│
+├── Console
+│   ├── 当前状态
+│   ├── 刷新
+│   └── 关闭 Console
+│
+├── Runtime A · @Boonray-A
+│   ├── 启动 / 关闭
+│   ├── 重启
+│   └── Workspace 绑定
+│
+└── Runtime B · @Boonray-B
+    ├── 启动 / 关闭
+    ├── 重启
+    └── Workspace 绑定
+```
+
+Console、Runtime A、Runtime B 的生命周期互相独立。
+
+已经验证：
+
+- 关闭 Runtime B，不影响 Runtime A。
+- 再启动 Runtime B，`@Boonray-B` 可以恢复在线。
+- 重启 Runtime B，不影响 Runtime A。
+- 关闭 Operator Console，不会自动关闭 A/B。
+- Operator Console 可以随后通过 `P05-Operator.cmd` 再次手动启动。
+
+Runtime 状态区分：
+
+- `OFFLINE`：Tunnel/Runtime 未启动。
+- `READY`：Tunnel 已就绪，等待 ChatGPT 首次请求唤醒 stdio MCP。
+- `ONLINE`：P05 MCP 与本地 Control Bridge 已在线。
+
+---
+
+## 6. Workspace 模型
+
+Workspace 不是文件浏览器目录，而是 P05 的逻辑工程执行范围。
+
+每个 Runtime Slot 独立绑定自己的 Workspace：
+
+```text
+Runtime A → Workspace A
+Runtime B → Workspace B
+```
+
+绑定持久保存在：
+
+```text
+.p05/runtime-a/state/active-workspace.txt
+.p05/runtime-b/state/active-workspace.txt
+```
+
+所以 Runtime 重启后仍会回到自己的 Workspace。
+
+GUI 选择一个新目录时，P05 会：
+
+1. 将目录设置为当前临时 Workspace；
+2. 注册为正式 Workspace；
+3. 保存到该 Slot 的持久配置；
+4. 后续重启继续使用该 Workspace。
+
+结构化文件/Git 工具受 active Workspace 约束。
+
+跨 Workspace 的结构化访问默认拒绝：
+
+```text
+structuredCrossWorkspace = deny
+```
+
+Shell 使用的是 trusted-user 模型：起始 cwd 受 Workspace 约束，但 PowerShell 本身仍具有当前 Windows 用户权限。它不是 OS sandbox。
+
+详细模型见：
+
+- [Permission Model](docs/architecture/PERMISSION-MODEL.md)
+- [Target Architecture V2](docs/architecture/TARGET_ARCHITECTURE_V2.md)
+
+---
+
+## 7. Tool Profiles
+
+P05 Tool Profile 采用累计权限模型并 fail closed。
+
+| Profile | 主要能力 |
 |---|---|
-| discovery | `device_info`, `ping` |
-| readonly | workspace/activity/recovery/plugin inspection, file read/list, Git status/diff |
-| developer | workspace switch, file write/patch, `git_add`, `git_commit`, `git_branch`, platform validation, restart, downstream discovery, `shell_run` |
-| full | developer + `git_push` + generic `mcp_call_tool` |
+| `discovery` | `device_info`, `ping` |
+| `readonly` | Workspace / Audit / Recovery / Plugin 查询、文件读取、Git status/diff |
+| `developer` | Workspace 切换、文件修改、Git 本地修改、Shell、Runtime restart、下游 MCP discovery |
+| `full` | developer + `git_push` + generic `mcp_call_tool` |
 
-Temporary gated migration tools:
-- `list_directory`
-- `read_file`
+当前开发机通常使用：
 
-## Workspace model
+```text
+P05_TOOL_PROFILE=developer
+```
 
-A Workspace is a registered logical project context, not merely a cwd.
+`git_push` 和 generic `mcp_call_tool` 仍保持在更高权限层。
 
-Every explicit registry must contain exactly one `platform-source` workspace.
+---
 
-Structured file/Git operations are confined to the active Workspace. An absolute path into another registered Workspace is rejected.
+## 8. Repo-local Runtime 控制
 
-P05 platform validation is different:
+A/B Runtime 共用以下脚本：
 
-`command_run(check/build/verify/...)` always targets the platform-source workspace even when a business project is active.
+```text
+scripts/deployment/launch-runtime.mjs
+scripts/deployment/run-runtime-slot.ps1
+scripts/deployment/stop-runtime-slot.ps1
+scripts/deployment/restart-runtime-slot.ps1
+scripts/deployment/request-restart-runtime-slot.ps1
+```
 
-## Git mutation
+示例：
 
-Developer:
-- `git_add`
-- `git_commit`
-- `git_branch` with create/switch/safe delete
+```powershell
+.\scripts\deployment\run-runtime-slot.ps1 -Slot A
+.\scripts\deployment\stop-runtime-slot.ps1 -Slot A
 
-Full:
-- `git_push`
+.\scripts\deployment\run-runtime-slot.ps1 -Slot B
+.\scripts\deployment\restart-runtime-slot.ps1 -Slot B
+```
 
-Push is elevated because it mutates an external remote. The structured tool does not expose force push or arbitrary refspecs.
+聊天中的 MCP 工具：
 
-## Shell model
+```text
+runtime_restart
+```
 
-`shell_run` is available at developer.
+也已经使用 repo-local restart 链路，不再依赖外部 RestartBroker / Scheduled Task。
 
-Its starting cwd must remain inside the active Workspace, but the PowerShell command itself runs with the paired Windows user's authority.
+Runtime 自重启采用延迟 detached restart，使当前 MCP 请求能够先正常返回，再停止并重新启动对应 Slot。
 
-This is deliberately a trusted-terminal model, **not a sandbox**.
+---
 
-A true hard shell boundary requires OS isolation or an external execution/approval broker.
+## 9. State / Secrets
 
-See [Permission Model](docs/architecture/PERMISSION-MODEL.md).
+整个 `.p05/` 目录被 Git ignore。
 
-## Runtime / Audit / Recovery
+其中包含：
 
-All exposed tools use the common lifecycle:
+- repo-local Node
+- repo-local tunnel-client
+- A/B tunnel profiles
+- health metadata
+- tunnel logs
+- A/B Device ID
+- Audit / Recovery
+- Workspace binding
 
-    prepare -> authorize -> execute -> verify -> complete
-                          |
-                          +-> failed -> recovery hint
+`.env` 同样被 Git ignore。
 
-Audit records include metadata such as:
-- execution id;
-- capability;
-- scope;
-- Workspace id;
-- phase/state;
-- duration;
-- classified error;
-- recovery hint.
+Fresh install 时，`bootstrap.ps1` 会将 API Key 写入本机私有 `.env`。
 
-They do **not** store raw commands, file contents or tool argument payloads.
+Tunnel profile 内保存的是：
 
-Audit state is persisted under the protected P05 state directory. A record left running across an Agent restart becomes `interrupted`.
+```text
+env:CONTROL_PLANE_API_KEY
+```
 
-Inspection tools:
+而不是 Key 明文。
+
+请勿提交：
+
+```text
+.env
+.p05/
+```
+
+---
+
+## 10. MATLAB / Simulink Plugin
+
+MATLAB/Simulink 属于 P05 Application Plugin，不进入 Core。
+
+当前集成方式：
+
+```text
+P05 Core
+    ↓
+MATLAB Plugin
+    ↓
+MathWorks Agentic Toolkit / MATLAB MCP Server
+    ↓
+MATLAB + Simulink
+```
+
+插件支持：
+
+- MathWorks Agentic Toolkit 自动发现；
+- MATLAB base tools；
+- Simulink extension tools；
+- MATLAB / Simulink Skill Catalog；
+- active Workspace binding；
+- Workspace 路径参数保护；
+- reused MATLAB Session pwd 同步。
+
+MathWorks 的 `SKILL.md` 当前作为 MATLAB Plugin 提供的只读 Skill Catalog / guidance asset，不等同于 P05 V3 的可执行 Skill Runtime。
+
+详细说明见：
+
+- [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)
+
+---
+
+## 11. Runtime / Audit / Recovery
+
+所有暴露工具走统一生命周期：
+
+```text
+prepare
+  ↓
+authorize
+  ↓
+execute
+  ↓
+verify
+  ↓
+complete
+
+failed → recovery hint
+```
+
+Audit 记录持久化元数据，例如：
+
+- execution id
+- capability
+- Workspace id
+- phase/state
+- duration
+- classified error
+- recovery hint
+
+不会持久化：
+
+- raw file contents
+- raw downstream arguments
+- secret-like command parameters
+
+查询工具：
+
 - `activity_recent`
 - `recovery_status`
 
-## Structured MCP outputs
+A/B Runtime 使用独立 Audit/Recovery state，因此一个 Runtime 的事件不会混入另一个 Runtime。
 
-Core MCP tools advertise `outputSchema` and return matching `structuredContent` while preserving text content for compatibility.
+---
 
-This gives clients typed results such as:
-- Workspace objects/lists;
-- Audit/recovery events;
-- plugin status;
-- file bytes/hash metadata;
-- Git output;
-- shell `stdout/stderr`;
-- downstream MCP status/tool descriptors.
+## 12. 当前验证状态
 
-`verify` includes an output-schema regression that fails when a Core tool lacks an object-root output schema.
+本轮 Repo-local / Dual Runtime 收口已经实测：
 
-## Capability and registration model
+```text
+npm run check
+PASS
 
-Core capability metadata has one source of truth:
+npm run build
+PASS
 
-`src/capability/registry.ts`
+POLICY_PROFILES_OK
+239 checks
 
-Policy consumes that catalog instead of maintaining another metadata table.
+PROFILE_EXPOSURE_OK
+162 checks
 
-`src/index.ts` is assembly/bootstrap only. Tool handlers live in registration modules.
+TEMP_READONLY_OK
+49 checks
 
-## Application plugins
+OPERATOR_CONSOLE_OK
+37 checks
 
-Application-specific integration does not belong in Agent Core.
+PLUGIN_FRAMEWORK_OK
+30 checks
 
-P05 has a plugin layer with:
-- manifest/API version;
-- permissions;
-- capabilities;
-- downstream definitions;
-- lifecycle hooks;
-- Workspace plugin allowlists.
+FOUNDATION_OK
+35 checks
 
-MATLAB/Simulink is the first built-in application plugin. P05 Core no longer imports MATLAB-specific configuration or symbols.
+DOWNSTREAM_SMOKE_OK
+PASS
+```
 
-Its downstream MCP supports:
-- active Workspace binding;
-- platform Workspace binding;
-- fixed cwd binding.
+同时已实机验证：
 
-## Restart broker
+- `@Boonray-A` 与 `@Boonray-B` 是独立 P05 Runtime。
+- 两边 Device ID 不同。
+- Audit state 隔离。
+- A/B Workspace 独立。
+- A/B 手动启停独立。
+- Runtime B repo-local restart 后只保留一个 tunnel-client + 一个 Node child。
+- A/B Runtime 和 Operator Console 当前进程均从 `<repo>/.p05` 启动。
+- 当前运行进程对 `D:\Tools` 的依赖计数为 0。
+- 当前运行进程对旧用户 tunnel-client profile/state 的依赖计数为 0。
 
-`runtime_restart` has no caller-controlled command/path parameters.
+---
 
-It can only request the externally provisioned:
+## 13. Legacy 环境
 
-    schtasks.exe /Run /TN P05-RestartBroker
+旧机器可能仍存在：
 
-This preserves the rule:
+```text
+D:\Tools\...
+D:\Project_Git\_p05_deploy
+%APPDATA%\tunnel-client\...
+%USERPROFILE%\.local\state\tunnel-client\...
+P05-Runtime Scheduled Task
+P05-Operator Scheduled Task
+P05-RestartBroker*
+```
 
-**Self-development is allowed; self-authorization is not.**
+当前 Repo-local 正常运行链路已经不需要它们。
 
-## Validation baseline
+**不要因为 README 更新就自动删除这些旧路径。**
 
-Latest Foundation V2 validation:
+建议顺序：
 
-    ACTION verify             PASS
-    POLICY_PROFILES_OK        238 checks
-    PROFILE_EXPOSURE_OK       162 checks
-    TEMP_READONLY_OK          49 checks
-    FOUNDATION_OK             33 checks
-    GIT_MUTATIONS_OK          13 checks
-    PLUGIN_FRAMEWORK_OK       17 checks
-    OUTPUT_SCHEMA_OK          71 checks
-    DOWNSTREAM_SMOKE_OK       PASS
+1. 在当前机器完成 Repo-local A/B 验证。
+2. 在另一台干净 Windows 主机完成 Fresh Clone + `bootstrap.ps1` 最终验收。
+3. 确认无回退需要。
+4. 再单独执行 Legacy Cleanup。
 
-This is 583 explicit assertions/checks, plus build/typecheck and downstream smoke.
+---
 
-## Architecture direction
+## 14. 开发验证
 
-Foundation V2 remains the implemented stable substrate. Architecture V3 is the complete research-backed target and
-defines the contracts that future implementation slices must follow.
+常用：
 
-Key V3 decisions include:
+```powershell
+npm run check
+npm run build
+```
 
-- MCP is a stateless Protocol Edge, not P05 lifecycle state;
-- one Durable Run Kernel and transactional State Store serve all long-running domains;
-- Process, Terminal, Work Isolation and Security Isolation are separate primitives;
-- one semantic Capability Catalog uses versioned implementation Bindings;
-- Assets, Artifacts, Agents, Skills and Tasks have distinct contracts;
-- ChatGPT provides high-level reasoning while the Orchestrator performs deterministic coordination.
+完整 npm 验证入口：
 
-Implementation sequencing is documented in V3/V3-A but does not narrow the target architecture.
+```powershell
+npm run verify
+```
 
-## Canonical documents
+Operator Console 回归：
+
+```powershell
+node dist/test/operator-console.js
+```
+
+Policy 回归：
+
+```powershell
+node dist/test/policy-profiles.js
+```
+
+---
+
+## 15. 架构文档
+
+当前基线：
 
 - [Project Status](PROJECT_STATUS.md)
-- [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
-- [V3 Technical Research](docs/research/V3_TECHNICAL_RESEARCH.md)
-- [V3 Capability / Agent / Skill / Asset / Run Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
-- [Target Architecture V3-A — implementation slice](docs/architecture/TARGET_ARCHITECTURE_V3A.md)
-- [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
+- [Target Architecture V2](docs/architecture/TARGET_ARCHITECTURE_V2.md)
 - [Permission Model](docs/architecture/PERMISSION-MODEL.md)
 - [Tool Profiles](docs/architecture/TOOL-PROFILES.md)
-- [ADR-0007 External Restart Broker](docs/adr/ADR-0007-external-restart-broker.md)
-- [ADR-0008 Developer Shell Trust Model](docs/adr/ADR-0008-developer-shell-trust-model.md)
-- [ADR-0009 Foundation V1](docs/adr/ADR-0009-foundation-v1.md)
-- [ADR-0010 Foundation V2](docs/adr/ADR-0010-foundation-v2.md)
-- [ADR-0011 Plugin Framework](docs/adr/ADR-0011-plugin-framework.md)
-- [ADR-0012 Agent / Skill / Asset / Orchestrator Layering](docs/adr/ADR-0012-agent-skill-orchestrator.md)
-- [ADR-0013 V3-A Execution & Agent Foundation](docs/adr/ADR-0013-v3a-execution-agent-foundation.md)
-- [ADR-0014 Protocol Edge and Explicit Handles](docs/adr/ADR-0014-protocol-edge-explicit-handles.md)
-- [ADR-0015 Durable Run Kernel and State](docs/adr/ADR-0015-durable-run-kernel-state.md)
-- [ADR-0016 Host Session / Terminal / Isolation](docs/adr/ADR-0016-host-session-terminal-isolation.md)
-- [ADR-0017 Capability Bindings and Assets](docs/adr/ADR-0017-capability-bindings-assets.md)
 - [Plugin Framework](docs/architecture/PLUGIN-FRAMEWORK.md)
+
+长期目标：
+
+- [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
+- [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
+- [Agent / Skill / Orchestrator ADR](docs/adr/ADR-0012-agent-skill-orchestrator.md)
+
+部署细节：
+
+- [Repo-local Deployment](scripts/deployment/README.md)
+
+---
+
+## 16. 当前边界
+
+当前已经稳定的是：
+
+```text
+ChatGPT Connector
+      1 : 1
+P05 Runtime Slot
+      1 : 1
+Active Workspace
+```
+
+即：
+
+```text
+@Boonray-A ↔ Runtime A ↔ Workspace A
+@Boonray-B ↔ Runtime B ↔ Workspace B
+```
+
+这解决的是两个并行 ChatGPT 对话 / 两个工程上下文的本机执行隔离。
+
+后续如果需要超过两个并行 Runtime，再考虑将固定 A/B Slot 抽象成动态 Runtime Registry；当前阶段不提前增加这层复杂度。

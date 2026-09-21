@@ -10,6 +10,7 @@ import { resolveDownstreamTarget } from "../downstream/types.js";
 import { readTextFile, writeTextFile } from "../tools/files.js";
 import { gitStatus } from "../tools/git.js";
 import { runPowerShell } from "../tools/shell.js";
+import { defaultP05StateDir, p05StateDir } from "../state.js";
 import { WorkspaceManager, parseWorkspaceRegistry } from "../workspace/manager.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -20,6 +21,7 @@ const WS_B = path.join(FIXTURE, "workspace-b");
 const REGISTRY_ALLOWED = path.join(FIXTURE, "registry-allowed");
 const REGISTRY_OUTSIDE = path.join(FIXTURE, "registry-outside");
 const REGISTRY_JUNCTION = path.join(REGISTRY_ALLOWED, "escape-link");
+const EXPLICIT_STATE = path.join(FIXTURE, "explicit-state");
 
 let checks = 0;
 function check(label: string, condition: boolean, detail = ""): void {
@@ -55,6 +57,9 @@ await fs.mkdir(REGISTRY_ALLOWED, { recursive: true });
 await fs.mkdir(REGISTRY_OUTSIDE, { recursive: true });
 
 try {
+  check("state: default directory is anchored to the P05 repository", defaultP05StateDir() === path.join(REPO, ".p05"), defaultP05StateDir());
+  check("state: explicit P05_STATE_DIR override is honored", p05StateDir(EXPLICIT_STATE) === path.resolve(EXPLICIT_STATE), p05StateDir(EXPLICIT_STATE));
+
   const raw = JSON.stringify([
     { id: "a", root: WS_A, kind: "platform-source", label: "Platform Workspace" },
     { id: "b", root: WS_B, kind: "git-project", label: "Workspace B" }

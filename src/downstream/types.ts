@@ -17,6 +17,8 @@ export type DownstreamDefinition = {
   /** Used only when workspaceBinding=fixed. */
   cwd?: string;
   env?: Record<string, string>;
+  /** Per-tool request timeout for long-running downstream operations. */
+  requestTimeoutMs?: number;
 };
 
 export type DownstreamStatus = {

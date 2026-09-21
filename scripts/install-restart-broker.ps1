@@ -1,24 +1,30 @@
-#Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
 
-$TaskName = 'P05-RestartBroker'
-$RestartScript = 'D:\Project_Git\_p05_deploy\44_restart_runtime.ps1'
+$repo = Split-Path -Parent $PSScriptRoot
+$deployment = Join-Path $repo 'scripts\deployment'
+. (Join-Path $deployment 'common.ps1')
+Import-P05DotEnv -RepoRoot $repo
 
-if (-not (Test-Path -LiteralPath $RestartScript -PathType Leaf)) {
-    throw "Restart script not found: $RestartScript"
+$taskName = if ($env:P05_OPERATOR_RESTART_TASK) {
+  $env:P05_OPERATOR_RESTART_TASK
+} else {
+  'P05-RestartBroker'
+}
+$restartScript = Join-Path $deployment 'restart-runtime.ps1'
+if (-not (Test-Path -LiteralPath $restartScript -PathType Leaf)) {
+  throw "Restart script not found: $restartScript"
 }
 
-$ActionArgs = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $RestartScript + '"'
-$Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $ActionArgs
+$actionArgs = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $restartScript + '"'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs -WorkingDirectory $repo
 
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 
-$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+$task = New-ScheduledTask -Action $action -Principal $principal -Settings $settings -Description 'P05 fixed restart broker. Source-controlled action; no automatic trigger.'
+Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
 
-$Task = New-ScheduledTask -Action $Action -Principal $Principal -Settings $Settings -Description 'P05 external restart broker. Fixed action; no automatic trigger.'
-
-Register-ScheduledTask -TaskName $TaskName -InputObject $Task -Force | Out-Null
-
-Write-Host 'P05-RestartBroker installed.'
-Write-Host "Action: powershell.exe ... -File $RestartScript"
+Write-Host "Installed $taskName"
+Write-Host "Action: $restartScript"
 Write-Host 'Trigger: none (manual/on-demand only)'

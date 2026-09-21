@@ -1,5 +1,6 @@
 import type { CapabilityDescriptor } from "../capability/types.js";
 import type { DownstreamDefinition } from "../downstream/types.js";
+import type { DownstreamRegistry } from "../downstream/registry.js";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 
@@ -28,6 +29,7 @@ export type PluginManifest = {
 
 export type PluginToolContext = {
   workspaceManager: WorkspaceManager;
+  downstreamRegistry?: DownstreamRegistry;
 };
 
 export type ApplicationPlugin = {

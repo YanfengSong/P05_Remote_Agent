@@ -21,6 +21,16 @@ function isWorkspaceKind(value: unknown): value is WorkspaceKind {
   return typeof value === "string" && (WORKSPACE_KINDS as readonly string[]).includes(value);
 }
 
+function workspaceIdBase(label: string): string {
+  const normalized = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 56);
+  return normalized || "workspace";
+}
+
 export function parseWorkspaceRegistry(
   raw: string | undefined,
   allowedRoots: readonly string[],
@@ -124,7 +134,8 @@ export function parseWorkspaceRegistry(
 }
 
 export class WorkspaceManager {
-  readonly #workspaces: readonly WorkspaceDescriptor[];
+  readonly #workspaces: WorkspaceDescriptor[];
+  #sessionWorkspace?: WorkspaceDescriptor;
   #currentId: string;
 
   constructor(workspaces: readonly WorkspaceDescriptor[], initialId?: string) {
@@ -137,7 +148,10 @@ export class WorkspaceManager {
   }
 
   list(): WorkspaceView[] {
-    return this.#workspaces.map((entry) => ({
+    const entries = this.#sessionWorkspace
+      ? [...this.#workspaces, this.#sessionWorkspace]
+      : [...this.#workspaces];
+    return entries.map((entry) => ({
       id: entry.id,
       kind: entry.kind,
       ...(entry.label ? { label: entry.label } : {}),
@@ -148,8 +162,28 @@ export class WorkspaceManager {
     }));
   }
 
+  get(id: string): WorkspaceDescriptor {
+    const key = id.trim().toLowerCase();
+    const match = this.#workspaces.find(
+      (entry) => entry.id.toLowerCase() === key
+    ) ?? (this.#sessionWorkspace?.id.toLowerCase() === key ? this.#sessionWorkspace : undefined);
+    if (!match) throw new Error(`Workspace "${id}" is not registered.`);
+    return match;
+  }
+
+  all(): WorkspaceDescriptor[] {
+    const entries = this.#sessionWorkspace
+      ? [...this.#workspaces, this.#sessionWorkspace]
+      : [...this.#workspaces];
+    return entries.map((entry) => ({
+      ...entry,
+      ...(entry.plugins ? { plugins: [...entry.plugins] } : {}),
+      authorization: { ...entry.authorization }
+    }));
+  }
+
   current(): WorkspaceDescriptor {
-    return this.#workspaces.find((entry) => entry.id === this.#currentId)!;
+    return this.get(this.#currentId);
   }
 
   currentRoot(): string {
@@ -171,9 +205,123 @@ export class WorkspaceManager {
       workspace.plugins.some((id) => id.toLowerCase() === pluginId.toLowerCase());
   }
 
+  setSessionRoot(root: string, allowedRoots: readonly string[]): WorkspaceView {
+    const candidate = root.trim();
+    if (!candidate) throw new Error("Workspace root is required.");
+    if (!path.isAbsolute(candidate)) throw new Error("Workspace root must be an absolute path.");
+
+    const resolved = path.resolve(candidate);
+    if (!insideAnyRoot(resolved, allowedRoots)) {
+      throw new Error("Workspace root is outside REMOTE_AGENT_ALLOWED_ROOTS.");
+    }
+
+    let stat: fs.Stats;
+    let realRoot: string;
+    try {
+      stat = fs.statSync(resolved);
+      realRoot = fs.realpathSync(resolved);
+    } catch {
+      throw new Error("Workspace root does not exist or cannot be resolved.");
+    }
+    if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
+    if (!insideAnyRoot(realRoot, allowedRoots)) {
+      throw new Error("Workspace root resolves outside REMOTE_AGENT_ALLOWED_ROOTS.");
+    }
+
+    const registered = this.#workspaces.find(
+      (entry) => normalize(entry.root) === normalize(realRoot)
+    );
+    if (registered) return this.switch(registered.id);
+
+    const id = "operator-session";
+    if (this.#workspaces.some((entry) => entry.id.toLowerCase() === id)) {
+      throw new Error(`Workspace id "${id}" is reserved for the Operator Console.`);
+    }
+
+    this.#sessionWorkspace = {
+      id,
+      root: realRoot,
+      kind: "generic",
+      label: `Operator · ${path.basename(realRoot) || realRoot}`,
+      authorization: { ...DEFAULT_WORKSPACE_AUTHORIZATION }
+    };
+    this.#currentId = id;
+    return {
+      id,
+      kind: "generic",
+      label: this.#sessionWorkspace.label,
+      current: true,
+      platform: false,
+      authorization: { ...DEFAULT_WORKSPACE_AUTHORIZATION }
+    };
+  }
+
+  persistentRegistrationCandidate(): WorkspaceDescriptor {
+    const session = this.#sessionWorkspace;
+    if (!session || this.#currentId !== session.id) {
+      throw new Error("Current workspace is already registered.");
+    }
+
+    const label = path.basename(session.root) || "Workspace";
+    const base = workspaceIdBase(label);
+    const existing = new Set(this.#workspaces.map((entry) => entry.id.toLowerCase()));
+    let id = base;
+    for (let index = 2; existing.has(id.toLowerCase()) || id.toLowerCase() === "operator-session"; index += 1) {
+      const suffix = `-${index}`;
+      id = base.slice(0, Math.max(1, 64 - suffix.length)) + suffix;
+    }
+
+    return {
+      id,
+      root: session.root,
+      kind: fs.existsSync(path.join(session.root, ".git")) ? "git-project" : "generic",
+      label,
+      authorization: { ...DEFAULT_WORKSPACE_AUTHORIZATION }
+    };
+  }
+
+  registerPersistentWorkspace(workspace: WorkspaceDescriptor): WorkspaceView {
+    const session = this.#sessionWorkspace;
+    if (!session || this.#currentId !== session.id) {
+      throw new Error("Current workspace is already registered.");
+    }
+    if (workspace.kind === "platform-source") {
+      throw new Error("Operator workspace cannot replace the platform workspace.");
+    }
+    if (!ID_PATTERN.test(workspace.id) || workspace.id.toLowerCase() === "operator-session") {
+      throw new Error(`Invalid persistent workspace id "${workspace.id}".`);
+    }
+    if (normalize(workspace.root) !== normalize(session.root)) {
+      throw new Error("Persistent workspace must match the current operator session root.");
+    }
+    if (this.#workspaces.some((entry) => entry.id.toLowerCase() === workspace.id.toLowerCase())) {
+      throw new Error(`Workspace "${workspace.id}" is already registered.`);
+    }
+    if (this.#workspaces.some((entry) => normalize(entry.root) === normalize(workspace.root))) {
+      throw new Error("Workspace root is already registered.");
+    }
+
+    const registered: WorkspaceDescriptor = {
+      ...workspace,
+      ...(workspace.plugins ? { plugins: [...workspace.plugins] } : {}),
+      authorization: { ...DEFAULT_WORKSPACE_AUTHORIZATION }
+    };
+    this.#workspaces.push(registered);
+    this.#sessionWorkspace = undefined;
+    this.#currentId = registered.id;
+    return {
+      id: registered.id,
+      kind: registered.kind,
+      ...(registered.label ? { label: registered.label } : {}),
+      ...(registered.plugins ? { plugins: [...registered.plugins] } : {}),
+      current: true,
+      platform: false,
+      authorization: { ...registered.authorization }
+    };
+  }
+
   switch(id: string): WorkspaceView {
-    const match = this.#workspaces.find((entry) => entry.id.toLowerCase() === id.trim().toLowerCase());
-    if (!match) throw new Error(`Workspace "${id}" is not registered.`);
+    const match = this.get(id);
     this.#currentId = match.id;
     return {
       id: match.id,
