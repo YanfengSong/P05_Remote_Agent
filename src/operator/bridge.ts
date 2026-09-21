@@ -65,7 +65,8 @@ export async function startLocalControlBridge(
   deps: BridgeDeps
 ): Promise<LocalControlBridge> {
   const token = randomBytes(32).toString("hex");
-  const metadataPath = deps.metadataPath ?? p05StatePath("operator-bridge.json");
+  const metadataPath =
+    deps.metadataPath ?? p05StatePath(`operator-bridge-${process.pid}.json`);
   const startedAt = new Date().toISOString();
 
   const server = http.createServer(async (request, response) => {

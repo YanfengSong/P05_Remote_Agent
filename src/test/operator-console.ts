@@ -6,6 +6,7 @@ import { CapabilityCatalog } from "../capability/registry.js";
 import { DownstreamRegistry } from "../downstream/registry.js";
 import { LiveActivityStore, summarizeToolInput } from "../monitor/live-activity.js";
 import { startLocalControlBridge } from "../operator/bridge.js";
+import { bridgeRequest } from "../operator/runtime-control.js";
 import { PluginRegistry } from "../plugin/registry.js";
 import { PluginRuntime } from "../plugin/runtime.js";
 import type { ToolProfileReport } from "../policy/tool-profile.js";
@@ -155,6 +156,62 @@ try {
     mcpDetail === "matlab / run",
     mcpDetail
   );
+
+  const previousStateDir = process.env.P05_STATE_DIR;
+  const stateDir = path.join(FIXTURE, "state");
+  process.env.P05_STATE_DIR = stateDir;
+  await fs.mkdir(stateDir, { recursive: true });
+  const fallbackBridge = await startLocalControlBridge({
+    workspaceManager,
+    auditStore,
+    pluginRuntime,
+    downstreamRegistry,
+    capabilityCatalog,
+    liveActivity,
+    exposure: () => exposure,
+    profile: "developer",
+    profileSource: "env",
+    port: 0
+  });
+  try {
+    const pidMetadata = path.join(
+      stateDir,
+      `operator-bridge-${process.pid}.json`
+    );
+    const pidMetadataExists = await fs.access(pidMetadata)
+      .then(() => true)
+      .catch(() => false);
+    check(
+      "operator: default bridge metadata is pid-scoped",
+      pidMetadataExists
+    );
+
+    await fs.writeFile(
+      path.join(stateDir, "operator-bridge.json"),
+      JSON.stringify({
+        version: 1,
+        url: "http://127.0.0.1:9",
+        token: "0".repeat(64),
+        pid: 2147483647,
+        startedAt: new Date().toISOString()
+      })
+    );
+
+    const fallbackOverview = await bridgeRequest("/api/overview") as {
+      online?: boolean;
+    };
+    check(
+      "operator: stale singleton metadata falls back to live pid bridge",
+      fallbackOverview.online === true
+    );
+  } finally {
+    await fallbackBridge.close();
+    if (previousStateDir === undefined) {
+      delete process.env.P05_STATE_DIR;
+    } else {
+      process.env.P05_STATE_DIR = previousStateDir;
+    }
+  }
 
   console.log(`OPERATOR_CONSOLE_OK (${checks} checks)`);
 } finally {

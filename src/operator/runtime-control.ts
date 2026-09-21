@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { p05StatePath } from "../state.js";
+import { p05StateDir } from "../state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -208,36 +208,71 @@ async function healthStatus() {
   }
 }
 
-function readBridgeMetadata(): BridgeMetadata | undefined {
-  const metadataPath = p05StatePath("operator-bridge.json");
-  if (!fs.existsSync(metadataPath)) return undefined;
+type BridgeMetadataCandidate = BridgeMetadata & {
+  metadataPath: string;
+  modifiedMs: number;
+};
 
-  try {
-    const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Partial<BridgeMetadata>;
+function bridgeMetadataCandidates(): BridgeMetadataCandidate[] {
+  const stateDir = p05StateDir();
+  if (!fs.existsSync(stateDir)) return [];
+
+  const candidates: BridgeMetadataCandidate[] = [];
+  for (const entry of fs.readdirSync(stateDir, { withFileTypes: true })) {
     if (
-      parsed.version !== 1 ||
-      typeof parsed.url !== "string" ||
-      !/^http:\/\/127\.0\.0\.1:\d+$/.test(parsed.url) ||
-      typeof parsed.token !== "string" ||
-      !/^[a-f0-9]{64}$/.test(parsed.token) ||
-      typeof parsed.pid !== "number" ||
-      typeof parsed.startedAt !== "string"
+      !entry.isFile() ||
+      !/^operator-bridge(?:-\d+)?\.json$/.test(entry.name)
     ) {
-      return undefined;
+      continue;
     }
-    return parsed as BridgeMetadata;
+
+    const metadataPath = path.join(stateDir, entry.name);
+    try {
+      const parsed = JSON.parse(
+        fs.readFileSync(metadataPath, "utf8")
+      ) as Partial<BridgeMetadata>;
+      if (
+        parsed.version !== 1 ||
+        typeof parsed.url !== "string" ||
+        !/^http:\/\/127\.0\.0\.1:\d+$/.test(parsed.url) ||
+        typeof parsed.token !== "string" ||
+        !/^[a-f0-9]{64}$/.test(parsed.token) ||
+        typeof parsed.pid !== "number" ||
+        !Number.isInteger(parsed.pid) ||
+        parsed.pid <= 0 ||
+        typeof parsed.startedAt !== "string"
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        ...(parsed as BridgeMetadata),
+        metadataPath,
+        modifiedMs: fs.statSync(metadataPath).mtimeMs
+      });
+    } catch {
+      // Ignore malformed or concurrently replaced metadata.
+    }
+  }
+
+  return candidates.sort((a, b) => b.modifiedMs - a.modifiedMs);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
 }
 
-export async function bridgeRequest(
+async function requestBridge(
+  metadata: BridgeMetadata,
   pathname: string,
-  init?: RequestInit
+  init?: RequestInit,
+  timeoutMs = 3500
 ): Promise<unknown> {
-  const metadata = readBridgeMetadata();
-  if (!metadata) throw new Error("P05 local control bridge is offline.");
-
   const response = await fetch(metadata.url + pathname, {
     ...init,
     headers: {
@@ -245,7 +280,7 @@ export async function bridgeRequest(
       "content-type": "application/json",
       ...(init?.headers ?? {})
     },
-    signal: AbortSignal.timeout(3500),
+    signal: AbortSignal.timeout(timeoutMs),
     cache: "no-store"
   });
 
@@ -260,6 +295,42 @@ export async function bridgeRequest(
     throw new Error(message);
   }
   return payload;
+}
+
+async function resolveBridge(): Promise<{
+  metadata: BridgeMetadata;
+  overview: unknown;
+}> {
+  const candidates = bridgeMetadataCandidates();
+  for (const candidate of candidates) {
+    if (!processAlive(candidate.pid)) continue;
+    try {
+      const overview = await requestBridge(
+        candidate,
+        "/api/overview",
+        undefined,
+        1500
+      );
+      return { metadata: candidate, overview };
+    } catch {
+      // A live PID can still own stale or unreachable metadata. Try the next.
+    }
+  }
+
+  throw new Error(
+    candidates.length > 0
+      ? "P05 local control bridge metadata is stale or unreachable."
+      : "P05 local control bridge is offline."
+  );
+}
+
+export async function bridgeRequest(
+  pathname: string,
+  init?: RequestInit
+): Promise<unknown> {
+  const resolved = await resolveBridge();
+  if (pathname === "/api/overview" && !init) return resolved.overview;
+  return requestBridge(resolved.metadata, pathname, init);
 }
 
 async function bridgeOverview() {
