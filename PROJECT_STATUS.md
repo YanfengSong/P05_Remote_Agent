@@ -1,4 +1,4 @@
-# Project Status
+﻿# Project Status
 
 Updated: 2026-09-20
 
@@ -130,7 +130,7 @@ Implemented:
 Current automated regression:
 - `OPERATOR_CONSOLE_OK (16 checks)`.
 
-Current V2+Operator validation baseline: **601 explicit checks**, plus build/typecheck and downstream smoke.
+Current V2+Operator validation baseline: **602 minimum explicit checks**; hosts with the NTFS 8.3 short-name probe execute **603**. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -215,12 +215,13 @@ Latest full verification:
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
     POLICY_PROFILES_OK            240 checks
-    PROFILE_EXPOSURE_OK           162 checks
+    PROFILE_EXPOSURE_OK           161-162 checks
     TEMP_READONLY_OK              49 checks
-    FOUNDATION_OK                 33 checks
+    FOUNDATION_OK                 35 checks
     GIT_MUTATIONS_OK              13 checks
     PLUGIN_FRAMEWORK_OK           17 checks
     OUTPUT_SCHEMA_OK              71 checks
+    OPERATOR_CONSOLE_OK           16 checks
 
 Key V2 acceptance verified:
 - cross-Workspace absolute structured write refused;

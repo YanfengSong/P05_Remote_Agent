@@ -1,8 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export function p05StateDir(): string {
-  return path.resolve(process.env.P05_STATE_DIR ?? path.join(process.cwd(), ".p05"));
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(moduleDir, "..");
+
+export function defaultP05StateDir(): string {
+  return path.join(repoRoot, ".p05");
+}
+
+export function p05StateDir(raw = process.env.P05_STATE_DIR): string {
+  return path.resolve(raw?.trim() || defaultP05StateDir());
 }
 
 export function ensureP05StateDir(): string {

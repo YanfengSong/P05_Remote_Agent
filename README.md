@@ -1,4 +1,4 @@
-# P05 Remote Agent
+﻿# P05 Remote Agent
 
 P05 is a local-first remote engineering Agent for controlled access to a Windows engineering workstation.
 
@@ -217,15 +217,16 @@ Latest Foundation V2 validation:
 
     ACTION verify             PASS
     POLICY_PROFILES_OK        240 checks
-    PROFILE_EXPOSURE_OK       162 checks
+    PROFILE_EXPOSURE_OK       161-162 checks (host-dependent 8.3 probe)
     TEMP_READONLY_OK          49 checks
-    FOUNDATION_OK             33 checks
+    FOUNDATION_OK             35 checks
     GIT_MUTATIONS_OK          13 checks
     PLUGIN_FRAMEWORK_OK       17 checks
     OUTPUT_SCHEMA_OK          71 checks
+    OPERATOR_CONSOLE_OK       16 checks
     DOWNSTREAM_SMOKE_OK       PASS
 
-This is 583 explicit assertions/checks, plus build/typecheck and downstream smoke.
+This is a minimum of 602 explicit assertions/checks; hosts where the NTFS 8.3 short-name probe is available execute 603. Build/typecheck and downstream smoke are additional gates.
 
 ## What comes next
 
@@ -248,7 +249,7 @@ New application behavior should extend V3 layers rather than redesign Foundation
 - [Project Status](PROJECT_STATUS.md)
 - [Target Architecture V3](docs/architecture/TARGET_ARCHITECTURE_V3.md)
 - [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
-- [Target Architecture V2 — implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
+- [Target Architecture V2 鈥?implemented baseline](docs/architecture/TARGET_ARCHITECTURE_V2.md)
 - [Permission Model](docs/architecture/PERMISSION-MODEL.md)
 - [Tool Profiles](docs/architecture/TOOL-PROFILES.md)
 - [ADR-0007 External Restart Broker](docs/adr/ADR-0007-external-restart-broker.md)

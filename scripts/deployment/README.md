@@ -98,3 +98,10 @@ HTTP_PROXY=http://127.0.0.1:7892
 ```
 
 Machines that do not need a proxy should omit these variables.
+
+
+## State directory stability
+
+P05 no longer derives its default state location from the process working directory. When `P05_STATE_DIR` is not set, the runtime anchors state to `<repo>/.p05`. This keeps device identity and persistent audit/recovery metadata stable whether P05 is launched from Task Scheduler, a terminal, tunnel-client, or another working directory.
+
+Deployment may still set `P05_STATE_DIR=<repo>/.p05` explicitly for clarity.
