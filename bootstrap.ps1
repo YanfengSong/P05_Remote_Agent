@@ -1,6 +1,8 @@
 param(
     [string]$TunnelA,
     [string]$TunnelB,
+    [string]$ConnectorA,
+    [string]$ConnectorB,
     [string]$RuntimeSlots,
     [string]$ApiKey,
     [string]$AllowedRoots,
@@ -170,12 +172,21 @@ $slots = @(ConvertTo-P05RuntimeSlots -Raw $RuntimeSlots)
 if ($slots.Count -eq 0) { throw 'At least one runtime slot must be configured.' }
 $RuntimeSlots = ($slots -join ',')
 
+$existingConnectorA = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_RUNTIME_A_CONNECTOR'
+$existingConnectorB = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_RUNTIME_B_CONNECTOR'
+if (-not $ConnectorA) {
+    $ConnectorA = $(if ($existingConnectorA) { $existingConnectorA } elseif ($env:P05_RUNTIME_A_CONNECTOR) { $env:P05_RUNTIME_A_CONNECTOR } else { '@Runtime-A' })
+}
+if (-not $ConnectorB) {
+    $ConnectorB = $(if ($existingConnectorB) { $existingConnectorB } elseif ($env:P05_RUNTIME_B_CONNECTOR) { $env:P05_RUNTIME_B_CONNECTOR } else { '@Runtime-B' })
+}
+
 if ($slots -contains 'A') {
-    if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for @Boonray-A' }
+    if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for Runtime A' }
     Assert-TunnelId 'TunnelA' $TunnelA
 }
 if ($slots -contains 'B') {
-    if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for @Boonray-B' }
+    if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for Runtime B' }
     Assert-TunnelId 'TunnelB' $TunnelB
 }
 if (($slots -contains 'A') -and ($slots -contains 'B') -and $TunnelA -eq $TunnelB) {
@@ -247,6 +258,8 @@ $managed = [ordered]@{
     P05_RUNTIME_SLOTS = $RuntimeSlots
     P05_RUNTIME_A_PROFILE = 'p05-a'
     P05_RUNTIME_B_PROFILE = 'p05-b'
+    P05_RUNTIME_A_CONNECTOR = $ConnectorA
+    P05_RUNTIME_B_CONNECTOR = $ConnectorB
     P05_TUNNEL_A_ID = $(if ($slots -contains 'A') { $TunnelA } else { '' })
     P05_TUNNEL_B_ID = $(if ($slots -contains 'B') { $TunnelB } else { '' })
     CONTROL_PLANE_API_KEY = $ApiKey

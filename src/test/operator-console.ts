@@ -69,6 +69,15 @@ check(
   !renderedPage.includes("Runtime A Workspace · 主视图") &&
     renderedPage.includes('<section class="card span12">\n    <h2>Runtime / Host</h2>')
 );
+check(
+  "operator: connector labels are not statically tied to Boonray",
+  !renderedPage.includes("@Boonray-A") &&
+    !renderedPage.includes("@Boonray-B") &&
+    renderedPage.includes('id="topALabel"') &&
+    renderedPage.includes('id="topBLabel"') &&
+    renderedPage.includes('id="slotATitle"') &&
+    renderedPage.includes('id="slotBTitle"')
+);
 
 const domElements: Record<string, any> = {};
 const domElement = (id: string) => domElements[id] ??= {
@@ -156,7 +165,7 @@ const renderFixture = {
   },
   slots: {
     A: {
-      id: "A", connector: "@Boonray-A", connected: true,
+      id: "A", connector: "@Fixture-A", connected: true,
       boundWorkspaceId: "platform", health: { ready: true, live: true }, bridge: { online: true },
       device: {
         deviceId: "device-a",
@@ -214,7 +223,7 @@ const renderFixture = {
       logTail: ["A tunnel line"]
     },
     B: {
-      id: "B", connector: "@Boonray-B", connected: true,
+      id: "B", connector: "@Fixture-B", connected: true,
       boundWorkspaceId: "business", health: { ready: true, live: true }, bridge: { online: true },
       device: {
         deviceId: "device-b",
@@ -378,6 +387,13 @@ check(
   domElement("slotBWorkspace").textContent === "B Workspace" &&
   domElement("slotABoundWorkspace").textContent === "platform" &&
   domElement("slotBBoundWorkspace").textContent === "business"
+);
+check(
+  "operator: renders connector labels from Runtime slot data",
+  domElement("topALabel").textContent === "Runtime A · @Fixture-A" &&
+    domElement("topBLabel").textContent === "Runtime B · @Fixture-B" &&
+    domElement("slotATitle").textContent === "Runtime A · @Fixture-A" &&
+    domElement("slotBTitle").textContent === "Runtime B · @Fixture-B"
 );
 check(
   "operator: Runtime A renders read-only reference roots",

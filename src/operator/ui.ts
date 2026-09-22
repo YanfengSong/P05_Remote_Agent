@@ -47,13 +47,13 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
 </header>
 
 <main><div class="grid">
-  <section class="card span3"><div class="label">Runtime A · @Boonray-A</div><div id="topAState" class="big">...</div><div id="topAStateDetail" class="small muted"></div></section>
+  <section class="card span3"><div id="topALabel" class="label">Runtime A</div><div id="topAState" class="big">...</div><div id="topAStateDetail" class="small muted"></div></section>
   <section class="card span3"><div class="label">A Workspace / Git</div><div id="topAWorkspace" class="big">-</div><div id="topAGit" class="small muted"></div></section>
-  <section class="card span3"><div class="label">Runtime B · @Boonray-B</div><div id="topBState" class="big">...</div><div id="topBStateDetail" class="small muted"></div></section>
+  <section class="card span3"><div id="topBLabel" class="label">Runtime B</div><div id="topBState" class="big">...</div><div id="topBStateDetail" class="small muted"></div></section>
   <section class="card span3"><div class="label">B Workspace / Git</div><div id="topBWorkspace" class="big">-</div><div id="topBGit" class="small muted"></div></section>
 
   <section class="card span6">
-    <h2>Runtime A · @Boonray-A</h2>
+    <h2 id="slotATitle">Runtime A</h2>
     <div class="row"><span>状态</span><span id="slotAState">-</span></div>
     <div class="row"><span>Device ID</span><span id="slotADeviceId" class="value mono small">-</span></div>
     <div class="row"><span>当前 Workspace</span><strong id="slotAWorkspace">-</strong></div>
@@ -71,7 +71,7 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <section class="card span6">
-    <h2>Runtime B · @Boonray-B</h2>
+    <h2 id="slotBTitle">Runtime B</h2>
     <div class="row"><span>状态</span><span id="slotBState">-</span></div>
     <div class="row"><span>Device ID</span><span id="slotBDeviceId" class="value mono small">-</span></div>
     <div class="row"><span>当前 Workspace</span><strong id="slotBWorkspace">-</strong></div>
@@ -276,6 +276,7 @@ function metric(label,value,cls){return '<div class="metric"><span class="label"
 function renderSlot(slot,data){
   data=data||{};
   const online=!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=data?.workspace?.all||[],device=data?.device||{};
+  $("slot"+slot+"Title").textContent="Runtime "+slot+" · "+(data.connector||"@Runtime-"+slot);
   const stateText=data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
   $("slot"+slot+"State").innerHTML=dot(!!data.connected,!!health.live)+esc(stateText);
   $("slot"+slot+"DeviceId").textContent=device.deviceId||"-";
@@ -292,6 +293,7 @@ function render(d){
 latest=d;const c=d.connection||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{},device=slotA.device||slotB.device||{};
 function topRuntime(slot,label){
   const running=!!slot?.connected,ready=!!slot?.health?.ready,live=!!slot?.health?.live;
+  $(label+"Label").textContent="Runtime "+(label==="topA"?"A":"B")+" · "+(slot?.connector||"-");
   const state=running?"ONLINE":ready?"READY":live?"LIVE":"OFFLINE";
   $(label+"State").innerHTML=dot(running,ready||live)+esc(state);
   $(label+"StateDetail").textContent=(slot?.connector||"-")+" · "+(slot?.bridge?.online?"bridge online":"bridge offline");

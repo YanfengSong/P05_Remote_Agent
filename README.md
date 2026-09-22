@@ -955,7 +955,7 @@ GIT_MUTATIONS_OK
 13 checks
 
 OPERATOR_CONSOLE_OK
-58 checks
+60 checks
 
 OUTPUT_SCHEMA_OK
 177 checks

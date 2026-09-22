@@ -51,10 +51,14 @@ function makeRuntimeSlot(slot: RuntimeSlotId, connector: string): RuntimeSlotCon
   };
 }
 
-function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
+function slotConnector(slot: RuntimeSlotId): string {
   return slot === "A"
-    ? makeRuntimeSlot("A", "@Boonray-A")
-    : makeRuntimeSlot("B", "@Boonray-B");
+    ? process.env.P05_RUNTIME_A_CONNECTOR?.trim() || "@Runtime-A"
+    : process.env.P05_RUNTIME_B_CONNECTOR?.trim() || "@Runtime-B";
+}
+
+function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
+  return makeRuntimeSlot(slot, slotConnector(slot));
 }
 
 const ACTIVE_WORKSPACE_BINDING_FILE = "active-workspace.txt";
