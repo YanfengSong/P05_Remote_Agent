@@ -157,6 +157,8 @@ async function taskStatus(taskName: string) {
 }
 
 async function processStatus() {
+  const repoRootWindows = process.cwd().replace(/'/g, "''");
+  const repoRootForward = repoRootWindows.replace(/\\/g, "/");
   try {
     const rows = await powershellJson<
       Array<{
@@ -174,7 +176,7 @@ async function processStatus() {
       }
     >(
       `$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |` +
-      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
+      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*${repoRootWindows}\\dist\\index.js*' -or $_.CommandLine -like '*${repoRootForward}/dist/index.js*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
       `Select-Object ProcessId,Name,CreationDate,ExecutablePath,CommandLine;` +
       `@($p)|ConvertTo-Json -Compress`
     );
