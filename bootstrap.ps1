@@ -1,6 +1,7 @@
 param(
     [string]$TunnelA,
     [string]$TunnelB,
+    [string]$RuntimeSlots,
     [string]$ApiKey,
     [string]$AllowedRoots,
     [switch]$SkipToolDownload,
@@ -21,6 +22,7 @@ $NodeExe = Join-Path $NodeDir 'node.exe'
 $NpmCmd = Join-Path $NodeDir 'npm.cmd'
 $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
 $EnvFile = Join-Path $RepoRoot '.env'
+. (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
 
 function Read-SecretPlainText([string]$Prompt) {
     $secure = Read-Host $Prompt -AsSecureString
@@ -144,11 +146,31 @@ if ($env:OS -ne 'Windows_NT') {
     throw 'This bootstrap currently supports Windows only.'
 }
 
-if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for @Boonray-A' }
-if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for @Boonray-B' }
-Assert-TunnelId 'TunnelA' $TunnelA
-Assert-TunnelId 'TunnelB' $TunnelB
-if ($TunnelA -eq $TunnelB) { throw 'Tunnel A and Tunnel B must be different.' }
+if (-not $RuntimeSlots) {
+    Write-Host ''
+    Write-Host 'Runtime topology:' -ForegroundColor Cyan
+    Write-Host '  1. Single Runtime (A) [default]'
+    Write-Host '  2. Dual Runtime (A + B)'
+    $choice = (Read-Host 'Select 1 or 2').Trim()
+    $RuntimeSlots = if ($choice -eq '2') { 'A,B' } elseif (-not $choice -or $choice -eq '1') { 'A' } else {
+        throw 'Runtime topology selection must be 1 or 2.'
+    }
+}
+$slots = @(ConvertTo-P05RuntimeSlots -Raw $RuntimeSlots)
+if ($slots.Count -eq 0) { throw 'At least one runtime slot must be configured.' }
+$RuntimeSlots = ($slots -join ',')
+
+if ($slots -contains 'A') {
+    if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for @Boonray-A' }
+    Assert-TunnelId 'TunnelA' $TunnelA
+}
+if ($slots -contains 'B') {
+    if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for @Boonray-B' }
+    Assert-TunnelId 'TunnelB' $TunnelB
+}
+if (($slots -contains 'A') -and ($slots -contains 'B') -and $TunnelA -eq $TunnelB) {
+    throw 'Tunnel A and Tunnel B must be different.'
+}
 
 if (-not $ApiKey) { $ApiKey = Read-SecretPlainText 'OpenAI Control Plane API Key' }
 if (-not $ApiKey) { throw 'API key is required.' }
@@ -182,10 +204,11 @@ $managed = [ordered]@{
     P05_OPERATOR_PORT = '56301'
     P05_NODE_PATH = $NodeExe
     P05_OPERATOR_TUNNEL_CLIENT = $TunnelExe
+    P05_RUNTIME_SLOTS = $RuntimeSlots
     P05_RUNTIME_A_PROFILE = 'p05-a'
     P05_RUNTIME_B_PROFILE = 'p05-b'
-    P05_TUNNEL_A_ID = $TunnelA
-    P05_TUNNEL_B_ID = $TunnelB
+    P05_TUNNEL_A_ID = $(if ($slots -contains 'A') { $TunnelA } else { '' })
+    P05_TUNNEL_B_ID = $(if ($slots -contains 'B') { $TunnelB } else { '' })
     CONTROL_PLANE_API_KEY = $ApiKey
 }
 foreach ($name in $managed.Keys) {
@@ -197,8 +220,9 @@ if (Test-Path -LiteralPath $matlabToolkit -PathType Leaf) {
     Set-DotEnvValue $EnvFile 'MATLAB_MCP_ENABLED' 'true'
 }
 
-foreach ($slot in @('a','b')) {
-    $state = Join-Path $P05Root ("runtime-$slot\state")
+foreach ($slot in $slots) {
+    $slotLower = $slot.ToLowerInvariant()
+    $state = Join-Path $P05Root ("runtime-$slotLower\state")
     New-Item -ItemType Directory -Path $state -Force | Out-Null
 }
 
@@ -214,7 +238,7 @@ if (-not $SkipBuild) {
     }
 }
 
-& (Join-Path $RepoRoot 'scripts\deployment\write-runtime-profiles.ps1') -TunnelA $TunnelA -TunnelB $TunnelB
+& (Join-Path $RepoRoot 'scripts\deployment\write-runtime-profiles.ps1') -RuntimeSlots $RuntimeSlots -TunnelA $TunnelA -TunnelB $TunnelB
 
 $nodeVersionText = (& $NodeExe --version).Trim()
 $tunnelVersionText = (& $TunnelExe --version).Trim()
@@ -225,7 +249,8 @@ Write-Host "Repo: $RepoRoot"
 Write-Host "Node: $nodeVersionText"
 Write-Host "Tunnel client: $tunnelVersionText"
 Write-Host 'Automatic startup: disabled'
-Write-Host 'Runtime A/B: stopped until you enable them in Operator Console'
+Write-Host "Configured Runtime slots: $RuntimeSlots"
+Write-Host 'Configured Runtimes are stopped until you enable them in Operator Console'
 Write-Host ''
 Write-Host 'Start manually with:'
 Write-Host "  $RepoRoot\P05-Operator.cmd"

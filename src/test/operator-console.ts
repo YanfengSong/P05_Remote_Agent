@@ -456,10 +456,12 @@ try {
 
   const previousStateDir = process.env.P05_STATE_DIR;
   const previousOperatorRoot = process.env.P05_OPERATOR_ROOT;
+  const previousRuntimeSlots = process.env.P05_RUNTIME_SLOTS;
   const operatorRoot = path.join(FIXTURE, "operator-root");
   const stateDir = path.join(operatorRoot, "runtime-a", "state");
   process.env.P05_OPERATOR_ROOT = operatorRoot;
   process.env.P05_STATE_DIR = stateDir;
+  process.env.P05_RUNTIME_SLOTS = "A";
   await fs.mkdir(stateDir, { recursive: true });
   const fallbackBridge = await startLocalControlBridge({
     workspaceManager,
@@ -489,6 +491,27 @@ try {
 
     const statusOverview = await operatorOverview() as any;
     const guiData = statusOverview?.connection?.bridge?.data;
+    check(
+      "operator: single-runtime topology keeps A configured",
+      statusOverview?.slots?.A?.configured === true,
+      JSON.stringify(statusOverview?.slots?.A)
+    );
+    check(
+      "operator: single-runtime topology reports B as not configured",
+      statusOverview?.slots?.B?.configured === false &&
+        statusOverview?.slots?.B?.connected === false,
+      JSON.stringify(statusOverview?.slots?.B)
+    );
+
+    process.env.P05_RUNTIME_SLOTS = "A,B";
+    const dualOverview = await operatorOverview() as any;
+    check(
+      "operator: dual-runtime topology configures both slots",
+      dualOverview?.slots?.A?.configured === true &&
+        dualOverview?.slots?.B?.configured === true,
+      JSON.stringify(dualOverview?.slots)
+    );
+    process.env.P05_RUNTIME_SLOTS = "A";
     check(
       "operator: status overview satisfies GUI render contract",
       typeof statusOverview?.timestamp === "string" &&
@@ -542,6 +565,11 @@ try {
       delete process.env.P05_OPERATOR_ROOT;
     } else {
       process.env.P05_OPERATOR_ROOT = previousOperatorRoot;
+    }
+    if (previousRuntimeSlots === undefined) {
+      delete process.env.P05_RUNTIME_SLOTS;
+    } else {
+      process.env.P05_RUNTIME_SLOTS = previousRuntimeSlots;
     }
   }
 

@@ -6,6 +6,12 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 
+$repo = Get-P05RepoRoot -ScriptRoot $PSScriptRoot
+Import-P05DotEnv -RepoRoot $repo
+if (-not (Test-P05SlotConfigured -Slot $Slot)) {
+    throw "Runtime $Slot is not configured. Add $Slot to P05_RUNTIME_SLOTS and run bootstrap.ps1 again."
+}
+
 $ctx = Get-P05SlotContext -ScriptRoot $PSScriptRoot -Slot $Slot
 Import-P05RuntimeKey
 

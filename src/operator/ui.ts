@@ -175,6 +175,7 @@ function toast(msg,bad){const e=$("toast");e.textContent=msg;e.style.display="bl
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{"x-p05-operator-token":TOKEN,"content-type":"application/json",...(opts.headers||{})},cache:"no-store"});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d}
 function slotIsRunning(slot){
   const data=latest?.slots?.[slot]||{};
+  if(data?.configured===false)return false;
   return !!data?.connected||!!data?.health?.ready||!!data?.health?.live;
 }
 function buttons(){
@@ -185,16 +186,16 @@ function buttons(){
   $("setWorkspaceRoot").disabled=busy||pending||!bridgeOnline;
   $("registerWorkspace").disabled=busy||pending||!bridgeOnline||currentWorkspaceId!=="operator-session";
   for(const slot of ["A","B"]){
-    const data=latest?.slots?.[slot]||{},online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=slotIsRunning(slot);
+    const data=latest?.slots?.[slot]||{},configured=data?.configured!==false,online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=slotIsRunning(slot);
     const toggle=$("slot"+slot+"Toggle");
-    toggle.disabled=busy;
-    toggle.textContent=running?"关闭 "+slot:"启动 "+slot;
+    toggle.disabled=busy||!configured;
+    toggle.textContent=!configured?"未配置 "+slot:running?"关闭 "+slot:"启动 "+slot;
     toggle.className=running?"danger":"primary";
-    $("slot"+slot+"Restart").disabled=busy||!running;
-    $("slot"+slot+"SwitchWorkspace").disabled=busy||!online;
-    $("slot"+slot+"PickWorkspace").disabled=busy;
-    $("slot"+slot+"SetWorkspace").disabled=busy||!online;
-    $("slot"+slot+"RegisterWorkspace").disabled=busy||!online||currentId!=="operator-session";
+    $("slot"+slot+"Restart").disabled=busy||!configured||!running;
+    $("slot"+slot+"SwitchWorkspace").disabled=busy||!configured||!online;
+    $("slot"+slot+"PickWorkspace").disabled=busy||!configured;
+    $("slot"+slot+"SetWorkspace").disabled=busy||!configured||!online;
+    $("slot"+slot+"RegisterWorkspace").disabled=busy||!configured||!online||currentId!=="operator-session";
   }
 }
 async function action(name){if(busy)return;busy=true;buttons();try{await api("/api/action/"+name,{method:"POST",body:"{}"});await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}}
@@ -202,9 +203,9 @@ function renderAction(op){const a=op?.action,e=$("actionBanner");if(!a){e.style.
 function metric(label,value,cls){return '<div class="metric"><span class="label">'+esc(label)+'</span><strong class="'+(cls||"")+'">'+esc(value)+'</strong></div>'}
 function renderSlot(slot,data){
   data=data||{};
-  const online=!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=data?.workspace?.all||[],device=data?.device||{};
-  const stateText=data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
-  $("slot"+slot+"State").innerHTML=dot(!!data.connected,!!health.live)+esc(stateText);
+  const configured=data?.configured!==false,online=!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=data?.workspace?.all||[],device=data?.device||{};
+  const stateText=!configured?"NOT CONFIGURED":data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
+  $("slot"+slot+"State").innerHTML=dot(!!data.connected,!configured||!!health.live)+esc(stateText);
   $("slot"+slot+"DeviceId").textContent=device.deviceId||"-";
   $("slot"+slot+"Workspace").textContent=current.label||current.id||"-";
   $("slot"+slot+"BoundWorkspace").textContent=data.boundWorkspaceId||"-";
@@ -238,7 +239,8 @@ const auth=cur.authorization||{};$("workspaceAuth").textContent=auth.structuredC
 const workspaceSelect=$("workspaceSelect"),pendingWorkspaceId=workspaceSelectionDirty?workspaceSelect.value:"";workspaceSelect.innerHTML=workspaces.map(x=>'<option value="'+esc(x.id)+'" '+(x.current?'selected':'')+'>'+esc((x.label||x.id)+"  ["+x.kind+"]")+'</option>').join("");if(workspaceSelectionDirty&&workspaces.some(x=>x.id===pendingWorkspaceId)){workspaceSelect.value=pendingWorkspaceId}else if(workspaceSelectionDirty){workspaceSelectionDirty=false}
 $("workspaceList").innerHTML=workspaces.map(x=>'<div class="workspaceCard '+(x.current?'current':'')+'"><strong>'+esc(x.label||x.id)+'</strong> '+(x.current?'<span class="pill">CURRENT</span>':'')+'<div class="small muted mono">'+esc(x.root||"")+'</div><div class="small muted">'+esc(x.kind)+' · '+((x.plugins||[]).length?esc(x.plugins.join(", ")):"default plugins")+'</div></div>').join("")||'<div class="empty">MCP 离线</div>';
 const slotA=d.slots?.A||{},slotB=d.slots?.B||{};
-$("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,!!slotA.health?.ready)+esc(slotA.connected?"ONLINE":slotA.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,!!slotB.health?.ready)+esc(slotB.connected?"ONLINE":slotB.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
+const slotSummary=s=>s.configured===false?"NOT CONFIGURED":s.connected?"ONLINE":s.health?.ready?"READY":"OFFLINE";
+$("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,slotA.configured===false||!!slotA.health?.ready)+esc(slotSummary(slotA))+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,slotB.configured===false||!!slotB.health?.ready)+esc(slotSummary(slotB))+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
 $("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div><div class="row"><span>MCP started</span><span class="small">'+esc(dateTime(device.startedAt))+'</span></div>';
 const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>'<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span class="small">'+esc(dateTime(p.StartTime))+'</span></div>').join(""):'<div class="empty">未检测到 P05 相关进程</div>';
 

@@ -44,11 +44,12 @@ Clone the repository, then run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-The script securely prompts for:
+The script first asks for Runtime topology:
 
-1. Tunnel ID A
-2. Tunnel ID B
-3. OpenAI control-plane API key
+1. Single Runtime A (default)
+2. Dual Runtime A+B
+
+It then prompts only for the Tunnel ID(s) required by that topology and one OpenAI control-plane API key.
 
 By default the outer authorization root is the P05 repository itself. An explicit
 larger authorization perimeter can be supplied with `-AllowedRoots`.
@@ -60,8 +61,8 @@ Bootstrap:
 - installs them into `.p05/tools`;
 - creates the Git-ignored machine-local `.env`;
 - runs `npm ci` and `npm run build`;
-- creates repo-local A/B tunnel profiles;
-- creates separate A/B state directories;
+- writes `P05_RUNTIME_SLOTS` explicitly;
+- creates tunnel profiles and state directories only for configured Runtime slots;
 - does **not** start Operator or either Runtime;
 - does **not** install automatic startup.
 
@@ -81,14 +82,14 @@ http://127.0.0.1:56301/
 
 From the GUI:
 
-- Runtime A controls `@Boonray-A`.
-- Runtime B controls `@Boonray-B`.
+- Runtime A controls `@Boonray-A` when A is configured.
+- Runtime B controls `@Boonray-B` when B is configured.
+- Fresh installs default to Runtime A only; dual A+B is optional.
 - Each Runtime has independent start/stop/restart and Workspace binding.
 - Closing Operator does not stop A or B.
 - Restarting A does not affect B, and vice versa.
 
-Runtime state is persistent under `.p05/runtime-a/state` and
-`.p05/runtime-b/state`. Workspace bindings survive Runtime restart.
+Runtime state is persistent under `.p05/runtime-<slot>/state` for configured slots. Workspace bindings survive Runtime restart. An unconfigured slot is reported as `NOT CONFIGURED`, not as a deployment failure.
 
 ## Runtime scripts
 

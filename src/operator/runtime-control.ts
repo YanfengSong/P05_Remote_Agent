@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { p05StateDir } from "../state.js";
+import { readOwnEnv } from "../env.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +17,45 @@ const TUNNEL_PROFILE_DIR =
   path.join(P05_ROOT, "tunnel", "profiles");
 
 export type RuntimeSlotId = "A" | "B";
+
+const TUNNEL_ID_PATTERN = /^tunnel_[A-Za-z0-9]+$/;
+
+export function configuredRuntimeSlots(): RuntimeSlotId[] {
+  const raw = readOwnEnv("P05_RUNTIME_SLOTS")?.trim();
+  if (raw) {
+    const slots: RuntimeSlotId[] = [];
+    const seen = new Set<RuntimeSlotId>();
+    for (const part of raw.split(",")) {
+      const slot = part.trim().toUpperCase();
+      if (slot !== "A" && slot !== "B") {
+        throw new Error(`Invalid runtime slot "${slot}" in P05_RUNTIME_SLOTS.`);
+      }
+      if (seen.has(slot)) {
+        throw new Error(`Duplicate runtime slot "${slot}" in P05_RUNTIME_SLOTS.`);
+      }
+      seen.add(slot);
+      slots.push(slot);
+    }
+    return slots;
+  }
+
+  const slots: RuntimeSlotId[] = [];
+  if (TUNNEL_ID_PATTERN.test(readOwnEnv("P05_TUNNEL_A_ID")?.trim() ?? "")) slots.push("A");
+  if (TUNNEL_ID_PATTERN.test(readOwnEnv("P05_TUNNEL_B_ID")?.trim() ?? "")) slots.push("B");
+  return slots;
+}
+
+export function runtimeSlotConfigured(slot: RuntimeSlotId): boolean {
+  return configuredRuntimeSlots().includes(slot);
+}
+
+function assertRuntimeSlotConfigured(slot: RuntimeSlotId): void {
+  if (!runtimeSlotConfigured(slot)) {
+    throw new Error(
+      `Runtime ${slot} is not configured. Add ${slot} to P05_RUNTIME_SLOTS and run bootstrap.ps1 again.`
+    );
+  }
+}
 
 type RuntimeSlotConfig = {
   id: RuntimeSlotId;
@@ -63,6 +103,7 @@ export function persistRuntimeSlotWorkspace(
   slot: RuntimeSlotId,
   workspaceId: string
 ): void {
+  assertRuntimeSlotConfigured(slot);
   const id = workspaceId.trim();
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id) || id === "operator-session") {
     throw new Error("Only a registered Workspace can be bound to a Runtime slot.");
@@ -389,6 +430,7 @@ export async function bridgeRequestForSlot(
   pathname: string,
   init?: RequestInit
 ): Promise<unknown> {
+  assertRuntimeSlotConfigured(slot);
   const config = runtimeSlotConfig(slot);
   const resolved = await resolveBridge(config.stateDir);
   if (pathname === "/api/overview" && !init) return resolved.overview;
@@ -528,6 +570,34 @@ function logTail(
 
 export async function runtimeSlotOverview(slot: RuntimeSlotId) {
   const config = runtimeSlotConfig(slot);
+  let configured = false;
+  let configurationError: string | undefined;
+  try {
+    configured = runtimeSlotConfigured(slot);
+  } catch (error) {
+    configurationError = error instanceof Error ? error.message : String(error);
+  }
+
+  if (!configured) {
+    return {
+      id: config.id,
+      connector: config.connector,
+      configured: false,
+      tunnelAlias: config.profileName,
+      connected: false,
+      health: {
+        urlFile: config.healthUrlFile,
+        baseUrl: null,
+        live: false,
+        ready: false
+      },
+      bridge: {
+        online: false,
+        ...(configurationError ? { error: configurationError } : {})
+      }
+    };
+  }
+
   const [health, bridge] = await Promise.all([
     healthStatus(config.healthUrlFile),
     bridgeOverviewForStateDir(config.stateDir)
@@ -541,6 +611,7 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
   return {
     id: config.id,
     connector: config.connector,
+    configured: true,
     tunnelAlias: config.profileName,
     boundWorkspaceId: runtimeSlotWorkspaceBinding(slot),
     connected: Boolean(health.ready && bridge.online),
@@ -712,6 +783,7 @@ export async function disconnectRuntime() {
 }
 
 export async function connectRuntimeSlot(slot: RuntimeSlotId) {
+  assertRuntimeSlotConfigured(slot);
   await runSlotControlScript("run-runtime-slot.ps1", slot);
   return {
     ok: true,
@@ -732,6 +804,7 @@ export async function disconnectRuntimeSlot(slot: RuntimeSlotId) {
 }
 
 export async function restartRuntimeSlot(slot: RuntimeSlotId) {
+  assertRuntimeSlotConfigured(slot);
   await runSlotControlScript("restart-runtime-slot.ps1", slot);
   return {
     ok: true,
@@ -746,10 +819,12 @@ export const operatorConfigView = {
   tunnelClient: TUNNEL_CLIENT,
   profileDir: TUNNEL_PROFILE_DIR,
   runtimeA: {
+    configured: (() => { try { return runtimeSlotConfigured("A"); } catch { return false; } })(),
     profile: runtimeSlotConfig("A").profileName,
     stateDir: runtimeSlotConfig("A").stateDir
   },
   runtimeB: {
+    configured: (() => { try { return runtimeSlotConfigured("B"); } catch { return false; } })(),
     profile: runtimeSlotConfig("B").profileName,
     stateDir: runtimeSlotConfig("B").stateDir
   }
