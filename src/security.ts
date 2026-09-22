@@ -192,15 +192,15 @@ export async function assertAccessiblePath(
   baseDir = process.cwd(),
   workspaceRoot?: string
 ): Promise<string> {
-  // Validate the caller's spelling first, but preserve the original input for containment
-  // errors. Relative paths resolve against the active workspace supplied by the caller.
-  assertPathShape(input, access, baseDir);
-  const resolved = assertAllowedPath(input, baseDir);
-  if (workspaceRoot) {
-    const workspaceProblem = workspaceContainmentProblem(resolved, workspaceRoot);
-    if (workspaceProblem) {
-      throw new Error(`Path refused for ${access}: ${input} (${workspaceProblem}).`);
-    }
+  // Workspace-scoped tools use the active Runtime Workspace as their complete
+  // effective authorization boundary. The startup allowed-root list remains the
+  // fallback only for callers that do not carry a Workspace context.
+  const resolved = assertPathShape(input, access, baseDir);
+  const containment = workspaceRoot
+    ? workspaceContainmentProblem(resolved, workspaceRoot)
+    : containmentProblem(resolved);
+  if (containment) {
+    throw new Error(`Path refused for ${access}: ${input} (${containment}).`);
   }
 
   const directReason = protectionReason(resolved);
@@ -216,19 +216,16 @@ export async function assertAccessiblePath(
   }
 
   if (normalizeForCompare(real) !== normalizeForCompare(resolved)) {
-    const outside = containmentProblem(real);
-    const outsideWorkspace = !outside && workspaceRoot
+    const outside = workspaceRoot
       ? workspaceContainmentProblem(real, workspaceRoot)
-      : undefined;
-    const onProtected = outside || outsideWorkspace
+      : containmentProblem(real);
+    const onProtected = outside
       ? undefined
       : protectionReason(real) ?? (access === "write" ? writeProtectionReason(real) : undefined);
-    if (outside || outsideWorkspace || onProtected) {
+    if (outside || onProtected) {
       const detail = outside
-        ? "outside the allowed roots"
-        : outsideWorkspace
-          ? "outside the active workspace"
-          : `onto a protected path (${onProtected})`;
+        ? (workspaceRoot ? "outside the active workspace" : "outside the allowed roots")
+        : `onto a protected path (${onProtected})`;
       throw new Error(`Path refused for ${access}: ${input} (a link resolves ${detail}).`);
     }
   }

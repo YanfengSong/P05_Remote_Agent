@@ -22,6 +22,7 @@ const REGISTRY_ALLOWED = path.join(FIXTURE, "registry-allowed");
 const REGISTRY_OUTSIDE = path.join(FIXTURE, "registry-outside");
 const REGISTRY_JUNCTION = path.join(REGISTRY_ALLOWED, "escape-link");
 const EXPLICIT_STATE = path.join(FIXTURE, "explicit-state");
+const DYNAMIC_OUTSIDE = path.join(path.dirname(FIXTURE), "_p05_foundation_dynamic_workspace");
 
 let checks = 0;
 function check(label: string, condition: boolean, detail = ""): void {
@@ -55,6 +56,8 @@ await fs.mkdir(WS_A, { recursive: true });
 await fs.mkdir(WS_B, { recursive: true });
 await fs.mkdir(REGISTRY_ALLOWED, { recursive: true });
 await fs.mkdir(REGISTRY_OUTSIDE, { recursive: true });
+await fs.rm(DYNAMIC_OUTSIDE, { recursive: true, force: true });
+await fs.mkdir(DYNAMIC_OUTSIDE, { recursive: true });
 
 try {
   check("state: default directory is anchored to the P05 repository", defaultP05StateDir() === path.join(REPO, ".p05"), defaultP05StateDir());
@@ -109,6 +112,23 @@ try {
   );
   check("workspace: shell follows switch", shellB.stdout.includes("workspace-b"), shellB.stdout);
 
+  const dynamicView = manager.setSessionRoot(DYNAMIC_OUTSIDE);
+  check(
+    "workspace: local Operator selection can replace Runtime root outside startup allowed roots",
+    dynamicView.id === "operator-session" && manager.currentRoot() === path.resolve(DYNAMIC_OUTSIDE)
+  );
+  await writeTextFile("dynamic.txt", "dynamic", manager.currentRoot());
+  check(
+    "workspace: tools follow dynamically authorized Runtime root",
+    (await readTextFile("dynamic.txt", manager.currentRoot())) === "dynamic"
+  );
+  await rejects(
+    "workspace: dynamic Runtime root still refuses access outside selected workspace",
+    () => readTextFile(path.join(WS_A, "marker.txt"), manager.currentRoot()),
+    "outside the active workspace"
+  );
+  manager.switch("b");
+
   throws("workspace: unknown id refused", () => manager.switch("missing"), "not registered");
   throws("workspace: exactly one platform-source required", () =>
     parseWorkspaceRegistry(
@@ -159,20 +179,39 @@ try {
   check("capability: names are unique", new Set(registry.map((entry) => entry.name)).size === registry.length);
   check("capability: shell is workspace scoped", capabilityDescriptor("shell_run").scope === "workspace");
   check("capability: restart is host scoped", capabilityDescriptor("runtime_restart").scope === "host");
-  check("capability: workspace switch is platform scoped", capabilityDescriptor("workspace_switch").scope === "platform");
+  check("capability: remote workspace switch is absent",
+    !capabilityRegistry().some((entry) => entry.name === "workspace_switch"));
 
   const audit = new AuditStore(20);
-  const runtime = new ExecutionRuntime(audit, () => manager.current().id);
-  await runtime.run("workspace_current", async () => "ok");
+  const runtime = new ExecutionRuntime(
+    audit,
+    () => manager.current().id,
+    undefined,
+    undefined,
+    {
+      source: "runtime-mcp",
+      transport: "stdio",
+      runtimeSlot: "B"
+    }
+  );
+  await runtime.run(
+    "workspace_current",
+    async () => "ok",
+    undefined,
+    {
+      clientName: "foundation-client",
+      clientVersion: "1.2.3"
+    }
+  );
   try {
-    await runtime.run("workspace_switch", async () => {
+    await runtime.run("fs_write", async () => {
       throw new Error("synthetic failure");
     });
   } catch {
     // expected
   }
   try {
-    await runtime.run("workspace_switch", {
+    await runtime.run("fs_write", {
       authorize: () => { throw new AuthorizationError("synthetic policy denial"); },
       execute: async () => "unreachable"
     });
@@ -192,10 +231,10 @@ try {
   check("runtime: success record exists",
     recent.some((event) => event.capability === "workspace_current" && event.state === "succeeded"));
   check("runtime: failure record exists",
-    recent.some((event) => event.capability === "workspace_switch" && event.state === "failed"));
+    recent.some((event) => event.capability === "fs_write" && event.state === "failed"));
   check("runtime: policy errors classified",
     recent.some((event) =>
-      event.capability === "workspace_switch" &&
+      event.capability === "fs_write" &&
       event.errorCategory === "policy" &&
       event.phase === "authorize" &&
       event.recoveryHint === "human"));
@@ -207,10 +246,24 @@ try {
       event.recoveryHint === "retry"));
   check("runtime: generic tool errors classified",
     recent.some((event) =>
-      event.capability === "workspace_switch" &&
+      event.capability === "fs_write" &&
       event.errorCategory === "tool" &&
       event.phase === "execute"));
   check("audit: records carry workspace id", recent.every((event) => event.workspaceId === "b"));
+  const attributed = recent.find((event) => event.capability === "workspace_current" && event.state === "succeeded");
+  check(
+    "audit: records carry invocation source and runtime slot",
+    attributed?.source === "runtime-mcp" &&
+      attributed?.transport === "stdio" &&
+      attributed?.runtimeSlot === "B",
+    JSON.stringify(attributed)
+  );
+  check(
+    "audit: per-call MCP client identity is recorded",
+    attributed?.clientName === "foundation-client" &&
+      attributed?.clientVersion === "1.2.3",
+    JSON.stringify(attributed)
+  );
   check("audit: one final record per execution id",
     new Set(recent.map((event) => event.id)).size === recent.length,
     JSON.stringify(recent));
@@ -243,4 +296,5 @@ try {
   console.log(`FOUNDATION_OK (${checks} checks)`);
 } finally {
   await fs.rm(FIXTURE, { recursive: true, force: true }).catch(() => undefined);
+  await fs.rm(DYNAMIC_OUTSIDE, { recursive: true, force: true }).catch(() => undefined);
 }

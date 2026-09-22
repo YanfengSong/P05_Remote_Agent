@@ -2,7 +2,7 @@
 
 Status: implemented and active
 Foundation: V2
-Updated: 2026-09-20
+Updated: 2026-09-22
 
 ## Source of truth
 
@@ -16,7 +16,6 @@ Each core capability declares once:
 - risk;
 - scope;
 - summary;
-- optional gate.
 
 Application-plugin capabilities are declared in each plugin manifest and merged into the session `CapabilityCatalog`.
 
@@ -29,30 +28,66 @@ Profiles are cumulative and unknown values fail closed.
 | Profile | Implemented capabilities |
 |---|---|
 | discovery | `device_info`, `ping` |
-| readonly | discovery + `workspace_list`, `workspace_current`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat` |
-| developer | readonly + `workspace_switch`, `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools`, `shell_run` |
+| readonly | discovery + `workspace_list`, `workspace_current`, `reference_list`, `reference_read`, `reference_list_directory`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat` |
+| developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools`, `shell_run` |
 | full | developer + `git_push`, `mcp_call_tool` |
-
-Temporary gated migration capabilities:
-- `list_directory`
-- `read_file`
-
-They appear only when `P05_TEMP_READONLY_ROOT` is configured.
 
 ## Workspace semantics
 
 Readonly can inspect Workspace identity and authorization metadata without receiving host paths.
 
-Developer can switch only by a registered logical Workspace id.
+Workspace Binding is a human-controlled Runtime authority boundary. Remote MCP callers, including ChatGPT, cannot change the active Runtime Workspace. Rebinding is available only through the local Operator control path after explicit local user selection.
 
 Structured Workspace capabilities are confined to the active Workspace:
 - file read/list/write/patch;
 - Git inspection and local mutation;
 - Shell starting cwd.
 
-An absolute structured path into another registered Workspace is refused even when both Workspaces are inside `REMOTE_AGENT_ALLOWED_ROOTS`.
+An absolute structured path outside the Runtime's active Workspace is refused. A locally selected Operator Workspace replaces that Runtime's effective structured-tool root without changing another Runtime.
 
-Exactly one Workspace is `platform-source`.
+### Reference Roots
+
+Reference Roots are Runtime-scoped, human-authorized, read-only directories outside the active Workspace.
+
+Only the local Operator may add or remove a Reference Root. Remote MCP callers cannot grant themselves a new reference directory.
+
+Remote read-only capabilities:
+- `reference_list` — logical id/label only; host root paths are not returned;
+- `reference_read` — text read inside one authorized Reference Root;
+- `reference_list_directory` — direct-child listing inside one authorized Reference Root.
+
+Reference Roots do not extend Workspace authority:
+- `fs_write` / `apply_patch` remain Workspace-only;
+- Git mutation remains Workspace-only;
+- Shell cwd remains Workspace-only;
+- MATLAB/downstream Workspace binding is unchanged;
+- removing a Reference Root revokes authorization only and never deletes the host directory.
+
+Reference Roots persist under the Runtime-specific P05 state directory, so Runtime A and Runtime B maintain independent reference authorization sets.
+
+### Native HTTP Reviewer transport
+
+P05 also provides an optional local Streamable HTTP MCP endpoint for external review clients.
+
+Initial V2.x preview contract:
+- entry: `npm run start:http-reviewer`;
+- endpoint: `http://127.0.0.1:8765/mcp` by default;
+- health: `http://127.0.0.1:8765/healthz`;
+- local authentication: static Bearer token stored in the selected Runtime state directory;
+- external OAuth preview: authorization-code flow with PKCE support, refresh tokens, Protected Resource Metadata and Authorization Server Metadata;
+- OAuth client identity: fixed Reviewer client id/secret stored in the selected Runtime state directory;
+- OAuth scope: only `p05.review`; clients cannot request a stronger P05 profile;
+- default Runtime binding: slot B;
+- fixed tool profile: `readonly`;
+- active Workspace authority is reloaded from the selected Runtime state on each MCP request;
+- the remote client cannot switch Workspace, grant Reference Roots, write files, execute Shell, mutate Git, or invoke MATLAB/downstream tools;
+- a development Quick Tunnel may expose the local endpoint over temporary HTTPS for interoperability tests. Quick Tunnel URLs are ephemeral and are not a production deployment mechanism.
+
+The HTTP transport is a Core transport surface, not a Gemini-specific plugin. Gemini or another MCP client may consume it; client-specific review orchestration can remain a plugin/provider concern.
+
+
+
+Exactly one configured Workspace is `platform-source`; local Operator-selected business Workspaces may be bound independently per Runtime.
 
 ## Platform capability
 
@@ -65,7 +100,6 @@ Current server-side actions:
 - `build`
 - `test_policy`
 - `test_exposure`
-- `test_temp_readonly`
 - `test_foundation`
 - `test_git_mutations`
 - `smoke_downstream`
@@ -193,7 +227,6 @@ Canonical command:
 Current expected suites include:
 - policy profile matrix;
 - real MCP exposure tests;
-- temporary read-only tests;
 - Foundation V2 tests;
 - Git mutation tests;
 - downstream MCP smoke test.

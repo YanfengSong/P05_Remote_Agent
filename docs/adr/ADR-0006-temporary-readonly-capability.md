@@ -1,6 +1,6 @@
 # ADR-0006: A temporary, gated read-only layer for remote document review
 
-Status: Accepted (temporary by intent — see Deletion)
+Status: Retired (2026-09-22)
 Date: 2026-09-20
 
 ## Context
@@ -73,6 +73,8 @@ no other capability:
   module header, the spec block, and the README bullet.
 
 ## Deletion
+
+Retirement completed on 2026-09-22 after the permanent Workspace / Tool Profile / Reference Root / Audit authorization model and the readonly HTTP Reviewer were in place. The temporary tools, gate, environment variable, tests and verification step were removed. This ADR remains as historical rationale only.
 
 When the Security Broker lands, delete `src/tools/temp-readonly.ts`, the two spec entries in
 `src/policy/tool-profile.ts`, the two `exposer.expose` blocks in `src/index.ts`, the

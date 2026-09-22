@@ -205,15 +205,12 @@ export class WorkspaceManager {
       workspace.plugins.some((id) => id.toLowerCase() === pluginId.toLowerCase());
   }
 
-  setSessionRoot(root: string, allowedRoots: readonly string[]): WorkspaceView {
+  setSessionRoot(root: string): WorkspaceView {
     const candidate = root.trim();
     if (!candidate) throw new Error("Workspace root is required.");
     if (!path.isAbsolute(candidate)) throw new Error("Workspace root must be an absolute path.");
 
     const resolved = path.resolve(candidate);
-    if (!insideAnyRoot(resolved, allowedRoots)) {
-      throw new Error("Workspace root is outside REMOTE_AGENT_ALLOWED_ROOTS.");
-    }
 
     let stat: fs.Stats;
     let realRoot: string;
@@ -224,9 +221,6 @@ export class WorkspaceManager {
       throw new Error("Workspace root does not exist or cannot be resolved.");
     }
     if (!stat.isDirectory()) throw new Error("Workspace root is not a directory.");
-    if (!insideAnyRoot(realRoot, allowedRoots)) {
-      throw new Error("Workspace root resolves outside REMOTE_AGENT_ALLOWED_ROOTS.");
-    }
 
     const registered = this.#workspaces.find(
       (entry) => normalize(entry.root) === normalize(realRoot)

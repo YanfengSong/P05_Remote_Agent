@@ -5,6 +5,7 @@ import { CAPABILITIES, CapabilityCatalog } from "./capability/registry.js";
 import { config, readOwnEnv } from "./config.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
 import { LiveActivityStore } from "./monitor/live-activity.js";
+import { ReferenceManager } from "./reference/manager.js";
 import { registerGatewayTools } from "./gateway-tools.js";
 import {
   startLocalControlBridge,
@@ -21,7 +22,7 @@ import { registerControlTools } from "./tools/register-control.js";
 import { registerExecutionTools } from "./tools/register-execution.js";
 import { registerFsTools } from "./tools/register-fs.js";
 import { registerGitTools } from "./tools/register-git.js";
-import { registerTemporaryTools } from "./tools/register-temporary.js";
+import { registerReferenceTools } from "./tools/register-reference.js";
 import { registerDeviceTools } from "./tools/device.js";
 import {
   WorkspaceManager,
@@ -38,6 +39,12 @@ import {
 const { profile, profileSource } = resolveToolProfile(
   readOwnEnv("P05_TOOL_PROFILE")
 );
+
+const runtimeSlotValue = readOwnEnv("P05_RUNTIME_SLOT")?.trim().toUpperCase();
+const runtimeSlot =
+  runtimeSlotValue === "A" || runtimeSlotValue === "B"
+    ? runtimeSlotValue
+    : undefined;
 
 let activeDownstreamRegistry: DownstreamRegistry | undefined;
 let activePluginRuntime: PluginRuntime | undefined;
@@ -82,6 +89,9 @@ serveStdio(() => {
       config.defaultCwd
     ),
     readOwnEnv("P05_ACTIVE_WORKSPACE_ID")
+  );
+  const referenceManager = new ReferenceManager(
+    p05StatePath("references.json")
   );
 
   const persistWorkspace = (workspace: Parameters<typeof toPersistentWorkspaceEntry>[0]): void => {
@@ -138,7 +148,12 @@ serveStdio(() => {
     auditStore,
     () => workspaceManager.current().id,
     capabilityCatalog,
-    liveActivity
+    liveActivity,
+    {
+      source: "runtime-mcp",
+      transport: "stdio",
+      ...(runtimeSlot ? { runtimeSlot } : {})
+    }
   );
   const exposer = createExposer(
     server,
@@ -156,10 +171,10 @@ serveStdio(() => {
     pluginRuntime
   );
   registerFsTools(exposer, workspaceManager);
+  registerReferenceTools(exposer, referenceManager);
   registerGitTools(exposer, workspaceManager);
   registerExecutionTools(exposer, workspaceManager);
   registerGatewayTools(exposer, downstreamRegistry);
-  registerTemporaryTools(exposer);
   pluginRuntime.registerTools(exposer, downstreamRegistry);
 
   const exposureReport = exposer.report();
@@ -167,6 +182,7 @@ serveStdio(() => {
 
   void startLocalControlBridge({
     workspaceManager,
+    referenceManager,
     auditStore,
     pluginRuntime,
     downstreamRegistry,
@@ -175,7 +191,6 @@ serveStdio(() => {
     exposure: () => exposer.report(),
     profile,
     profileSource,
-    allowedRoots: config.allowedRoots,
     persistWorkspace
   }).then((bridge) => {
     activeLocalControlBridge = bridge;

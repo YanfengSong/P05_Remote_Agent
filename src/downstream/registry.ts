@@ -48,6 +48,12 @@ export class DownstreamRegistry {
     return this.get(id).callTool(tool, args);
   }
 
+  async close(id: string): Promise<void> {
+    const client = this.clients.get(id);
+    if (!client) throw new Error(`Unknown downstream MCP server: ${id}`);
+    await client.close();
+  }
+
   async closeAll(): Promise<void> {
     await Promise.all([...this.clients.values()].map((client) => client.close()));
   }

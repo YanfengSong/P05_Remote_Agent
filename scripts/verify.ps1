@@ -41,10 +41,15 @@ $allPassed = $true
 
 if (-not (Invoke-Step "npm run check"            { npm run check }            ""))                 { $allPassed = $false }
 if (-not (Invoke-Step "npm run build"            { npm run build }            ""))                 { $allPassed = $false }
-if (-not (Invoke-Step "npm run smoke:downstream" { npm run smoke:downstream } "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "npm run test:policy"      { npm run test:policy }      "POLICY_PROFILES_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "npm run test:exposure"    { npm run test:exposure }    "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "npm run test:temp-readonly" { npm run test:temp-readonly } "TEMP_READONLY_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "downstream smoke"          { node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "policy profiles"           { node dist/test/policy-profiles.js }    "POLICY_PROFILES_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "profile exposure"          { node dist/test/profile-exposure.js }   "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "plugin foundation"           { node dist/test/foundation.js }       "FOUNDATION_OK"))       { $allPassed = $false }
+if (-not (Invoke-Step "git mutation guards"        { node dist/test/git-mutations.js }    "GIT_MUTATIONS_OK"))    { $allPassed = $false }
+if (-not (Invoke-Step "operator console"            { node dist/test/operator-console.js } "OPERATOR_CONSOLE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "output schemas"              { node dist/test/output-schema.js }    "OUTPUT_SCHEMA_OK"))     { $allPassed = $false }
+if (-not (Invoke-Step "plugin framework"            { node dist/test/plugin-framework.js } "PLUGIN_FRAMEWORK_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "plugin API v1"               { node dist/test/plugin-api-v1.js }    "PLUGIN_API_V1_OK"))    { $allPassed = $false }
 
 # Working tree hygiene: a dirty tree after verification usually means generated output
 # leaked into version control.

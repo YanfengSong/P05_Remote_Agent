@@ -1,6 +1,7 @@
 import type {
   McpServer,
   StandardSchemaWithJSON,
+  ToolAnnotations,
   ToolCallback
 } from "@modelcontextprotocol/server";
 import {
@@ -25,6 +26,7 @@ export type ToolConfig<
   description?: string;
   inputSchema?: Args;
   outputSchema?: Output;
+  annotations?: ToolAnnotations;
 };
 
 export type Exposer = {
@@ -47,6 +49,24 @@ export type Exposer = {
   ): void;
   report(): ToolProfileReport;
 };
+
+
+function capabilityAnnotations(
+  name: string,
+  catalog: CapabilityCatalog
+): ToolAnnotations {
+  const descriptor = catalog.descriptor(name);
+  const readOnly = descriptor.risk === "read";
+  const openWorld =
+    descriptor.scope === "downstream" || descriptor.scope === "external";
+
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: !readOnly,
+    idempotentHint: readOnly,
+    openWorldHint: openWorld
+  };
+}
 
 export function createExposer(
   server: McpServer,
@@ -76,7 +96,23 @@ export function createExposer(
         );
 
       const liveDetail = summarizeToolInput(name, args[0]);
-      return runtime ? runtime.run(name, operation, liveDetail) : operation();
+      if (!runtime) return operation();
+
+      // MCP client identity is negotiated at initialize-time by the SDK. It is
+      // audit metadata only; authorization never depends on the client-reported
+      // name/version because those values are descriptive, not trusted identity.
+      const client = server.server.getClientVersion();
+      return runtime.run(
+        name,
+        operation,
+        liveDetail,
+        client
+          ? {
+              clientName: client.name,
+              clientVersion: client.version
+            }
+          : undefined
+      );
     };
 
     // Single deliberate erasure boundary: the runtime signature is the SDK's.
@@ -95,13 +131,19 @@ export function createExposer(
       // The SDK overload couples input/output schema generics more tightly than this
       // policy wrapper can preserve. Keep the erasure at this single registration
       // boundary; every caller still passes typed StandardSchema objects.
+      const registrationConfig = {
+        ...config,
+        annotations:
+          config.annotations ?? capabilityAnnotations(name, catalog)
+      };
+
       (
         server.registerTool as unknown as (
           toolName: string,
           toolConfig: unknown,
           toolHandler: unknown
         ) => unknown
-      )(name, config, guard(name, handler));
+      )(name, registrationConfig, guard(name, handler));
       exposed.push(name);
     },
 

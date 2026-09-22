@@ -128,9 +128,9 @@ Implemented:
 - one-click local launcher.
 
 Current automated regression:
-- `OPERATOR_CONSOLE_OK (16 checks)`.
+- `OPERATOR_CONSOLE_OK (53 checks)`.
 
-Current V2+Operator validation baseline: **602 minimum explicit checks**; hosts with the NTFS 8.3 short-name probe execute **603**. Build/typecheck and downstream smoke are additional gates.
+Latest merge-prep validation on this host executes **677 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -162,7 +162,6 @@ Workspace switching changes active-bound downstream context and triggers reconne
 
 ### developer
 - all readonly capabilities
-- workspace_switch
 - fs_write / apply_patch
 - git_add / git_commit / git_branch
 - command_run
@@ -174,8 +173,6 @@ Workspace switching changes active-bound downstream context and triggers reconne
 - all developer capabilities
 - git_push
 - mcp_call_tool
-
-Temporary read-only migration tools remain gated by `P05_TEMP_READONLY_ROOT`.
 
 ## Git mutation
 
@@ -214,14 +211,15 @@ Latest full verification:
     ACTION check                  PASS
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            240 checks
-    PROFILE_EXPOSURE_OK           161-162 checks
-    TEMP_READONLY_OK              49 checks
-    FOUNDATION_OK                 35 checks
+    POLICY_PROFILES_OK            249 checks
+    PROFILE_EXPOSURE_OK           161 checks
+    HTTP_REVIEWER_OK              53 checks
+    FOUNDATION_OK                 40 checks
     GIT_MUTATIONS_OK              13 checks
-    PLUGIN_FRAMEWORK_OK           17 checks
-    OUTPUT_SCHEMA_OK              71 checks
-    OPERATOR_CONSOLE_OK           16 checks
+    OPERATOR_CONSOLE_OK           53 checks
+    OUTPUT_SCHEMA_OK              69 checks
+    PLUGIN_FRAMEWORK_OK           35 checks
+    PLUGIN_API_V1_OK              4 checks
 
 Key V2 acceptance verified:
 - cross-Workspace absolute structured write refused;

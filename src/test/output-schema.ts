@@ -23,7 +23,6 @@ function inheritedEnv(): Record<string, string> {
   env.REMOTE_AGENT_ALLOWED_ROOTS = REPO;
   env.REMOTE_AGENT_DEFAULT_CWD = REPO;
   env.P05_TOOL_PROFILE = "full";
-  env.P05_TEMP_READONLY_ROOT = REPO;
   env.MATLAB_MCP_ENABLED = "false";
   return env;
 }
@@ -50,7 +49,7 @@ try {
   const expected = CAPABILITIES.map((capability) => capability.name).sort();
 
   check(
-    "output-schema: full+temporary surface covers every Core capability",
+    "output-schema: full surface covers every Core capability",
     names.join(",") === expected.join(","),
     `expected ${expected.length}, got ${names.length}`
   );
@@ -79,9 +78,7 @@ try {
     ["git_diff_stat", {}],
     ["command_run", { action: "check" }],
     ["shell_run", { command: "Write-Output p05-structured-output" }],
-    ["mcp_status", {}],
-    ["list_directory", { path: REPO }],
-    ["read_file", { path: path.join(REPO, "README.md") }]
+    ["mcp_status", {}]
   ];
 
   for (const [name, args] of samples) {
