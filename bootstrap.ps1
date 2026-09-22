@@ -4,8 +4,11 @@ param(
     [string]$RuntimeSlots,
     [string]$ApiKey,
     [string]$AllowedRoots,
+    [string]$NetworkMode,
+    [string]$Proxy,
     [switch]$SkipToolDownload,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipCoreStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +27,7 @@ $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
 $EnvFile = Join-Path $RepoRoot '.env'
 . (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
 . (Join-Path $RepoRoot 'scripts\deployment\preflight-lib.ps1')
+. (Join-Path $RepoRoot 'scripts\deployment\network-lib.ps1')
 
 function Read-SecretPlainText([string]$Prompt) {
     $secure = Read-Host $Prompt -AsSecureString
@@ -56,8 +60,11 @@ function Set-DotEnvValue([string]$Path,[string]$Name,[string]$Value) {
 }
 
 function Download-File([string]$Url,[string]$Destination) {
-    Write-Host "Downloading $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+    if (-not $script:P05NetworkSelection) {
+        throw 'Network path has not been selected.'
+    }
+    Write-Host "Downloading $Url via $($script:P05NetworkSelection.selectedPath)"
+    Invoke-P05Download -Url $Url -Destination $Destination -Selection $script:P05NetworkSelection
 }
 
 function Expected-Checksum(
@@ -180,6 +187,19 @@ if (-not $ApiKey) { throw 'API key is required.' }
 
 if (-not $AllowedRoots) { $AllowedRoots = $RepoRoot }
 
+$existingNetworkMode = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_NETWORK_MODE'
+$existingProxy = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_PROXY'
+if (-not $NetworkMode) {
+    $NetworkMode = $(if ($existingNetworkMode) { $existingNetworkMode } elseif ($env:P05_NETWORK_MODE) { $env:P05_NETWORK_MODE } else { 'auto' })
+}
+if (-not $Proxy) {
+    $Proxy = $(if ($existingProxy) { $existingProxy } elseif ($env:P05_PROXY) { $env:P05_PROXY } else { '' })
+}
+
+$script:P05NetworkSelection = Resolve-P05NetworkPath -Mode $NetworkMode -Proxy $Proxy
+Set-P05ProcessNetwork -Selection $script:P05NetworkSelection
+Write-P05NetworkReport -Selection $script:P05NetworkSelection
+
 $preflight = Invoke-P05Preflight -RepoRoot $RepoRoot -AllowedRoots $AllowedRoots -Stage PreInstall -ExpectedNodeVersion $NodeVersion -ExpectedTunnelVersion $TunnelVersion -ManagedRequired:$SkipToolDownload
 Write-P05PreflightReport -Report $preflight
 Assert-P05Preflight -Report $preflight
@@ -219,6 +239,11 @@ $managed = [ordered]@{
     P05_OPERATOR_PORT = '56301'
     P05_NODE_PATH = $NodeExe
     P05_OPERATOR_TUNNEL_CLIENT = $TunnelExe
+    P05_NETWORK_MODE = [string]$script:P05NetworkSelection.configuredMode
+    P05_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    CONTROL_PLANE_HTTP_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    HTTPS_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    HTTP_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
     P05_RUNTIME_SLOTS = $RuntimeSlots
     P05_RUNTIME_A_PROFILE = 'p05-a'
     P05_RUNTIME_B_PROFILE = 'p05-b'
@@ -255,6 +280,17 @@ if (-not $SkipBuild) {
 
 & (Join-Path $RepoRoot 'scripts\deployment\write-runtime-profiles.ps1') -RuntimeSlots $RuntimeSlots -TunnelA $TunnelA -TunnelB $TunnelB
 
+if (-not $SkipCoreStart) {
+    foreach ($slot in $slots) {
+        Write-Host ("Starting Core Runtime " + $slot + "...") -ForegroundColor Cyan
+        $runtimeScript = Join-Path $RepoRoot 'scripts\deployment\run-runtime-slot.ps1'
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runtimeScript -Slot $slot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Core Runtime $slot failed to start with exit code $LASTEXITCODE."
+        }
+    }
+}
+
 $nodeVersionText = (& $NodeExe --version).Trim()
 $tunnelVersionText = (& $TunnelExe --version).Trim()
 
@@ -263,9 +299,13 @@ Write-Host 'P05 bootstrap complete.' -ForegroundColor Green
 Write-Host "Repo: $RepoRoot"
 Write-Host "Node: $nodeVersionText"
 Write-Host "Tunnel client: $tunnelVersionText"
-Write-Host 'Automatic startup: disabled'
 Write-Host "Configured Runtime slots: $RuntimeSlots"
-Write-Host 'Configured Runtimes are stopped until you enable them in Operator Console'
+if ($SkipCoreStart) {
+    Write-Host 'Core startup: skipped by -SkipCoreStart'
+} else {
+    Write-Host 'Core startup: configured Runtime slots READY'
+}
+Write-Host 'Operator Console: optional post-deployment control surface'
 Write-Host ''
-Write-Host 'Start manually with:'
+Write-Host 'Open Operator manually with:'
 Write-Host "  $RepoRoot\P05-Operator.cmd"
