@@ -95,12 +95,13 @@ A new Core SHOULD support at least the bridge/protocol compatibility window expl
 
 Incompatible Optional Runtime versions are isolated and reported instead of forcing Core failure.
 
-## 8. Single active authority
+## 8. Single active generation per Slot
 
-Only one Core instance/slot may own the active external control endpoint for a device at a time.
+One Host may run multiple active Core Slots such as A and B concurrently.
 
-Candidate validation can run locally on an isolated administrative endpoint, but it must not accidentally become a second authoritative remote control plane.
+For each individual Slot, only one Core generation may own that Slot's active external control endpoint at a time.
 
+Candidate validation can run locally on an isolated administrative endpoint, but it must not accidentally become a second active generation for the same Slot.
 ## 9. Upgrade safety invariants
 
 LIFE-01: No in-place destructive Core replacement before candidate health verification.
@@ -109,7 +110,7 @@ LIFE-02: Last known-good Core is retained until candidate stabilization complete
 
 LIFE-03: State migration cannot silently widen authority.
 
-LIFE-04: Failed candidate does not modify the active Core''s runtime truth.
+LIFE-04: Failed candidate does not modify the active Core's runtime truth.
 
 LIFE-05: External launcher/updater can restore Core even when Core MCP is unavailable.
 
@@ -122,5 +123,6 @@ LIFE-06: Upgrade logs/status contain no secrets.
 3. Candidate crashes during stabilization -> rollback.
 4. Optional Runtime is incompatible -> Core remains active in DEGRADED mode.
 5. Rollback restores remote/local control without manual repository surgery.
+
 
 

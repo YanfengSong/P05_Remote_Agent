@@ -86,7 +86,7 @@ Internal refactoring is acceptable only when the externally useful V2 behavior r
 
 ### G-01 ? Host identity and Core-instance identity are conflated
 
-Current V2 places `device.json` inside each slot''s state directory.
+Current V2 places `device.json` inside each slot's state directory.
 
 Observed result on the same host:
 
@@ -198,4 +198,5 @@ Before implementation, V3 must explicitly finalize:
 3. the exact preservation contract for V2 A/B deployment semantics.
 
 Everything else should continue to build on V2 rather than replace it.
+
 

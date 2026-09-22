@@ -127,7 +127,7 @@ Host-level actions such as Core installation/upgrade or provisioned restart brok
 
 A Slot may request a host-level action only through a narrow Core/host contract with explicit ownership and policy.
 
-One Slot must not be able to impersonate or mutate another Slot''s state.
+One Slot must not be able to impersonate or mutate another Slot's state.
 
 ## 10. Acceptance
 
@@ -138,4 +138,5 @@ One Slot must not be able to impersonate or mutate another Slot''s state.
 5. Both slots report the same Host identity.
 6. Each Core process reports a distinct instance generation.
 7. Optional Runtime failure in A does not take B offline.
+
 
