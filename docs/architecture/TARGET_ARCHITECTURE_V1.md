@@ -43,16 +43,22 @@ ChatGPT / MCP Client
 A workspace is a logical id mapped to an operator-authorized directory.
 
 Rules:
-- workspaces are registered at startup, not invented by a remote caller;
-- every root must be inside `REMOTE_AGENT_ALLOWED_ROOTS`;
-- remote switching uses workspace id only, never an arbitrary path;
+- configured workspaces are registered at startup;
+- a local Operator folder selection may explicitly authorize and bind a new Runtime workspace;
+- remote MCP callers cannot change the Runtime Workspace binding;
 - host paths are not returned by workspace list/current tools;
-- each MCP server session owns its current workspace context.
+- each Runtime owns its current workspace authority independently.
 
-Implemented Base V1 tools:
+Current remote Workspace tools:
 - `workspace_list`
 - `workspace_current`
-- `workspace_switch`
+
+Local Operator control owns Workspace rebinding.
+
+Read-only reference capability is separate from Workspace authority:
+- local Operator authorizes/removes Runtime-scoped Reference Roots;
+- remote callers may list logical references and read/list within them;
+- reference authorization never grants write/Git/Shell/MATLAB authority.
 
 Configuration:
 - `P05_WORKSPACES_JSON`

@@ -33,8 +33,14 @@ const workspaceCurrentSchema = z.object({
 const auditEventSchema = z.object({
   id: z.string(),
   capability: z.string(),
-  scope: z.enum(["platform", "workspace", "downstream", "host", "external", "temporary"]),
+  scope: z.enum(["platform", "workspace", "reference", "downstream", "host", "external", "temporary"]),
   workspaceId: z.string(),
+  source: z.enum(["runtime-mcp", "http-reviewer", "operator", "internal"]).optional(),
+  transport: z.enum(["stdio", "streamable-http", "local-http", "internal"]).optional(),
+  runtimeSlot: z.enum(["A", "B"]).optional(),
+  principal: z.string().optional(),
+  clientName: z.string().optional(),
+  clientVersion: z.string().optional(),
   state: z.enum(["running", "succeeded", "failed"]),
   phase: z.enum(["prepare", "authorize", "execute", "verify", "complete"]),
   startedAt: z.string(),
@@ -85,15 +91,6 @@ export function registerControlTools(
       platform: current.kind === "platform-source",
       authorization: current.authorization
     };
-    return structuredResult(output);
-  });
-
-  exposer.expose("workspace_switch", {
-    description: "Switch the active session workspace by registered workspace id only.",
-    inputSchema: z.object({ workspace_id: z.string().min(1) }),
-    outputSchema: workspaceViewSchema
-  }, async ({ workspace_id }) => {
-    const output = workspaceManager.switch(workspace_id);
     return structuredResult(output);
   });
 

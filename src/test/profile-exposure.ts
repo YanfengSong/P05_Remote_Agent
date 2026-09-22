@@ -27,22 +27,30 @@ const ROOT = path.join(REPO, "_p05_test_allowed_root");
 const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
 const OUTSIDE_FIXTURES = path.join(REPO, "_p05_test_outside_root");
 const STATE_DIR = path.join(REPO, "_p05_test_state");
+const REFERENCE_ROOT = path.join(OUTSIDE_FIXTURES, "_p05_reference_root");
 
 await fs.mkdir(ROOT, { recursive: true });
 await fs.mkdir(OUTSIDE_FIXTURES, { recursive: true });
+await fs.mkdir(REFERENCE_ROOT, { recursive: true });
+await fs.mkdir(STATE_DIR, { recursive: true });
+await fs.writeFile(path.join(REFERENCE_ROOT, "reference.txt"), "reference-ok\n", "utf8");
+await fs.writeFile(
+  path.join(STATE_DIR, "references.json"),
+  JSON.stringify({
+    version: 1,
+    references: [{ id: "ref-test", label: "Test Reference", root: REFERENCE_ROOT }]
+  }, null, 2) + "\n",
+  "utf8"
+);
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-// TMP-R01: the temporary read-only layer is declared at `discovery` but gated on
-// P05_TEMP_READONLY_ROOT, so with the gate off (the default, and how every other scenario
-// here runs) the surface is still exactly device_info + ping.
-const TEMP_READONLY_TOOLS = ["list_directory", "read_file"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 // mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
 // reachable, and for MATLAB that includes code evaluation. The plan lists it under
 // "never expose initially" next to shell_run, so it sits at `full`.
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
-const ALL_TOOLS = [...FULL_TOOLS, ...TEMP_READONLY_TOOLS];
+const ALL_TOOLS = [...FULL_TOOLS];
 
 let checks = 0;
 
@@ -252,6 +260,74 @@ for (const scenario of scenarios) {
   console.log(`ok  device_id stable (${storedId.slice(0, 12)}...)`);
 }
 
+// ----------------------------------------------------------- runtime-scoped reference roots
+{
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  try {
+    const refs = textOf(await session.client.callTool({
+      name: "reference_list",
+      arguments: {}
+    }));
+    check(
+      "reference: remote list exposes logical identity",
+      refs.includes("ref-test") && refs.includes("Test Reference"),
+      refs.slice(0, 240)
+    );
+    check(
+      "reference: remote list does not expose host root",
+      !refs.includes(REFERENCE_ROOT),
+      refs.slice(0, 240)
+    );
+
+    const entries = textOf(await session.client.callTool({
+      name: "reference_list_directory",
+      arguments: { reference_id: "ref-test", path: "." }
+    }));
+    check(
+      "reference: authorized directory can be listed",
+      entries.includes("reference.txt"),
+      entries.slice(0, 240)
+    );
+
+    const content = textOf(await session.client.callTool({
+      name: "reference_read",
+      arguments: { reference_id: "ref-test", path: "reference.txt" }
+    }));
+    check(
+      "reference: authorized file can be read",
+      content.includes("reference-ok"),
+      content.slice(0, 240)
+    );
+
+    const ordinaryRead = await outcome(() =>
+      session.client.callTool({
+        name: "fs_read",
+        arguments: { path: path.join(REFERENCE_ROOT, "reference.txt") }
+      })
+    );
+    check(
+      "reference: ordinary workspace fs_read cannot cross into reference root",
+      ordinaryRead.failed && ordinaryRead.message.includes("outside the active workspace"),
+      ordinaryRead.message.slice(0, 240)
+    );
+
+    const writeAttempt = await outcome(() =>
+      session.client.callTool({
+        name: "fs_write",
+        arguments: { path: path.join(REFERENCE_ROOT, "planted.txt"), content: "must-not-land" }
+      })
+    );
+    check(
+      "reference: workspace write cannot modify reference root",
+      writeAttempt.failed && !(await pathExists(path.join(REFERENCE_ROOT, "planted.txt"))),
+      writeAttempt.message.slice(0, 240)
+    );
+  } finally {
+    await closeSession(session);
+  }
+  console.log("ok  runtime-scoped reference roots are read-only");
+}
+
 // ---------------------------------------------------------------- write + real filesystem guards
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
@@ -299,18 +375,18 @@ for (const scenario of scenarios) {
     check("developer: fs_write echoes the caller's path, not a resolved one",
       relativeText.includes(REL_FILE) && !relativeText.includes(ROOT), relativeText.slice(0, 200));
 
-    // 1. a junction inside the allowed root that points outside it
+    // 1. a junction inside the active workspace that points outside it
     mklink(outlink, outsideTarget);
     const readOut = await outcome(() =>
       session.client.callTool({ name: "fs_read", arguments: { path: path.join(outlink, "outside.txt") } })
     );
-    check("junction: read through a link leaving the allowed root is refused",
-      readOut.failed && readOut.message.includes("a link resolves outside the allowed roots"), readOut.message.slice(0, 200));
+    check("junction: read through a link leaving the active workspace is refused",
+      readOut.failed && readOut.message.includes("a link resolves outside the active workspace"), readOut.message.slice(0, 200));
     const writeOut = await outcome(() =>
       session.client.callTool({ name: "fs_write", arguments: { path: path.join(outlink, "planted.txt"), content: "x" } })
     );
-    check("junction: write through a link leaving the allowed root is refused", writeOut.failed, writeOut.message.slice(0, 200));
-    check("junction: nothing was planted outside the root", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
+    check("junction: write through a link leaving the active workspace is refused", writeOut.failed, writeOut.message.slice(0, 200));
+    check("junction: nothing was planted outside the workspace", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
 
     // 2. a junction inside the allowed root that lands on a protected path
     mklink(gitlink, gitDir);

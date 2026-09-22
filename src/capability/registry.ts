@@ -6,15 +6,15 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "ping", minProfile: "discovery", risk: "read", scope: "platform", summary: "Confirm this P05 computer is online and responding." },
   { name: "workspace_list", minProfile: "readonly", risk: "read", scope: "platform", summary: "List registered workspace identities without exposing host paths." },
   { name: "workspace_current", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show the active workspace identity without exposing its host path." },
-  { name: "workspace_switch", minProfile: "developer", risk: "write", scope: "platform", summary: "Switch the active session workspace by registered workspace id only." },
+  { name: "reference_list", minProfile: "readonly", risk: "read", scope: "reference", summary: "List locally authorized read-only reference roots without exposing host paths." },
+  { name: "reference_read", minProfile: "readonly", risk: "read", scope: "reference", summary: "Read a UTF-8 text file inside a locally authorized read-only reference root." },
+  { name: "reference_list_directory", minProfile: "readonly", risk: "read", scope: "reference", summary: "List direct children inside a locally authorized read-only reference root." },
   { name: "activity_recent", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show recent bounded execution metadata without tool inputs or secret content." },
   { name: "recovery_status", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show failed or interrupted executions that may need recovery." },
   { name: "plugin_list", minProfile: "readonly", risk: "read", scope: "platform", summary: "List installed application plugins, versions and active-workspace availability." },
 
   { name: "fs_read", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read a UTF-8 text file inside the active workspace." },
   { name: "fs_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List direct children of a directory inside the active workspace." },
-  { name: "list_directory", minProfile: "discovery", risk: "read", scope: "temporary", gate: "temp-readonly", summary: "TEMPORARY: list direct children inside the temporary read-only root." },
-  { name: "read_file", minProfile: "discovery", risk: "read", scope: "temporary", gate: "temp-readonly", summary: "TEMPORARY: read a UTF-8 text file inside the temporary read-only root." },
   { name: "fs_write", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace a UTF-8 text file inside the active workspace." },
   { name: "apply_patch", minProfile: "developer", risk: "write", scope: "workspace", summary: "Patch one exact text occurrence with an expected SHA-256 concurrency guard." },
 

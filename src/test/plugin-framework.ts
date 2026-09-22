@@ -116,6 +116,17 @@ try {
   check("plugin: Core wrapper permits plugin tool in allowed workspace",
     Boolean(capturedHandler && await capturedHandler()));
 
+  await runtime.start("demo");
+  check("plugin-control: single plugin can start",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "running");
+  await runtime.stop("demo");
+  check("plugin-control: single plugin can stop",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "stopped" &&
+    !runtime.isAllowedForCurrentWorkspace("demo"));
+  await runtime.start("demo");
+  check("plugin-control: stopped plugin can restart",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "running");
+
   check("plugin: downstream contribution carries owning plugin id",
     registry.downstreamDefinitions()[0]?.pluginId === "demo");
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AuditStore } from "../audit/store.js";
 import type {
+  AuditAttribution,
   AuditEvent,
   ExecutionPhase,
   RecoveryHint
@@ -38,23 +39,27 @@ export class ExecutionRuntime {
   readonly #workspaceId: () => string;
   readonly #catalog: CapabilityCatalog;
   readonly #liveActivity?: LiveActivityStore;
+  readonly #attribution?: AuditAttribution;
 
   constructor(
     audit: AuditStore,
     workspaceId: () => string,
     catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG,
-    liveActivity?: LiveActivityStore
+    liveActivity?: LiveActivityStore,
+    attribution?: AuditAttribution
   ) {
     this.#audit = audit;
     this.#workspaceId = workspaceId;
     this.#catalog = catalog;
     this.#liveActivity = liveActivity;
+    this.#attribution = attribution ? { ...attribution } : undefined;
   }
 
   async run<T>(
     capability: string,
     operationOrPlan: (() => Promise<T>) | ExecutionPlan<T>,
-    liveDetail?: string
+    liveDetail?: string,
+    attribution?: Partial<AuditAttribution>
   ): Promise<T> {
     const descriptor = this.#catalog.descriptor(capability);
     const plan: ExecutionPlan<T> = typeof operationOrPlan === "function"
@@ -65,12 +70,34 @@ export class ExecutionRuntime {
     const started = Date.now();
     let phase: ExecutionPhase = "prepare";
     const workspaceId = this.#workspaceId();
+    const effectiveAttribution = {
+      ...(this.#attribution ?? {}),
+      ...(attribution ?? {})
+    };
 
     const base: AuditEvent = {
       id,
       capability,
       scope: descriptor.scope,
       workspaceId,
+      ...(effectiveAttribution.source
+        ? { source: effectiveAttribution.source }
+        : {}),
+      ...(effectiveAttribution.transport
+        ? { transport: effectiveAttribution.transport }
+        : {}),
+      ...(effectiveAttribution.runtimeSlot
+        ? { runtimeSlot: effectiveAttribution.runtimeSlot }
+        : {}),
+      ...(effectiveAttribution.principal
+        ? { principal: effectiveAttribution.principal }
+        : {}),
+      ...(effectiveAttribution.clientName
+        ? { clientName: effectiveAttribution.clientName }
+        : {}),
+      ...(effectiveAttribution.clientVersion
+        ? { clientVersion: effectiveAttribution.clientVersion }
+        : {}),
       state: "running",
       phase,
       startedAt: new Date(started).toISOString(),
@@ -83,6 +110,24 @@ export class ExecutionRuntime {
       risk: descriptor.risk,
       scope: descriptor.scope,
       workspaceId,
+      ...(effectiveAttribution.source
+        ? { source: effectiveAttribution.source }
+        : {}),
+      ...(effectiveAttribution.transport
+        ? { transport: effectiveAttribution.transport }
+        : {}),
+      ...(effectiveAttribution.runtimeSlot
+        ? { runtimeSlot: effectiveAttribution.runtimeSlot }
+        : {}),
+      ...(effectiveAttribution.principal
+        ? { principal: effectiveAttribution.principal }
+        : {}),
+      ...(effectiveAttribution.clientName
+        ? { clientName: effectiveAttribution.clientName }
+        : {}),
+      ...(effectiveAttribution.clientVersion
+        ? { clientVersion: effectiveAttribution.clientVersion }
+        : {}),
       summary: descriptor.summary,
       ...(liveDetail ? { detail: liveDetail } : {}),
       startedAt: base.startedAt

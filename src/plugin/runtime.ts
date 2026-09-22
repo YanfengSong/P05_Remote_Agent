@@ -165,27 +165,75 @@ export class PluginRuntime {
     }
   }
 
+  async start(pluginId: string): Promise<PluginView> {
+    const plugin = this.registry.get(pluginId);
+    if (!plugin.manifest.enabled) {
+      throw new Error(`Plugin "${pluginId}" is disabled by configuration.`);
+    }
+
+    if (this.#state.get(pluginId)?.state === "running") {
+      return this.view(pluginId);
+    }
+
+    try {
+      await plugin.start?.();
+      this.#state.set(pluginId, { state: "running" });
+      return this.view(pluginId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#state.set(pluginId, { state: "failed", lastError: "start failed" });
+      throw new Error(`Plugin "${pluginId}" failed to start: ${message}`);
+    }
+  }
+
+  async stop(
+    pluginId: string,
+    downstreamRegistry?: DownstreamRegistry
+  ): Promise<PluginView> {
+    const plugin = this.registry.get(pluginId);
+    if (!plugin.manifest.enabled) {
+      throw new Error(`Plugin "${pluginId}" is disabled by configuration.`);
+    }
+
+    if (this.#state.get(pluginId)?.state === "stopped") {
+      return this.view(pluginId);
+    }
+
+    try {
+      await plugin.stop?.();
+      if (downstreamRegistry) {
+        for (const definition of this.registry.downstreamDefinitions()) {
+          if (definition.pluginId === pluginId) {
+            await downstreamRegistry.close(definition.id);
+          }
+        }
+      }
+      this.#state.set(pluginId, { state: "stopped" });
+      return this.view(pluginId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#state.set(pluginId, { state: "failed", lastError: "stop failed" });
+      throw new Error(`Plugin "${pluginId}" failed to stop: ${message}`);
+    }
+  }
+
   async startAll(): Promise<void> {
     for (const plugin of this.registry.plugins()) {
       if (!plugin.manifest.enabled) continue;
       try {
-        await plugin.start?.();
-        this.#state.set(plugin.manifest.id, { state: "running" });
+        await this.start(plugin.manifest.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[p05] plugin "${plugin.manifest.id}" start failed: ${message}`);
-        this.#state.set(plugin.manifest.id, { state: "failed", lastError: "start failed" });
       }
     }
   }
 
   async stopAll(): Promise<void> {
     for (const plugin of this.registry.plugins()) {
+      if (!plugin.manifest.enabled) continue;
       try {
-        await plugin.stop?.();
-        if (plugin.manifest.enabled) {
-          this.#state.set(plugin.manifest.id, { state: "stopped" });
-        }
+        await this.stop(plugin.manifest.id);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[p05] plugin "${plugin.manifest.id}" stop failed: ${message}`);
@@ -193,24 +241,27 @@ export class PluginRuntime {
     }
   }
 
-  list(): PluginView[] {
+  private view(pluginId: string): PluginView {
+    const plugin = this.registry.get(pluginId);
     const downstream = this.registry.downstreamDefinitions();
-    return this.registry.plugins().map((plugin) => {
-      const state = this.#state.get(plugin.manifest.id) ?? { state: "failed" as const, lastError: "state missing" };
-      return {
-        id: plugin.manifest.id,
-        label: plugin.manifest.label,
-        version: plugin.manifest.version,
-        apiVersion: plugin.manifest.apiVersion,
-        enabled: plugin.manifest.enabled,
-        state: state.state,
-        activeForWorkspace: this.isAllowedForCurrentWorkspace(plugin.manifest.id),
-        capabilityNames: plugin.manifest.capabilities.map((entry) => entry.name),
-        downstreamIds: downstream
-          .filter((definition) => definition.pluginId === plugin.manifest.id)
-          .map((definition) => definition.id),
-        ...(state.lastError ? { lastError: state.lastError } : {})
-      };
-    });
+    const state = this.#state.get(pluginId) ?? { state: "failed" as const, lastError: "state missing" };
+    return {
+      id: plugin.manifest.id,
+      label: plugin.manifest.label,
+      version: plugin.manifest.version,
+      apiVersion: plugin.manifest.apiVersion,
+      enabled: plugin.manifest.enabled,
+      state: state.state,
+      activeForWorkspace: this.isAllowedForCurrentWorkspace(plugin.manifest.id),
+      capabilityNames: plugin.manifest.capabilities.map((entry) => entry.name),
+      downstreamIds: downstream
+        .filter((definition) => definition.pluginId === plugin.manifest.id)
+        .map((definition) => definition.id),
+      ...(state.lastError ? { lastError: state.lastError } : {})
+    };
+  }
+
+  list(): PluginView[] {
+    return this.registry.plugins().map((plugin) => this.view(plugin.manifest.id));
   }
 }

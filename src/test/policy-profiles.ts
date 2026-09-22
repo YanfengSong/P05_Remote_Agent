@@ -22,7 +22,6 @@ import {
 import { runtimeRestartInvocation } from "../tools/runtime.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
-delete process.env.P05_TEMP_READONLY_ROOT;
 delete process.env.REMOTE_AGENT_DEFAULT_CWD;
 delete process.env.P05_OPERATOR_RESTART_TASK;
 
@@ -57,10 +56,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
 // mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
 // under "never expose initially" next to shell_run. It sits at `full`.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
@@ -120,7 +119,7 @@ check("matrix: full can reach the generic downstream proxy", isToolAllowed("full
 check("matrix: developer can reach shell_run", isToolAllowed("developer", "shell_run"));
 check("matrix: readonly cannot reach shell_run", !isToolAllowed("readonly", "shell_run"));
 check("matrix: readonly can inspect workspaces", isToolAllowed("readonly", "workspace_list") && isToolAllowed("readonly", "workspace_current"));
-check("matrix: workspace switch sits at developer", isToolAllowed("developer", "workspace_switch") && !isToolAllowed("readonly", "workspace_switch"));
+check("matrix: remote workspace switch is not a capability", specFor("workspace_switch") === undefined);
 check("matrix: activity is readonly", isToolAllowed("readonly", "activity_recent"));
 check("matrix: git mutation profiles", isToolAllowed("developer", "git_add") && isToolAllowed("developer", "git_commit") && isToolAllowed("developer", "git_branch") && !isToolAllowed("developer", "git_push") && isToolAllowed("full", "git_push"));
 

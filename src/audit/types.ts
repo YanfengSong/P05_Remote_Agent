@@ -15,11 +15,38 @@ export type ExecutionPhase = (typeof EXECUTION_PHASES)[number];
 
 export type RecoveryHint = "none" | "retry" | "inspect" | "human";
 
+export type AuditSource =
+  | "runtime-mcp"
+  | "http-reviewer"
+  | "operator"
+  | "internal";
+
+export type AuditTransport =
+  | "stdio"
+  | "streamable-http"
+  | "local-http"
+  | "internal";
+
+export type AuditAttribution = {
+  source: AuditSource;
+  transport: AuditTransport;
+  runtimeSlot?: "A" | "B";
+  principal?: string;
+  clientName?: string;
+  clientVersion?: string;
+};
+
 export type AuditEvent = {
   id: string;
   capability: string;
   scope: CapabilityScope;
   workspaceId: string;
+  source?: AuditSource;
+  transport?: AuditTransport;
+  runtimeSlot?: "A" | "B";
+  principal?: string;
+  clientName?: string;
+  clientVersion?: string;
   state: ExecutionState;
   phase: ExecutionPhase;
   startedAt: string;

@@ -177,7 +177,7 @@ async function processStatus() {
     >(
       `$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |` +
       `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*${repoRootWindows}\\dist\\index.js*' -or $_.CommandLine -like '*${repoRootForward}/dist/index.js*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
-      `Select-Object ProcessId,Name,CreationDate,ExecutablePath,CommandLine;` +
+      `Select-Object ProcessId,Name,@{Name='CreationDate';Expression={if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null}}},ExecutablePath,CommandLine;` +
       `@($p)|ConvertTo-Json -Compress`
     );
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
@@ -540,6 +540,15 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
       ? bridge.data as Record<string, unknown>
       : undefined;
 
+  const currentRoot =
+    bridgeData?.workspace &&
+    typeof bridgeData.workspace === "object" &&
+    (bridgeData.workspace as { current?: { root?: unknown } }).current &&
+    typeof (bridgeData.workspace as { current?: { root?: unknown } }).current?.root === "string"
+      ? (bridgeData.workspace as { current: { root: string } }).current.root
+      : undefined;
+  const git = await gitStatus(currentRoot);
+
   return {
     id: config.id,
     connector: config.connector,
@@ -560,7 +569,14 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
     device:
       bridgeData?.device && typeof bridgeData.device === "object"
         ? bridgeData.device
-        : undefined
+        : undefined,
+    references: Array.isArray(bridgeData?.references) ? bridgeData.references : [],
+    plugins: Array.isArray(bridgeData?.plugins) ? bridgeData.plugins : [],
+    downstream: Array.isArray(bridgeData?.downstream) ? bridgeData.downstream : [],
+    git,
+    activity: Array.isArray(bridgeData?.activity) ? bridgeData.activity : [],
+    liveActivity: Array.isArray(bridgeData?.liveActivity) ? bridgeData.liveActivity : [],
+    recovery: Array.isArray(bridgeData?.recovery) ? bridgeData.recovery : []
   };
 }
 
@@ -570,6 +586,46 @@ export async function runtimeSlotsOverview() {
     runtimeSlotOverview("B")
   ]);
   return { A, B };
+}
+
+function attributedSlotEvents(
+  events: unknown,
+  slot: RuntimeSlotId
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(events)) return [];
+  return events
+    .filter((event): event is Record<string, unknown> =>
+      Boolean(event) && typeof event === "object" && !Array.isArray(event)
+    )
+    .map((event) => ({
+      ...event,
+      runtimeSlot:
+        event.runtimeSlot === "A" || event.runtimeSlot === "B"
+          ? event.runtimeSlot
+          : slot,
+      source:
+        typeof event.source === "string" && event.source
+          ? event.source
+          : "runtime-mcp"
+    }));
+}
+
+function mergeSlotEvents(
+  slots: {
+    A: { [key: string]: unknown };
+    B: { [key: string]: unknown };
+  },
+  field: "activity" | "liveActivity" | "recovery",
+  limit: number
+): Array<Record<string, unknown>> {
+  return [
+    ...attributedSlotEvents(slots.A[field], "A"),
+    ...attributedSlotEvents(slots.B[field], "B")
+  ]
+    .sort((a, b) =>
+      String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? ""))
+    )
+    .slice(0, limit);
 }
 
 export async function operatorOverview() {
@@ -595,8 +651,15 @@ export async function operatorOverview() {
 
   const git = await gitStatus(workspace?.root);
 
+  const activity = mergeSlotEvents(slots, "activity", 100);
+  const liveActivity = mergeSlotEvents(slots, "liveActivity", 120);
+  const recovery = mergeSlotEvents(slots, "recovery", 60);
+
   return {
     timestamp: new Date().toISOString(),
+    activity,
+    liveActivity,
+    recovery,
     connection: {
       connected: Boolean(health.ready && bridge.online),
       runtimeTask: {

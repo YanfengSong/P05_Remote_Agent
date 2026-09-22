@@ -7,6 +7,7 @@ import { getDeviceInfo } from "../device/identity.js";
 import type { DownstreamRegistry } from "../downstream/registry.js";
 import type { LiveActivityStore } from "../monitor/live-activity.js";
 import type { PluginRuntime } from "../plugin/runtime.js";
+import type { ReferenceManager } from "../reference/manager.js";
 import type { ToolProfileReport } from "../policy/tool-profile.js";
 import { p05StatePath } from "../state.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -19,6 +20,7 @@ export type LocalControlBridge = {
 
 type BridgeDeps = {
   workspaceManager: WorkspaceManager;
+  referenceManager: ReferenceManager;
   auditStore: AuditStore;
   pluginRuntime: PluginRuntime;
   downstreamRegistry: DownstreamRegistry;
@@ -27,7 +29,6 @@ type BridgeDeps = {
   exposure: () => ToolProfileReport;
   profile: string;
   profileSource: string;
-  allowedRoots: readonly string[];
   persistWorkspace?: (workspace: WorkspaceDescriptor) => void;
   metadataPath?: string;
   port?: number;
@@ -107,6 +108,7 @@ export async function startLocalControlBridge(
               root: deps.workspaceManager.get(view.id).root
             }))
           },
+          references: deps.referenceManager.localList(),
           plugins: deps.pluginRuntime.list(),
           downstream: deps.downstreamRegistry.statuses(),
           activity: deps.auditStore.recent(60),
@@ -144,7 +146,7 @@ export async function startLocalControlBridge(
         const payload = await bodyJson(request);
         const root = typeof payload.root === "string" ? payload.root.trim() : "";
         if (!root) throw new Error("Workspace root is required.");
-        const selected = deps.workspaceManager.setSessionRoot(root, deps.allowedRoots);
+        const selected = deps.workspaceManager.setSessionRoot(root);
         const current = deps.workspaceManager.current();
         json(response, 200, {
           workspace: {
@@ -169,6 +171,43 @@ export async function startLocalControlBridge(
             root: current.root
           }
         });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/references") {
+        json(response, 200, { references: deps.referenceManager.localList() });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/reference/root") {
+        const payload = await bodyJson(request);
+        const root = typeof payload.root === "string" ? payload.root.trim() : "";
+        if (!root) throw new Error("Reference root is required.");
+        const reference = deps.referenceManager.add(root);
+        json(response, 200, { reference });
+        return;
+      }
+
+      const referenceRemoveMatch = url.pathname.match(
+        /^\/api\/reference\/([a-z0-9][a-z0-9._-]{0,63})\/remove$/
+      );
+      if (request.method === "POST" && referenceRemoveMatch) {
+        const reference = deps.referenceManager.remove(referenceRemoveMatch[1]!);
+        json(response, 200, { reference });
+        return;
+      }
+
+      const pluginActionMatch = url.pathname.match(
+        /^\/api\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop)$/
+      );
+      if (request.method === "POST" && pluginActionMatch) {
+        const pluginId = pluginActionMatch[1]!;
+        const action = pluginActionMatch[2]!;
+        const plugin =
+          action === "start"
+            ? await deps.pluginRuntime.start(pluginId)
+            : await deps.pluginRuntime.stop(pluginId, deps.downstreamRegistry);
+        json(response, 200, { plugin });
         return;
       }
 

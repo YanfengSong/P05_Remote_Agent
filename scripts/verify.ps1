@@ -44,7 +44,6 @@ if (-not (Invoke-Step "npm run build"            { npm run build }            ""
 if (-not (Invoke-Step "downstream smoke"          { node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "policy profiles"           { node dist/test/policy-profiles.js }    "POLICY_PROFILES_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "profile exposure"          { node dist/test/profile-exposure.js }   "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "temporary readonly"        { node dist/test/temp-readonly.js }      "TEMP_READONLY_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "plugin foundation"           { node dist/test/foundation.js }       "FOUNDATION_OK"))       { $allPassed = $false }
 if (-not (Invoke-Step "git mutation guards"        { node dist/test/git-mutations.js }    "GIT_MUTATIONS_OK"))    { $allPassed = $false }
 if (-not (Invoke-Step "operator console"            { node dist/test/operator-console.js } "OPERATOR_CONSOLE_OK")) { $allPassed = $false }

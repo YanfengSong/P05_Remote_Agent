@@ -245,6 +245,61 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    const slotReferenceAddMatch = url.pathname.match(
+      /^\/api\/slot\/(A|B)\/reference\/root$/
+    );
+    if (request.method === "POST" && slotReferenceAddMatch) {
+      const slot = slotReferenceAddMatch[1] as "A" | "B";
+      const body = await bodyJson(request);
+      const root = typeof body.root === "string" ? body.root.trim() : "";
+      if (!root) throw new Error("Reference root is required.");
+      const result = await bridgeRequestForSlot(slot, "/api/reference/root", {
+        method: "POST",
+        body: JSON.stringify({ root })
+      });
+      json(response, 200, result);
+      return;
+    }
+
+    const slotReferenceRemoveMatch = url.pathname.match(
+      /^\/api\/slot\/(A|B)\/reference\/([a-z0-9][a-z0-9._-]{0,63})\/remove$/
+    );
+    if (request.method === "POST" && slotReferenceRemoveMatch) {
+      const slot = slotReferenceRemoveMatch[1] as "A" | "B";
+      const referenceId = slotReferenceRemoveMatch[2]!;
+      const result = await bridgeRequestForSlot(
+        slot,
+        `/api/reference/${referenceId}/remove`,
+        { method: "POST", body: "{}" }
+      );
+      json(response, 200, result);
+      return;
+    }
+
+    const slotReferencePickMatch = url.pathname.match(
+      /^\/api\/slot\/(A|B)\/reference\/pick$/
+    );
+    if (request.method === "POST" && slotReferencePickMatch) {
+      json(response, 200, await chooseWorkspaceFolder());
+      return;
+    }
+
+    const slotPluginActionMatch = url.pathname.match(
+      /^\/api\/slot\/(A|B)\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop)$/
+    );
+    if (request.method === "POST" && slotPluginActionMatch) {
+      const slot = slotPluginActionMatch[1] as "A" | "B";
+      const pluginId = slotPluginActionMatch[2]!;
+      const action = slotPluginActionMatch[3]!;
+      const result = await bridgeRequestForSlot(
+        slot,
+        `/api/plugin/${pluginId}/action/${action}`,
+        { method: "POST", body: "{}" }
+      );
+      json(response, 200, result);
+      return;
+    }
+
     const slotMatch = url.pathname.match(/^\/api\/slot\/(A|B)\/workspace\/(select|pick|root|register)$/);
     if (request.method === "POST" && slotMatch) {
       const slot = slotMatch[1] as "A" | "B";
