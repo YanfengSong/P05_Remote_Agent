@@ -131,9 +131,9 @@ Implemented:
 - one-click local launcher.
 
 Current automated regression:
-- `OPERATOR_CONSOLE_OK (58 checks)`.
+- `OPERATOR_CONSOLE_OK (60 checks)`.
 
-Latest external-review-closure validation on this host executes **794 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
+Latest external-review-closure validation on this host executes **796 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -219,7 +219,7 @@ Latest full verification:
     HTTP_REVIEWER_OK              55 checks
     FOUNDATION_OK                 40 checks
     GIT_MUTATIONS_OK              13 checks
-    OPERATOR_CONSOLE_OK           58 checks
+    OPERATOR_CONSOLE_OK           60 checks
     OUTPUT_SCHEMA_OK              177 checks
     PLUGIN_FRAMEWORK_OK           35 checks
     PLUGIN_API_V1_OK              4 checks
