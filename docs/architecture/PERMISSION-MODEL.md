@@ -13,8 +13,8 @@ Foundation: V2
 
 - discovery: identity/health;
 - readonly: Workspace/control inspection and bounded read operations;
-- developer: Workspace mutation, local Git mutation, platform validation, trusted shell, restart request and downstream discovery;
-- full: external Git push and generic downstream execution.
+- developer: Workspace mutation, local Git mutation, allowlisted platform validation, restart request and downstream discovery;
+- full: developer + unrestricted trusted shell, external Git push and generic downstream execution.
 
 Unknown profiles fail closed and suppressed tools are not advertised.
 
@@ -85,7 +85,7 @@ stronger OS execution boundary as appropriate.
 | Observe | fs_read, fs_list, git_status, activity_recent | readonly |
 | Workspace mutate | fs_write, apply_patch, git_add, git_commit, git_branch | developer |
 | Platform execute | command_run(check/build/verify) | developer, fixed platform-source |
-| Trusted terminal | shell_run | developer; cwd-confined only, not sandboxed |
+| Trusted terminal | shell_run | full only; cwd-confined only, not sandboxed |
 | Runtime lifecycle | runtime_restart | developer + fixed repo-local slot restart |
 | External remote mutate | git_push | full |
 | Generic downstream execute | mcp_call_tool | full |

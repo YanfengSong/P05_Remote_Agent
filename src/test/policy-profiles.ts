@@ -56,10 +56,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
-// mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
-// under "never expose initially" next to shell_run. It sits at `full`.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
+// Arbitrary downstream execution, external Git push and unrestricted PowerShell
+// stay at `full`. Developer keeps only structured/allowlisted execution paths.
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run", "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
 for (const spec of TOOL_SPECS) {
@@ -115,8 +115,9 @@ check("DoD: discovery is exactly device_info + ping",
 check("matrix: the generic downstream proxy sits at full", specFor("mcp_call_tool")?.minProfile === "full");
 check("matrix: developer cannot reach the generic downstream proxy", !isToolAllowed("developer", "mcp_call_tool"));
 check("matrix: full can reach the generic downstream proxy", isToolAllowed("full", "mcp_call_tool"));
-check("matrix: developer can reach shell_run", isToolAllowed("developer", "shell_run"));
-check("matrix: readonly cannot reach shell_run", !isToolAllowed("readonly", "shell_run"));
+check("matrix: shell_run sits at full", specFor("shell_run")?.minProfile === "full");
+check("matrix: developer cannot reach shell_run", !isToolAllowed("developer", "shell_run"));
+check("matrix: full can reach shell_run", isToolAllowed("full", "shell_run"));
 check("matrix: readonly can inspect workspaces", isToolAllowed("readonly", "workspace_list") && isToolAllowed("readonly", "workspace_current"));
 check("matrix: remote workspace switch is not a capability", specFor("workspace_switch") === undefined);
 check("matrix: activity is readonly", isToolAllowed("readonly", "activity_recent"));
@@ -133,11 +134,11 @@ for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
 }
 
 check("decision: a suppressed tool explains the required profile",
-  toolDecision("discovery", "shell_run").reason.includes('"developer"'),
-  toolDecision("discovery", "shell_run").reason);
-check("decision: an allowed tool says so", toolDecision("developer", "shell_run").allowed);
+  toolDecision("developer", "shell_run").reason.includes('"full"'),
+  toolDecision("developer", "shell_run").reason);
+check("decision: an allowed full tool says so", toolDecision("full", "shell_run").allowed);
 throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "rm_rf_everything"), "not declared");
-check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "developer");
+check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
 
 // ---------------------------------------------------------------- repo-local runtime restart

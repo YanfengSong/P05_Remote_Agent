@@ -45,11 +45,9 @@ await fs.writeFile(
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
-// mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
-// reachable, and for MATLAB that includes code evaluation. The plan lists it under
-// "never expose initially" next to shell_run, so it sits at `full`.
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status"];
+// Unrestricted shell, external Git push and arbitrary downstream execution remain full-only.
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run", "mcp_call_tool", "git_push"];
 const ALL_TOOLS = [...FULL_TOOLS];
 
 let checks = 0;
@@ -564,22 +562,32 @@ for (const scenario of scenarios) {
   console.log("ok  platform-source remains fixed while business workspace is active");
 }
 
-// ---------------------------------------------------------------- developer-profile shell
+// ---------------------------------------------------------------- full-profile shell
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  const developerSession = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  try {
+    const hidden = await outcome(() =>
+      developerSession.client.callTool({ name: "shell_run", arguments: { command: "Write-Output must-not-run" } })
+    );
+    check("developer: shell_run is not callable", hidden.failed, hidden.message.slice(0, 200));
+  } finally {
+    await closeSession(developerSession);
+  }
+
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "full" }));
   const escapeLink = path.join(ROOT, "_p05_shell_junction");
   const escapeTarget = path.join(OUTSIDE_FIXTURES, "_p05_shell_target");
   try {
     const shell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT } });
-    check("developer: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
+    check("full: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
 
     // With no cwd argument the working directory is the configured default, a machine
     // path; a success response must not disclose it.
     const defaultCwdShell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok" } });
-    check("developer: shell_run does not disclose the default working directory",
+    check("full: shell_run does not disclose the default working directory",
       !textOf(defaultCwdShell).includes(ROOT), textOf(defaultCwdShell).slice(0, 200));
 
-    // cwd used to be string-checked only, so a junction in the root ran the command outside it.
+    // Even at full, cwd itself remains constrained by the workspace path guard.
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await fs.mkdir(escapeTarget, { recursive: true });
     try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
@@ -588,14 +596,14 @@ for (const scenario of scenarios) {
     const escapedCwd = await outcome(() =>
       session.client.callTool({ name: "shell_run", arguments: { command: "New-Item -ItemType File -Name escaped.txt -Force", cwd: escapeLink } })
     );
-    check("developer: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
-    check("full: nothing was written outside the roots by shell_run", !(await pathExists(path.join(escapeTarget, "escaped.txt"))));
+    check("full: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
+    check("full: nothing was written outside the roots by the cwd escape probe", !(await pathExists(path.join(escapeTarget, "escaped.txt"))));
   } finally {
     try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await closeSession(session);
   }
-  console.log("ok  developer grants shell_run, and its cwd goes through the same guard");
+  console.log("ok  developer hides shell_run; full retains trusted-user shell with cwd guard");
 }
 
 // ------------------------------------------ the documented install path does start

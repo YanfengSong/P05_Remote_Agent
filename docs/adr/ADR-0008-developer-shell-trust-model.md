@@ -1,68 +1,81 @@
 # ADR-0008 — Developer Shell Trust Model
 
-Status: Accepted
+Status: Retired / Superseded
 Date: 2026-09-20
+Retired: 2026-09-22
 
 ## Context
 
-P05 is intended to approach Remote Desktop Commander in day-to-day remote development ergonomics.
-Structured tools are safer and easier to audit, but they cannot cover every engineering operation without
-continually expanding the MCP tool surface.
+P05 originally exposed `shell_run` at the normal `developer` profile to approach
+Remote Desktop Commander-style terminal ergonomics.
 
-Remote Desktop Commander explicitly treats terminal execution as a first-class capability. Its security model
-states that terminal commands run with the paired user's operating-system permissions and that directory
-allowlists / command blocking are guardrails rather than a sandbox.
+The tool runs PowerShell as the paired Windows user. Its starting cwd is checked
+against the active Workspace, but PowerShell itself is not sandboxed. Once shell
+execution is available, commands can access resources available to that Windows
+user even when structured filesystem tools would reject the same path.
 
-P05 previously kept `shell_run` at the `full` profile.
+## Historical decision
 
-## Decision
+The original decision was:
 
-Expose `shell_run` at the normal `developer` profile.
+- `developer` exposes `shell_run`;
+- cwd is checked against the active Workspace;
+- destructive-command patterns provide accident prevention;
+- shell authority remains trusted-user and is explicitly not a sandbox.
 
-The tool:
-- runs PowerShell as the paired Windows user;
-- accepts `command`, optional `cwd`, and optional timeout;
-- requires the starting cwd to pass the configured allowed-root guard;
-- applies the existing destructive-command blocklist as accident prevention;
-- is explicitly documented as **not a sandbox**.
+This improved engineering flexibility but did not technically enforce the project
+rule that persistent modification outside the active Workspace requires explicit
+human approval.
 
-The `full` profile remains meaningful because the generic downstream proxy `mcp_call_tool` stays there.
+## Why this ADR is retired
 
-## Authorization model
+Operational experience demonstrated that a developer-profile shell can bypass the
+structured Workspace boundary and perform host filesystem mutation through commands
+that are semantically equivalent to otherwise suppressed structured capabilities.
 
-Technical fact:
-- once `shell_run` is available, the command can access any resource available to the Windows user, regardless
-  of filesystem-tool allowed roots.
+The destructive-command blocklist is only a guard rail and cannot enumerate every
+PowerShell, cmd.exe, .NET or external-program path that can mutate the host.
 
-Operational contract for this project:
-- work inside the authorized P05 workspace may proceed autonomously;
-- persistent modifications outside the authorized workspace require explicit user approval;
-- system/service/registry/firewall and other host-level policy changes should use explicit approval or a narrow
-  external broker when a repeatable operation exists.
+Therefore `developer` must no longer expose unrestricted `shell_run`.
 
-The operational contract is an AI/user workflow rule. It is not represented as a technical shell sandbox.
+## Current decision
 
-## Consequences
+`shell_run` is exposed only at the `full` profile.
 
-Positive:
-- RDC-like terminal flexibility;
-- fewer MCP schema additions for ordinary engineering work;
-- Git, package, build and diagnostic operations can be performed without creating a tool for every command;
-- structured tools remain available for safer/repeatable common paths.
+The normal `developer` profile keeps structured and allowlisted development
+capabilities, including:
 
-Risk:
-- a trusted or compromised AI client can issue commands with the paired user's permissions;
-- allowed-root and blocklist controls cannot confine arbitrary PowerShell;
-- prompt injection or account compromise has a larger blast radius than a structured-tools-only developer profile.
+- Workspace-scoped filesystem mutation;
+- local Git add/commit/branch operations;
+- fixed `command_run` validation actions;
+- fixed Runtime restart;
+- downstream status/tool discovery.
 
-For a hard security boundary, run the execution environment inside Docker, a VM, dev container, restricted account
-or dedicated workstation.
+The `full` profile additionally exposes unrestricted trusted-user shell,
+external Git push and arbitrary downstream execution.
+
+This is an immediate containment measure, not the final shell security boundary.
+A full-profile shell still runs with the paired Windows user's authority.
+
+## Required final boundary
+
+The target security invariant remains:
+
+- Active Workspace mutation may proceed autonomously under the selected profile;
+- persistent filesystem mutation outside the Active Workspace requires explicit
+  human approval;
+- system, drive-root and unrelated-project mutation must not be possible through
+  an unapproved remote command path.
+
+Meeting that invariant for arbitrary shell execution requires OS isolation or a
+local execution/approval broker capable of enforcing filesystem effects. Command
+string blocklists are not sufficient.
 
 ## Verification requirements
 
-- `developer` advertises `shell_run`;
-- `readonly` and `discovery` do not advertise it;
-- `full` is developer + generic `mcp_call_tool`;
-- shell cwd still passes the filesystem guard;
-- a junction cwd escaping the allowed root is refused;
+- `developer` does not advertise or execute `shell_run`;
+- `full` advertises and can execute `shell_run`;
+- shell cwd still passes the Workspace path guard;
+- a junction cwd escaping the Workspace is refused;
+- structured developer capabilities remain available;
 - full repository verification remains green.

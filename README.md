@@ -683,8 +683,8 @@ P05 使用累计权限 Profile，并 fail closed。
 |---|---|
 | `discovery` | `device_info`, `ping` |
 | `readonly` | Workspace awareness、Reference、Audit、Recovery、Plugin 查询、文件读取、Git status/diff |
-| `developer` | readonly + 文件修改、Git 本地修改、Shell、Runtime restart、downstream discovery |
-| `full` | developer + `git_push` + generic downstream tool call |
+| `developer` | readonly + 文件修改、Git 本地修改、allowlisted validation、Runtime restart、downstream discovery |
+| `full` | developer + `shell_run` + `git_push` + generic downstream tool call |
 
 重要：
 
@@ -702,7 +702,8 @@ Workspace 授权只能由 Local Operator 控制。
 
 ```text
 Human-authorized
-Read / Write / Git / Shell / Plugin
+Read / Write / Git / Plugin
+Unrestricted Shell only when full profile is explicitly selected
 ```
 
 ### Reference Root
@@ -722,7 +723,10 @@ Cannot switch Runtime Workspace
 
 ### Shell
 
-`shell_run` 仍采用 trusted-user 模型：
+`developer` 不再暴露 `shell_run`。任意 PowerShell 仅在显式选择
+`full` Profile 时暴露。
+
+`full` 下的 `shell_run` 仍采用 trusted-user 模型：
 
 - 起始 cwd 受 Workspace 边界约束；
 - PowerShell 实际拥有当前 Windows 用户权限；
@@ -730,7 +734,8 @@ Cannot switch Runtime Workspace
 
 因此：
 
-> Structured tools 已有严格 Workspace boundary；Shell 的完全 OS 级隔离仍属于更高层安全能力。
+> Structured developer tools 已有严格 Workspace boundary；把 shell 移到 full 是立即止血，
+> 最终目标仍是通过本地审批/OS 边界强制实现“Workspace 外持久化修改必须人工批准”。
 
 ---
 
@@ -940,10 +945,10 @@ npm run build
 PASS
 
 POLICY_PROFILES_OK
-251 checks
+250 checks
 
 PROFILE_EXPOSURE_OK
-161 checks
+163 checks
 
 HTTP_REVIEWER_OK
 55 checks

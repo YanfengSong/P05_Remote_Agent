@@ -29,8 +29,8 @@ Profiles are cumulative and unknown values fail closed.
 |---|---|
 | discovery | `device_info`, `ping` |
 | readonly | discovery + `workspace_list`, `workspace_current`, `reference_list`, `reference_read`, `reference_list_directory`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat` |
-| developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools`, `shell_run` |
-| full | developer + `git_push`, `mcp_call_tool` |
+| developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools` |
+| full | developer + `shell_run`, `git_push`, `mcp_call_tool` |
 
 ## Workspace semantics
 
@@ -188,15 +188,17 @@ MATLAB/Simulink is the first built-in application plugin.
 
 ## Shell
 
-`shell_run` is available at developer.
+`shell_run` is not exposed at developer. It is available only at full.
 
-Its starting cwd is technically confined to the active Workspace. The PowerShell command itself retains the paired Windows user's OS permissions.
+Its starting cwd is technically confined to the active Workspace. The PowerShell
+command itself retains the paired Windows user's OS permissions.
 
-Therefore `shell_run` is explicitly **not a sandbox**.
+Therefore `shell_run` remains explicitly **not a sandbox**.
 
-Persistent outside-Workspace modification still requires explicit user approval by operating policy unless an external broker pre-authorizes it.
-
-Hard technical confinement requires an OS boundary or external execution broker.
+Moving shell to full is an immediate containment measure. Persistent
+outside-Workspace modification still requires explicit user approval, and the
+target design is to enforce that rule through a local approval/execution broker
+or OS boundary rather than command-string filtering.
 
 ## Host authority
 
