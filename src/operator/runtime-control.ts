@@ -570,13 +570,18 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
       bridgeData?.device && typeof bridgeData.device === "object"
         ? bridgeData.device
         : undefined,
+    mcp:
+      bridgeData?.mcp && typeof bridgeData.mcp === "object"
+        ? bridgeData.mcp
+        : undefined,
     references: Array.isArray(bridgeData?.references) ? bridgeData.references : [],
     plugins: Array.isArray(bridgeData?.plugins) ? bridgeData.plugins : [],
     downstream: Array.isArray(bridgeData?.downstream) ? bridgeData.downstream : [],
     git,
     activity: Array.isArray(bridgeData?.activity) ? bridgeData.activity : [],
     liveActivity: Array.isArray(bridgeData?.liveActivity) ? bridgeData.liveActivity : [],
-    recovery: Array.isArray(bridgeData?.recovery) ? bridgeData.recovery : []
+    recovery: Array.isArray(bridgeData?.recovery) ? bridgeData.recovery : [],
+    logTail: logTail(25, config.tunnelLog)
   };
 }
 
@@ -629,27 +634,10 @@ function mergeSlotEvents(
 }
 
 export async function operatorOverview() {
-  const [processes, health, bridge, slots] = await Promise.all([
+  const [processes, slots] = await Promise.all([
     processStatus(),
-    healthStatus(),
-    bridgeOverview(),
     runtimeSlotsOverview()
   ]);
-
-  const bridgeData =
-    bridge.online && bridge.data && typeof bridge.data === "object"
-      ? bridge.data as Record<string, unknown>
-      : undefined;
-
-  const workspace =
-    bridgeData?.workspace &&
-    typeof bridgeData.workspace === "object"
-      ? (bridgeData.workspace as {
-          current?: { root?: string };
-        }).current
-      : undefined;
-
-  const git = await gitStatus(workspace?.root);
 
   const activity = mergeSlotEvents(slots, "activity", 100);
   const liveActivity = mergeSlotEvents(slots, "liveActivity", 120);
@@ -661,29 +649,30 @@ export async function operatorOverview() {
     liveActivity,
     recovery,
     connection: {
-      connected: Boolean(health.ready && bridge.online),
-      runtimeTask: {
-        exists: false,
-        name: "manual-slot-a",
-        state: "manual"
-      },
-      restartTask: {
-        exists: false,
-        name: "manual-restart",
-        state: "manual"
-      },
-      health,
-      bridge: {
-        online: bridge.online,
-        ...(bridge.online
-          ? { data: bridge.data }
-          : { error: bridge.error })
+      connected: Boolean(slots.A.connected || slots.B.connected),
+      slots: {
+        A: {
+          connected: slots.A.connected,
+          health: slots.A.health,
+          bridge: slots.A.bridge
+        },
+        B: {
+          connected: slots.B.connected,
+          health: slots.B.health,
+          bridge: slots.B.bridge
+        }
       },
       processes
     },
-    git,
+    git: {
+      A: slots.A.git,
+      B: slots.B.git
+    },
     slots,
-    logTail: logTail(25)
+    logTail: {
+      A: slots.A.logTail,
+      B: slots.B.logTail
+    }
   };
 }
 
@@ -762,18 +751,6 @@ async function runSlotControlScript(
       maxBuffer: 256 * 1024
     }
   );
-}
-
-export async function connectRuntime() {
-  return connectRuntimeSlot("A");
-}
-
-export async function restartRuntime() {
-  return restartRuntimeSlot("A");
-}
-
-export async function disconnectRuntime() {
-  return disconnectRuntimeSlot("A");
 }
 
 export async function connectRuntimeSlot(slot: RuntimeSlotId) {
