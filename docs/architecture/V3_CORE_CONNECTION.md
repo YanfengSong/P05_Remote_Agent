@@ -11,13 +11,13 @@ The objective is not to keep every transport alive at all times. The objective i
 
 ## 2. Connection model
 
-P05 distinguishes three layers:
+P05 distinguishes three layers per Core Instance/Slot:
 
 1. Core MCP endpoint ? the stable AI-facing application endpoint.
 2. Local transport ? stdio/local administrative access used to prove the Core itself is alive.
 3. Remote connector ? tunnel/relay process used to expose the Core remotely.
 
-Connection is a Core responsibility, but the remote connector MAY run as an external companion process. It is infrastructure, not a business plugin.
+Connection is a Core responsibility, but the remote connector MAY run as an external companion process. It is infrastructure, not a business plugin. Multiple Slots such as A/B are independent Workspace channels, not redundant transports.
 
 ## 3. Required invariants
 
@@ -34,6 +34,8 @@ CONN-05: Authentication/session failure never falls back to an unauthenticated p
 CONN-06: Secrets/tokens are never returned through ordinary diagnostics or audit output.
 
 CONN-07: Protocol incompatibility is reported as a compatibility error, not an unexplained disconnect.
+
+CONN-08: Multiple Core Slots on one Host remain independently connected and independently Workspace-bound.
 
 ## 4. Connection state
 
@@ -113,4 +115,5 @@ Examples:
 3. Invalid credentials do not reduce security or expose secrets.
 4. Protocol mismatch is diagnosable.
 5. Repeated remote failures do not create an unbounded restart loop.
+
 

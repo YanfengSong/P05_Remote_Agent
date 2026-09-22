@@ -9,6 +9,7 @@ Normative Core sub-designs:
 - V3_CORE_SUPERVISION.md
 - V3_CORE_LIFECYCLE.md
 - V3_CORE_RESOURCE_GUARD.md
+- V3_CORE_INSTANCE_MODEL.md
 Branch: v3
 
 ## 1. Core mission
@@ -16,6 +17,8 @@ Branch: v3
 P05 Core is the always-available local control and recovery plane between ChatGPT/AI clients and the host computer.
 
 The Core MUST remain operational without MATLAB, STM32, Agent, Skill, Workflow, downstream MCP, or any other business plugin.
+
+V3 is an evolutionary upgrade of V2. Existing validated V2 capabilities, including independent A/B Runtime Slots with separate Workspace bindings, are inherited unless a concrete V3 requirement justifies changing their implementation.
 
 Its job is not to provide every feature. Its job is to keep the host reachable, observable, controllable, and repairable.
 
@@ -271,5 +274,6 @@ Before adding anything to Core, ask:
 If the answer is yes, the capability SHOULD remain outside Core.
 
 If the answer is no, it may belong in Core, but only after proving that it is required for survivability or recovery.
+
 
 

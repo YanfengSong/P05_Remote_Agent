@@ -123,3 +123,4 @@ LIFE-06: Upgrade logs/status contain no secrets.
 4. Optional Runtime is incompatible -> Core remains active in DEGRADED mode.
 5. Rollback restores remote/local control without manual repository surgery.
 
+

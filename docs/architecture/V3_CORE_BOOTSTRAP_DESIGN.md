@@ -16,9 +16,9 @@ The primary availability objective is:
 
 V3 therefore treats "fail closed" as **reduce authority/capability**, not "go offline", whenever the Core process and MCP transport are still technically able to run.
 
-## 2. One stable external endpoint
+## 2. Stable endpoint per Core Instance
 
-ChatGPT connects to one stable P05 Core MCP endpoint.
+Each active P05 Core Instance/Slot exposes one stable MCP endpoint. A Host may run multiple Slots concurrently for different Workspaces.
 
 ```text
 ChatGPT / AI
@@ -39,7 +39,7 @@ ChatGPT / AI
 +-----------------------+
 ```
 
-Optional systems MUST NOT require a second mandatory AI connection.
+Optional systems MUST NOT require an additional mandatory AI connection for the same Slot.
 
 The Core owns the stable MCP session and fixed recovery tool surface.
 Optional tools may be routed through the Core, but failure of the optional runtime returns an explicit unavailable error and cannot invalidate the Core connection.
@@ -394,4 +394,5 @@ For every future dependency ask:
 > Does Core need this dependency in order to stay connected, diagnose failure, and repair the system?
 
 If no, it belongs after the CORE READY boundary.
+
 
