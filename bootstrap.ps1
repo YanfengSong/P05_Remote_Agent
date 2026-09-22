@@ -1,10 +1,14 @@
 param(
     [string]$TunnelA,
     [string]$TunnelB,
+    [string]$RuntimeSlots,
     [string]$ApiKey,
     [string]$AllowedRoots,
+    [string]$NetworkMode,
+    [string]$Proxy,
     [switch]$SkipToolDownload,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipCoreStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +25,9 @@ $NodeExe = Join-Path $NodeDir 'node.exe'
 $NpmCmd = Join-Path $NodeDir 'npm.cmd'
 $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
 $EnvFile = Join-Path $RepoRoot '.env'
+. (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
+. (Join-Path $RepoRoot 'scripts\deployment\preflight-lib.ps1')
+. (Join-Path $RepoRoot 'scripts\deployment\network-lib.ps1')
 
 function Read-SecretPlainText([string]$Prompt) {
     $secure = Read-Host $Prompt -AsSecureString
@@ -53,8 +60,11 @@ function Set-DotEnvValue([string]$Path,[string]$Name,[string]$Value) {
 }
 
 function Download-File([string]$Url,[string]$Destination) {
-    Write-Host "Downloading $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+    if (-not $script:P05NetworkSelection) {
+        throw 'Network path has not been selected.'
+    }
+    Write-Host "Downloading $Url via $($script:P05NetworkSelection.selectedPath)"
+    Invoke-P05Download -Url $Url -Destination $Destination -Selection $script:P05NetworkSelection
 }
 
 function Expected-Checksum(
@@ -79,7 +89,8 @@ function Assert-Checksum(
 }
 
 function Install-Node {
-    if ((Test-Path -LiteralPath $NodeExe -PathType Leaf) -and
+    param([switch]$Force)
+    if (-not $Force -and (Test-Path -LiteralPath $NodeExe -PathType Leaf) -and
         (Test-Path -LiteralPath $NpmCmd -PathType Leaf)) {
         Write-Host "Repo-local Node already installed."
         return
@@ -110,7 +121,8 @@ function Install-Node {
 }
 
 function Install-TunnelClient {
-    if (Test-Path -LiteralPath $TunnelExe -PathType Leaf) {
+    param([switch]$Force)
+    if (-not $Force -and (Test-Path -LiteralPath $TunnelExe -PathType Leaf)) {
         Write-Host "Repo-local tunnel-client already installed."
         return
     }
@@ -144,32 +156,77 @@ if ($env:OS -ne 'Windows_NT') {
     throw 'This bootstrap currently supports Windows only.'
 }
 
-if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for @Boonray-A' }
-if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for @Boonray-B' }
-Assert-TunnelId 'TunnelA' $TunnelA
-Assert-TunnelId 'TunnelB' $TunnelB
-if ($TunnelA -eq $TunnelB) { throw 'Tunnel A and Tunnel B must be different.' }
+if (-not $RuntimeSlots) {
+    Write-Host ''
+    Write-Host 'Runtime topology:' -ForegroundColor Cyan
+    Write-Host '  1. Single Runtime (A) [default]'
+    Write-Host '  2. Dual Runtime (A + B)'
+    $choice = (Read-Host 'Select 1 or 2').Trim()
+    $RuntimeSlots = if ($choice -eq '2') { 'A,B' } elseif (-not $choice -or $choice -eq '1') { 'A' } else {
+        throw 'Runtime topology selection must be 1 or 2.'
+    }
+}
+$slots = @(ConvertTo-P05RuntimeSlots -Raw $RuntimeSlots)
+if ($slots.Count -eq 0) { throw 'At least one runtime slot must be configured.' }
+$RuntimeSlots = ($slots -join ',')
+
+if ($slots -contains 'A') {
+    if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for @Boonray-A' }
+    Assert-TunnelId 'TunnelA' $TunnelA
+}
+if ($slots -contains 'B') {
+    if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for @Boonray-B' }
+    Assert-TunnelId 'TunnelB' $TunnelB
+}
+if (($slots -contains 'A') -and ($slots -contains 'B') -and $TunnelA -eq $TunnelB) {
+    throw 'Tunnel A and Tunnel B must be different.'
+}
 
 if (-not $ApiKey) { $ApiKey = Read-SecretPlainText 'OpenAI Control Plane API Key' }
 if (-not $ApiKey) { throw 'API key is required.' }
 
 if (-not $AllowedRoots) { $AllowedRoots = $RepoRoot }
 
+$existingNetworkMode = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_NETWORK_MODE'
+$existingProxy = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_PROXY'
+if (-not $NetworkMode) {
+    $NetworkMode = $(if ($existingNetworkMode) { $existingNetworkMode } elseif ($env:P05_NETWORK_MODE) { $env:P05_NETWORK_MODE } else { 'auto' })
+}
+if (-not $Proxy) {
+    $Proxy = $(if ($existingProxy) { $existingProxy } elseif ($env:P05_PROXY) { $env:P05_PROXY } else { '' })
+}
+
+$script:P05NetworkSelection = Resolve-P05NetworkPath -Mode $NetworkMode -Proxy $Proxy
+Set-P05ProcessNetwork -Selection $script:P05NetworkSelection
+Write-P05NetworkReport -Selection $script:P05NetworkSelection
+
+$preflight = Invoke-P05Preflight -RepoRoot $RepoRoot -AllowedRoots $AllowedRoots -Stage PreInstall -ExpectedNodeVersion $NodeVersion -ExpectedTunnelVersion $TunnelVersion -ManagedRequired:$SkipToolDownload
+Write-P05PreflightReport -Report $preflight
+Assert-P05Preflight -Report $preflight
+
 New-Item -ItemType Directory -Path $P05Root -Force | Out-Null
 
 if (-not $SkipToolDownload) {
-    Install-Node
-    Install-TunnelClient
+    $nodeCheck = $preflight.checks | Where-Object { $_.id -eq 'node' } | Select-Object -First 1
+    $npmCheck = $preflight.checks | Where-Object { $_.id -eq 'npm' } | Select-Object -First 1
+    $tunnelCheck = $preflight.checks | Where-Object { $_.id -eq 'tunnel-client' } | Select-Object -First 1
+    if ($nodeCheck.status -ne 'PASS' -or $npmCheck.status -ne 'PASS') {
+        Write-Host 'Repairing repo-local Node/npm installation...' -ForegroundColor Yellow
+        Install-Node -Force
+    } else {
+        Write-Host 'Repo-local Node/npm already validated.'
+    }
+    if ($tunnelCheck.status -ne 'PASS') {
+        Write-Host 'Repairing repo-local tunnel-client installation...' -ForegroundColor Yellow
+        Install-TunnelClient -Force
+    } else {
+        Write-Host 'Repo-local tunnel-client already validated.'
+    }
 }
-if (-not (Test-Path -LiteralPath $NodeExe -PathType Leaf)) {
-    throw "Repo-local Node is missing: $NodeExe"
-}
-if (-not (Test-Path -LiteralPath $NpmCmd -PathType Leaf)) {
-    throw "Repo-local npm is missing: $NpmCmd"
-}
-if (-not (Test-Path -LiteralPath $TunnelExe -PathType Leaf)) {
-    throw "Repo-local tunnel-client is missing: $TunnelExe"
-}
+
+$postflight = Invoke-P05Preflight -RepoRoot $RepoRoot -AllowedRoots $AllowedRoots -Stage PostInstall -ExpectedNodeVersion $NodeVersion -ExpectedTunnelVersion $TunnelVersion -ManagedRequired:$true
+Write-P05PreflightReport -Report $postflight
+Assert-P05Preflight -Report $postflight
 
 if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
     Copy-Item -LiteralPath (Join-Path $RepoRoot '.env.example') -Destination $EnvFile
@@ -182,10 +239,16 @@ $managed = [ordered]@{
     P05_OPERATOR_PORT = '56301'
     P05_NODE_PATH = $NodeExe
     P05_OPERATOR_TUNNEL_CLIENT = $TunnelExe
+    P05_NETWORK_MODE = [string]$script:P05NetworkSelection.configuredMode
+    P05_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    CONTROL_PLANE_HTTP_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    HTTPS_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    HTTP_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
+    P05_RUNTIME_SLOTS = $RuntimeSlots
     P05_RUNTIME_A_PROFILE = 'p05-a'
     P05_RUNTIME_B_PROFILE = 'p05-b'
-    P05_TUNNEL_A_ID = $TunnelA
-    P05_TUNNEL_B_ID = $TunnelB
+    P05_TUNNEL_A_ID = $(if ($slots -contains 'A') { $TunnelA } else { '' })
+    P05_TUNNEL_B_ID = $(if ($slots -contains 'B') { $TunnelB } else { '' })
     CONTROL_PLANE_API_KEY = $ApiKey
 }
 foreach ($name in $managed.Keys) {
@@ -197,8 +260,9 @@ if (Test-Path -LiteralPath $matlabToolkit -PathType Leaf) {
     Set-DotEnvValue $EnvFile 'MATLAB_MCP_ENABLED' 'true'
 }
 
-foreach ($slot in @('a','b')) {
-    $state = Join-Path $P05Root ("runtime-$slot\state")
+foreach ($slot in $slots) {
+    $slotLower = $slot.ToLowerInvariant()
+    $state = Join-Path $P05Root ("runtime-$slotLower\state")
     New-Item -ItemType Directory -Path $state -Force | Out-Null
 }
 
@@ -214,7 +278,18 @@ if (-not $SkipBuild) {
     }
 }
 
-& (Join-Path $RepoRoot 'scripts\deployment\write-runtime-profiles.ps1') -TunnelA $TunnelA -TunnelB $TunnelB
+& (Join-Path $RepoRoot 'scripts\deployment\write-runtime-profiles.ps1') -RuntimeSlots $RuntimeSlots -TunnelA $TunnelA -TunnelB $TunnelB
+
+if (-not $SkipCoreStart) {
+    foreach ($slot in $slots) {
+        Write-Host ("Starting Core Runtime " + $slot + "...") -ForegroundColor Cyan
+        $runtimeScript = Join-Path $RepoRoot 'scripts\deployment\run-runtime-slot.ps1'
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $runtimeScript -Slot $slot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Core Runtime $slot failed to start with exit code $LASTEXITCODE."
+        }
+    }
+}
 
 $nodeVersionText = (& $NodeExe --version).Trim()
 $tunnelVersionText = (& $TunnelExe --version).Trim()
@@ -224,8 +299,13 @@ Write-Host 'P05 bootstrap complete.' -ForegroundColor Green
 Write-Host "Repo: $RepoRoot"
 Write-Host "Node: $nodeVersionText"
 Write-Host "Tunnel client: $tunnelVersionText"
-Write-Host 'Automatic startup: disabled'
-Write-Host 'Runtime A/B: stopped until you enable them in Operator Console'
+Write-Host "Configured Runtime slots: $RuntimeSlots"
+if ($SkipCoreStart) {
+    Write-Host 'Core startup: skipped by -SkipCoreStart'
+} else {
+    Write-Host 'Core startup: configured Runtime slots READY'
+}
+Write-Host 'Operator Console: optional post-deployment control surface'
 Write-Host ''
-Write-Host 'Start manually with:'
+Write-Host 'Open Operator manually with:'
 Write-Host "  $RepoRoot\P05-Operator.cmd"
