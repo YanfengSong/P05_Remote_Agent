@@ -133,7 +133,7 @@ Implemented:
 Current automated regression:
 - `OPERATOR_CONSOLE_OK (60 checks)`.
 
-Latest external-review-closure validation on this host executes **796 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
+Latest external-review-closure validation on this host executes **797 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -170,10 +170,10 @@ Workspace switching changes active-bound downstream context and triggers reconne
 - command_run
 - runtime_restart
 - mcp_status / mcp_list_tools
-- shell_run
 
 ### full
 - all developer capabilities
+- shell_run
 - git_push
 - mcp_call_tool
 
@@ -193,18 +193,22 @@ No structured force push or arbitrary refspec is exposed.
 
 ## Shell boundary
 
-`shell_run` follows the trusted-terminal model.
+`developer` no longer exposes `shell_run`. Normal remote development is limited
+to structured Workspace tools and server-side allowlisted `command_run` actions.
+
+`shell_run` is full-profile only and still follows the trusted-terminal model.
 
 Technical boundary:
 - initial cwd must be inside active Workspace.
 
-Not a technical boundary:
-- the PowerShell command itself can use Windows-user authority outside that Workspace.
+Not yet a technical boundary:
+- a full-profile PowerShell command can use Windows-user authority outside that Workspace.
 
-Operating rule:
-- persistent outside-Workspace changes require explicit user approval unless an external broker pre-authorizes them.
+Target invariant:
+- persistent outside-Workspace filesystem mutation requires explicit local human approval.
 
-Hard technical shell confinement requires OS isolation.
+Hard enforcement for arbitrary shell execution requires OS isolation or a local
+execution/approval broker; command blocklists are guard rails only.
 
 ## Validation
 
@@ -214,8 +218,8 @@ Latest full verification:
     ACTION check                  PASS
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            251 checks
-    PROFILE_EXPOSURE_OK           161 checks
+    POLICY_PROFILES_OK            250 checks
+    PROFILE_EXPOSURE_OK           163 checks
     HTTP_REVIEWER_OK              55 checks
     FOUNDATION_OK                 40 checks
     GIT_MUTATIONS_OK              13 checks

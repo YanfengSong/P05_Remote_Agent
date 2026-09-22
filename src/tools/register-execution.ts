@@ -30,7 +30,7 @@ export function registerExecutionTools(exposer: Exposer, workspaceManager: Works
   });
 
   exposer.expose("shell_run", {
-    description: "Run PowerShell starting inside the active workspace; command authority remains trusted-user.",
+    description: "Run unrestricted PowerShell starting inside the active workspace; full profile only, command authority remains trusted-user.",
     inputSchema: z.object({
       command: z.string().min(1),
       cwd: z.string().min(1).optional(),

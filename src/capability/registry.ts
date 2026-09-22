@@ -33,7 +33,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "mcp_list_tools", minProfile: "developer", risk: "read", scope: "downstream", summary: "Connect to a downstream MCP server and list its tools." },
   { name: "mcp_call_tool", minProfile: "full", risk: "execute", scope: "downstream", summary: "Call an arbitrary tool on a downstream MCP server." },
 
-  { name: "shell_run", minProfile: "developer", risk: "execute", scope: "workspace", summary: "Run PowerShell with the paired Windows user permissions; not a sandbox." }
+  { name: "shell_run", minProfile: "full", risk: "execute", scope: "workspace", summary: "Run unrestricted PowerShell with the paired Windows user permissions; not a sandbox." }
 ];
 
 export class CapabilityCatalog {
