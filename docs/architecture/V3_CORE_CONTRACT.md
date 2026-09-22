@@ -1,6 +1,6 @@
 # P05 V3 Core Contract
 
-Status: Draft architecture baseline
+Status: Accepted Core baseline; boundary frozen by V3_CORE_BOUNDARY_RULE.md
 Branch: v3
 
 ## 1. Core mission
@@ -253,3 +253,4 @@ Before adding anything to Core, ask:
 If the answer is yes, the capability SHOULD remain outside Core.
 
 If the answer is no, it may belong in Core, but only after proving that it is required for survivability or recovery.
+
