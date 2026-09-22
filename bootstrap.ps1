@@ -23,6 +23,7 @@ $NpmCmd = Join-Path $NodeDir 'npm.cmd'
 $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
 $EnvFile = Join-Path $RepoRoot '.env'
 . (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
+. (Join-Path $RepoRoot 'scripts\deployment\preflight-lib.ps1')
 
 function Read-SecretPlainText([string]$Prompt) {
     $secure = Read-Host $Prompt -AsSecureString
@@ -81,7 +82,8 @@ function Assert-Checksum(
 }
 
 function Install-Node {
-    if ((Test-Path -LiteralPath $NodeExe -PathType Leaf) -and
+    param([switch]$Force)
+    if (-not $Force -and (Test-Path -LiteralPath $NodeExe -PathType Leaf) -and
         (Test-Path -LiteralPath $NpmCmd -PathType Leaf)) {
         Write-Host "Repo-local Node already installed."
         return
@@ -112,7 +114,8 @@ function Install-Node {
 }
 
 function Install-TunnelClient {
-    if (Test-Path -LiteralPath $TunnelExe -PathType Leaf) {
+    param([switch]$Force)
+    if (-not $Force -and (Test-Path -LiteralPath $TunnelExe -PathType Leaf)) {
         Write-Host "Repo-local tunnel-client already installed."
         return
     }
@@ -177,21 +180,33 @@ if (-not $ApiKey) { throw 'API key is required.' }
 
 if (-not $AllowedRoots) { $AllowedRoots = $RepoRoot }
 
+$preflight = Invoke-P05Preflight -RepoRoot $RepoRoot -AllowedRoots $AllowedRoots -Stage PreInstall -ExpectedNodeVersion $NodeVersion -ExpectedTunnelVersion $TunnelVersion -ManagedRequired:$SkipToolDownload
+Write-P05PreflightReport -Report $preflight
+Assert-P05Preflight -Report $preflight
+
 New-Item -ItemType Directory -Path $P05Root -Force | Out-Null
 
 if (-not $SkipToolDownload) {
-    Install-Node
-    Install-TunnelClient
+    $nodeCheck = $preflight.checks | Where-Object { $_.id -eq 'node' } | Select-Object -First 1
+    $npmCheck = $preflight.checks | Where-Object { $_.id -eq 'npm' } | Select-Object -First 1
+    $tunnelCheck = $preflight.checks | Where-Object { $_.id -eq 'tunnel-client' } | Select-Object -First 1
+    if ($nodeCheck.status -ne 'PASS' -or $npmCheck.status -ne 'PASS') {
+        Write-Host 'Repairing repo-local Node/npm installation...' -ForegroundColor Yellow
+        Install-Node -Force
+    } else {
+        Write-Host 'Repo-local Node/npm already validated.'
+    }
+    if ($tunnelCheck.status -ne 'PASS') {
+        Write-Host 'Repairing repo-local tunnel-client installation...' -ForegroundColor Yellow
+        Install-TunnelClient -Force
+    } else {
+        Write-Host 'Repo-local tunnel-client already validated.'
+    }
 }
-if (-not (Test-Path -LiteralPath $NodeExe -PathType Leaf)) {
-    throw "Repo-local Node is missing: $NodeExe"
-}
-if (-not (Test-Path -LiteralPath $NpmCmd -PathType Leaf)) {
-    throw "Repo-local npm is missing: $NpmCmd"
-}
-if (-not (Test-Path -LiteralPath $TunnelExe -PathType Leaf)) {
-    throw "Repo-local tunnel-client is missing: $TunnelExe"
-}
+
+$postflight = Invoke-P05Preflight -RepoRoot $RepoRoot -AllowedRoots $AllowedRoots -Stage PostInstall -ExpectedNodeVersion $NodeVersion -ExpectedTunnelVersion $TunnelVersion -ManagedRequired:$true
+Write-P05PreflightReport -Report $postflight
+Assert-P05Preflight -Report $postflight
 
 if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
     Copy-Item -LiteralPath (Join-Path $RepoRoot '.env.example') -Destination $EnvFile

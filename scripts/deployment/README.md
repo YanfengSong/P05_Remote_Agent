@@ -54,10 +54,30 @@ It then prompts only for the Tunnel ID(s) required by that topology and one Open
 By default the outer authorization root is the P05 repository itself. An explicit
 larger authorization perimeter can be supplied with `-AllowedRoots`.
 
+Bootstrap begins with a deployment preflight. It checks Windows/x64, PowerShell, Git, repository validity, repo-local write access, allowed-root configuration, `.env.example`, and the actual executability/version of repo-local Node/npm/tunnel-client.
+
+Preflight result meanings:
+
+```text
+PASS        environment is ready for the next step
+REPAIRABLE  managed repo-local tools are missing/broken and Bootstrap can reinstall them
+FAIL        a host/config prerequisite requires user action
+```
+
+With normal Bootstrap, missing or broken managed Node/npm/tunnel-client installations are repaired and then validated again by PostInstall preflight. With `-SkipToolDownload`, the same condition fails closed instead of being silently accepted.
+
+A standalone read-only check is available with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deployment\preflight.ps1
+```
+
 Bootstrap:
 
-- downloads pinned Node.js and tunnel-client releases;
+- runs PreInstall and PostInstall environment validation;
+- downloads pinned Node.js and tunnel-client releases when repair is required;
 - verifies SHA-256 checksums from their published checksum manifests;
+- verifies installed Node/tunnel-client versions and confirms npm actually executes;
 - installs them into `.p05/tools`;
 - creates the Git-ignored machine-local `.env`;
 - runs `npm ci` and `npm run build`;
@@ -90,6 +110,12 @@ From the GUI:
 - Restarting A does not affect B, and vice versa.
 
 Runtime state is persistent under `.p05/runtime-<slot>/state` for configured slots. Workspace bindings survive Runtime restart. An unconfigured slot is reported as `NOT CONFIGURED`, not as a deployment failure.
+
+## Deployment diagnostics
+
+- `preflight.ps1`: read-only environment/dependency validation entry point.
+- `preflight-lib.ps1`: shared Preflight functions used by Bootstrap and future Doctor.
+- `test-preflight.ps1`: Windows regression test for Preflight semantics.
 
 ## Runtime scripts
 

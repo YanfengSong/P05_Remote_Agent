@@ -39,6 +39,7 @@ function Invoke-Step([string]$Name, [scriptblock]$Command, [string]$Marker) {
 
 $allPassed = $true
 
+if (-not (Invoke-Step "deployment preflight"       { powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\test-preflight.ps1 } "DEPLOYMENT_PREFLIGHT_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "npm run check"            { npm run check }            ""))                 { $allPassed = $false }
 if (-not (Invoke-Step "npm run build"            { npm run build }            ""))                 { $allPassed = $false }
 if (-not (Invoke-Step "downstream smoke"          { node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }

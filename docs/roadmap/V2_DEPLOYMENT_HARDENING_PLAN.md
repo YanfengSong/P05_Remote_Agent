@@ -5,6 +5,17 @@ Branch: `v2-deployment-hardening`
 Baseline: `7a8bf99`  
 Scope: V2 stabilization only
 
+Implementation status:
+
+```text
+Phase 1  Runtime topology foundation      COMPLETE
+Phase 2  Preflight / dependency check     COMPLETE
+Phase 3  Network / proxy adaptation       NEXT
+Phase 4  Health / bootstrap verification  PENDING
+Phase 5  Doctor                           PENDING
+Phase 6  Operator health semantics        PARTIAL (topology semantics complete)
+```
+
 ## 1. Objective
 
 Improve P05 fresh-machine deployment from "files installed" to "deployment verified and diagnosable" without introducing V3 architecture changes.
