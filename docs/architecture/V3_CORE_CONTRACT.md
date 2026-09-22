@@ -1,6 +1,14 @@
 # P05 V3 Core Contract
 
 Status: Accepted Core baseline; boundary frozen by V3_CORE_BOUNDARY_RULE.md
+
+Normative Core sub-designs:
+- V3_CORE_BOOTSTRAP_DESIGN.md
+- V3_CORE_CONNECTION.md
+- V3_CORE_ROUTING.md
+- V3_CORE_SUPERVISION.md
+- V3_CORE_LIFECYCLE.md
+- V3_CORE_RESOURCE_GUARD.md
 Branch: v3
 
 ## 1. Core mission
@@ -229,6 +237,16 @@ CORE-I09: Break-glass execution is explicit, controlled and auditable.
 
 CORE-I10: Business/domain features never become Core startup dependencies.
 
+CORE-I11: Remote connection failure does not invalidate local Core readiness.
+
+CORE-I12: Optional route conflicts or incompatibility cannot replace Core routes or stop Core.
+
+CORE-I13: Optional Runtime restart is bounded by crash-loop/restart-budget policy.
+
+CORE-I14: Core upgrade preserves a last-known-good rollback path controlled outside the active Core process.
+
+CORE-I15: Core enforces bounded concurrency, time, output and diagnostic retention so optional work cannot starve recovery.
+
 ## 10. Acceptance tests
 
 V3 Core is not accepted until all of the following pass:
@@ -253,4 +271,5 @@ Before adding anything to Core, ask:
 If the answer is yes, the capability SHOULD remain outside Core.
 
 If the answer is no, it may belong in Core, but only after proving that it is required for survivability or recovery.
+
 
