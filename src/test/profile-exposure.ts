@@ -337,7 +337,7 @@ for (const scenario of scenarios) {
   const gitlink = path.join(ROOT, "_p05_git_junction");
   const goneJunction = path.join(ROOT, "_p05_gone_junction");
   const goneTarget = path.join(OUTSIDE_FIXTURES, "_p05_never_exists");
-  const gitDir = path.join(REPO, ".git");
+  const gitDir = path.join(PROBE_DIR, ".git");
 
   const mklink = (link: string, target: string) => execFileSync("cmd", ["/c", "mklink", "/J", link, target], { stdio: "pipe" });
   // rmdir (not rm -r) removes the reparse point only; a recursive delete would walk into the target.
@@ -362,6 +362,7 @@ for (const scenario of scenarios) {
 
     // baseline write works at developer
     await fs.mkdir(PROBE_DIR, { recursive: true });
+    await fs.mkdir(path.join(gitDir, "hooks"), { recursive: true });
     const probe = path.join(PROBE_DIR, "probe.txt");
     await session.client.callTool({ name: "fs_write", arguments: { path: probe, content: "p05-probe" } });
     const readBack = await session.client.callTool({ name: "fs_read", arguments: { path: probe } });
@@ -397,7 +398,7 @@ for (const scenario of scenarios) {
 
     // 3. trailing dot on the .git segment
     const dottedResult = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(REPO, ".git.", "hooks", "pre-commit"), content: "x" } })
+      session.client.callTool({ name: "fs_write", arguments: { path: path.join(PROBE_DIR, ".git.", "hooks", "pre-commit"), content: "x" } })
     );
     check("trailing-dot .git spelling is refused", dottedResult.failed, dottedResult.message.slice(0, 200));
     check("trailing-dot write created no hook file", !(await pathExists(path.join(gitDir, "hooks", "pre-commit"))));
@@ -473,7 +474,12 @@ for (const scenario of scenarios) {
       check(`short-name ${shortBase} spelling is refused`, shortResult.failed, shortResult.message.slice(0, 200));
       console.log(`ok  short-name probe used "${shortBase}" for .git`);
     } else {
-      console.log("note  8.3 short names are unavailable on this volume; short-name probe skipped");
+      check(
+        "short-name protected-path probe has no alternate alias on this filesystem",
+        !shortBase || shortBase.toLowerCase() === ".git",
+        shortGit
+      );
+      console.log("ok  short-name probe has no alternate alias on this filesystem");
     }
   } finally {
     unlink(outlink);
