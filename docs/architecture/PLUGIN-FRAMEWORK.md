@@ -2,6 +2,10 @@
 
 Status: Foundation V2 implemented; Architecture V3 packaging model defined
 Date: 2026-09-21
+Related implementation:
+- PLUGIN_API_V1_TECHNICAL_DESIGN.md
+- PLUGIN_DEVELOPMENT_STANDARD.md
+
 Related target:
 - TARGET_ARCHITECTURE_V3.md
 - CONTEXT-COMPONENT-RUNTIME.md

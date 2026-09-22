@@ -3,6 +3,8 @@
 Status: **v0.1 runnable draft**  
 Branch: `plugins`
 
+Implementation reference: `PLUGIN_API_V1_TECHNICAL_DESIGN.md`
+
 This standard defines how P05 private/first-party plugins should be written. The goal is repeatable plugin development for a small trusted group, not a public plugin marketplace.
 
 ## 1. Goal
