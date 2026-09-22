@@ -10,6 +10,7 @@ Normative Core sub-designs:
 - V3_CORE_LIFECYCLE.md
 - V3_CORE_RESOURCE_GUARD.md
 - V3_CORE_INSTANCE_MODEL.md
+- V3_PLATFORM_PORTABILITY.md
 Branch: v3
 
 ## 1. Core mission
@@ -250,6 +251,8 @@ CORE-I14: Core upgrade preserves a last-known-good rollback path controlled outs
 
 CORE-I15: Core enforces bounded concurrency, time, output and diagnostic retention so optional work cannot starve recovery.
 
+CORE-I16: Core control semantics are platform-neutral; Windows/Linux host mechanics are isolated behind Host Adapter/Bootstrap boundaries.
+
 ## 10. Acceptance tests
 
 V3 Core is not accepted until all of the following pass:
@@ -274,6 +277,7 @@ Before adding anything to Core, ask:
 If the answer is yes, the capability SHOULD remain outside Core.
 
 If the answer is no, it may belong in Core, but only after proving that it is required for survivability or recovery.
+
 
 
 
