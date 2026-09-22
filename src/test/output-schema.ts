@@ -55,6 +55,39 @@ try {
   );
 
   for (const tool of listed.tools) {
+    const capability = CAPABILITIES.find((entry) => entry.name === tool.name);
+    if (!capability) {
+      throw new Error(`FAIL annotations: undeclared Core tool ${tool.name}`);
+    }
+
+    const annotations = tool.annotations;
+    const readOnly = capability.risk === "read";
+    const openWorld =
+      capability.scope === "downstream" || capability.scope === "external";
+
+    check(
+      `annotations: ${tool.name} readOnlyHint follows capability risk`,
+      annotations?.readOnlyHint === readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} destructiveHint follows capability risk`,
+      annotations?.destructiveHint === !readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} idempotentHint follows capability risk`,
+      annotations?.idempotentHint === readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} openWorldHint follows capability scope`,
+      annotations?.openWorldHint === openWorld,
+      JSON.stringify({ capability, annotations })
+    );
+  }
+
+  for (const tool of listed.tools) {
     const schema = tool.outputSchema as { type?: unknown; properties?: unknown } | undefined;
     check(`output-schema: ${tool.name} advertises outputSchema`, Boolean(schema), JSON.stringify(tool));
     check(

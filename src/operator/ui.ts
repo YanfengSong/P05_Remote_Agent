@@ -88,16 +88,24 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="small muted" style="margin-top:6px">仅允许 reference_read / reference_list_directory；不授予写入、Git、Shell 或 MATLAB 操作权限。</div>
   </section>
 
-  <section class="card span12">
-    <h2>MCP 当前状态</h2>
-    <div id="mcpStatusSummary" class="summary"></div>
-    <div class="row"><span>Control Bridge</span><span id="mcpBridgeState">-</span></div>
-    <div class="row"><span>MCP 进程</span><span id="mcpProcessState" class="value">-</span></div>
-    <div class="row"><span>启动时间</span><span id="mcpStartedAt" class="value small">-</span></div>
-    <div class="row"><span>Profile 来源</span><span id="mcpProfileSource" class="value">-</span></div>
-    <div class="row"><span>Device ID</span><span id="mcpDeviceId" class="value mono small">-</span></div>
-    <div class="row"><span>状态刷新</span><span id="mcpRefreshedAt" class="value small">-</span></div>
-    <div class="row"><span>错误</span><span id="mcpStatusError" class="value small">-</span></div>
+  <section class="card span6">
+    <h2>Runtime A · MCP 当前状态</h2>
+    <div id="mcpAStatusSummary" class="summary"></div>
+    <div class="row"><span>Control Bridge</span><span id="mcpABridgeState">-</span></div>
+    <div class="row"><span>启动时间</span><span id="mcpAStartedAt" class="value small">-</span></div>
+    <div class="row"><span>Profile 来源</span><span id="mcpAProfileSource" class="value">-</span></div>
+    <div class="row"><span>Device ID</span><span id="mcpADeviceId" class="value mono small">-</span></div>
+    <div class="row"><span>错误</span><span id="mcpAStatusError" class="value small">-</span></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · MCP 当前状态</h2>
+    <div id="mcpBStatusSummary" class="summary"></div>
+    <div class="row"><span>Control Bridge</span><span id="mcpBBridgeState">-</span></div>
+    <div class="row"><span>启动时间</span><span id="mcpBStartedAt" class="value small">-</span></div>
+    <div class="row"><span>Profile 来源</span><span id="mcpBProfileSource" class="value">-</span></div>
+    <div class="row"><span>Device ID</span><span id="mcpBDeviceId" class="value mono small">-</span></div>
+    <div class="row"><span>错误</span><span id="mcpBStatusError" class="value small">-</span></div>
   </section>
 
   <section class="card span12">
@@ -135,9 +143,18 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <section class="card span12">
-    <h2>Plugins / Downstream MCP</h2>
+    <h2>Plugins</h2>
     <div id="pluginRows"></div>
-    <div id="downstreamRows"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime A · Downstream MCP</h2>
+    <div id="downstreamARows"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · Downstream MCP</h2>
+    <div id="downstreamBRows"></div>
   </section>
 
   <section class="card span8">
@@ -150,14 +167,24 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div id="recoveryRows" class="scroll"></div>
   </section>
 
-  <section class="card span12">
-    <h2>MCP Tool Surface</h2>
-    <div id="toolGroups"></div>
-    <h3>未暴露 / Suppressed</h3><div id="suppressedTools"></div>
+  <section class="card span6">
+    <h2>Runtime A · MCP Tool Surface</h2>
+    <div id="toolAGroups"></div>
+    <h3>未暴露 / Suppressed</h3><div id="suppressedATools"></div>
   </section>
 
-  <section class="card span12">
-    <h2>Tunnel 最近日志</h2><pre id="logs">-</pre>
+  <section class="card span6">
+    <h2>Runtime B · MCP Tool Surface</h2>
+    <div id="toolBGroups"></div>
+    <h3>未暴露 / Suppressed</h3><div id="suppressedBTools"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime A · Tunnel 最近日志</h2><pre id="logsA">-</pre>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · Tunnel 最近日志</h2><pre id="logsB">-</pre>
   </section>
 </div></main>
 <div id="toast" class="toast"></div>
@@ -262,7 +289,7 @@ function renderSlot(slot,data){
   if(slotSelectionDirty[slot]&&workspaces.some(x=>x.id===pending)){select.value=pending}else if(slotSelectionDirty[slot]){slotSelectionDirty[slot]=false}
 }
 function render(d){
-latest=d;const c=d.connection||{},bridge=c.bridge||{},b=(bridge.online&&bridge.data)||null,h=c.health||{},m=b?.mcp||{},ex=m.exposure||{},device=b?.device||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{};
+latest=d;const c=d.connection||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{},device=slotA.device||slotB.device||{};
 function topRuntime(slot,label){
   const running=!!slot?.connected,ready=!!slot?.health?.ready,live=!!slot?.health?.live;
   const state=running?"ONLINE":ready?"READY":live?"LIVE":"OFFLINE";
@@ -278,22 +305,30 @@ topRuntime(slotA,"topA");
 topRuntime(slotB,"topB");
 renderSlot("A",slotA);renderSlot("B",slotB);
 
-const mcpProcess=(c.processes||[]).find(p=>p.Role==="MCP Server");
-$("mcpStatusSummary").innerHTML=metric("BRIDGE",bridge.online?"ONLINE":"OFFLINE",bridge.online?"goodText":"badText")+metric("READY",h.ready?"READY":h.live?"LIVE":"OFFLINE",h.ready?"goodText":h.live?"warnText":"badText")+metric("PROFILE",m.profile||"-","")+metric("EXPOSED",ex.exposed?.length??0,"")+metric("SUPPRESSED",ex.suppressed?.length??0,(ex.suppressed?.length??0)?"warnText":"");
-$("mcpBridgeState").innerHTML=dot(!!bridge.online,false)+esc(bridge.online?"ONLINE":"OFFLINE");
-$("mcpProcessState").innerHTML=mcpProcess?(dot(true,false)+esc("RUNNING · PID "+mcpProcess.Id)):(dot(false,false)+"OFFLINE");
-$("mcpStartedAt").textContent=dateTime(device.startedAt||b?.startedAt);
-$("mcpProfileSource").textContent=m.profileSource||"-";
-$("mcpDeviceId").textContent=device.deviceId||"-";
-$("mcpRefreshedAt").textContent=dateTime(d.timestamp);
-$("mcpStatusError").textContent=bridge.error||h.error||"-";
-$("mcpStatusError").className="value small "+((bridge.error||h.error)?"badText":"muted");
+function renderMcpPanel(prefix,slot){
+  const bridge=slot?.bridge||{},health=slot?.health||{},m=slot?.mcp||{},ex=m.exposure||{},device=slot?.device||{};
+  $(prefix+"StatusSummary").innerHTML=
+    metric("BRIDGE",bridge.online?"ONLINE":"OFFLINE",bridge.online?"goodText":"badText")+
+    metric("READY",health.ready?"READY":health.live?"LIVE":"OFFLINE",health.ready?"goodText":health.live?"warnText":"badText")+
+    metric("PROFILE",m.profile||"-","")+
+    metric("EXPOSED",ex.exposed?.length??0,"")+
+    metric("SUPPRESSED",ex.suppressed?.length??0,(ex.suppressed?.length??0)?"warnText":"");
+  $(prefix+"BridgeState").innerHTML=dot(!!bridge.online,false)+esc(bridge.online?"ONLINE":"OFFLINE");
+  $(prefix+"StartedAt").textContent=dateTime(device.startedAt);
+  $(prefix+"ProfileSource").textContent=m.profileSource||"-";
+  $(prefix+"DeviceId").textContent=device.deviceId||"-";
+  const err=bridge.error||health.error||"";
+  $(prefix+"StatusError").textContent=err||"-";
+  $(prefix+"StatusError").className="value small "+(err?"badText":"muted");
+}
+renderMcpPanel("mcpA",slotA);
+renderMcpPanel("mcpB",slotB);
 
 $("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,!!slotA.health?.ready)+esc(slotA.connected?"ONLINE":slotA.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,!!slotB.health?.ready)+esc(slotB.connected?"ONLINE":slotB.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
-$("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div><div class="row"><span>MCP started</span><span class="small">'+esc(dateTime(device.startedAt))+'</span></div>';
+$("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div>';
 const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>'<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span class="small">'+esc(dateTime(p.StartTime))+'</span></div>').join(""):'<div class="empty">未检测到 P05 相关进程</div>';
 
-const live=d.liveActivity||b?.liveActivity||[];$("liveRows").innerHTML=live.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+riskPill(e.risk)+'</td><td><strong>'+esc(e.capability)+'</strong></td><td class="detail">'+esc(e.detail||e.summary||"-")+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+(e.phase&&e.state==="running"?' · '+esc(e.phase):'')+'</td><td>'+esc(e.scope||"-")+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="8" class="muted">暂无实时行为</td></tr>';
+const live=d.liveActivity||[];$("liveRows").innerHTML=live.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+riskPill(e.risk)+'</td><td><strong>'+esc(e.capability)+'</strong></td><td class="detail">'+esc(e.detail||e.summary||"-")+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+(e.phase&&e.state==="running"?' · '+esc(e.phase):'')+'</td><td>'+esc(e.scope||"-")+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="8" class="muted">暂无实时行为</td></tr>';
 
 function renderGitPanel(prefix,g){
   if(g?.available){
@@ -331,15 +366,27 @@ function downstreamUiState(x){
   if(x?.connected)return {label:"CONNECTED",good:true,warn:false,hint:"当前已有活跃连接"};
   return {label:"READY",good:false,warn:true,hint:"Lazy connect · 首次调用时自动连接"};
 }
-const ds=b?.downstream||[];$("downstreamRows").innerHTML='<h3>Downstream MCP</h3><div class="small muted" style="margin-bottom:6px">READY 表示已配置可用但尚未建立活跃连接；首次调用会自动连接。</div>'+(ds.length?ds.map(x=>{const st=downstreamUiState(x);return '<div class="row"><span><strong>'+esc(x.label||x.id)+'</strong><div class="small muted">'+esc(x.workspaceBinding||"")+(x.boundWorkspaceId?' · '+esc(x.boundWorkspaceId):'')+'</div><div class="small muted">'+esc(st.hint)+'</div></span><span>'+dot(st.good,st.warn)+esc(st.label)+'</span></div>'}).join(""):'<div class="empty">无 Downstream MCP</div>');
+function renderDownstream(prefix,slot){
+  const ds=slot?.downstream||[];
+  $(prefix+"Rows").innerHTML='<div class="small muted" style="margin-bottom:6px">READY 表示配置可用但尚未建立活跃连接；首次调用会自动连接。</div>'+
+    (ds.length?ds.map(x=>{const st=downstreamUiState(x);return '<div class="row"><span><strong>'+esc(x.label||x.id)+'</strong><div class="small muted">'+esc(x.workspaceBinding||"")+(x.boundWorkspaceId?' · '+esc(x.boundWorkspaceId):'')+'</div><div class="small muted">'+esc(st.hint)+'</div></span><span>'+dot(st.good,st.warn)+esc(st.label)+'</span></div>'}).join(""):'<div class="empty">无 Downstream MCP</div>');
+}
+renderDownstream("downstreamA",slotA);
+renderDownstream("downstreamB",slotB);
 
-const audit=d.activity||b?.activity||[];$("auditRows").innerHTML=audit.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+esc(e.capability)+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+'</td><td>'+esc(e.workspaceId)+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="6" class="muted">暂无 Audit</td></tr>';
-const rec=d.recovery||b?.recovery||[];$("recoveryRows").innerHTML=rec.length?rec.map(e=>'<div class="row"><span><strong>'+esc(e.capability)+'</strong><div class="small muted">'+sourceBadge(e)+' · '+esc(time(e.startedAt))+' · '+esc(e.errorCategory||"failed")+'</div></span><span class="pill">'+esc(e.recoveryHint)+'</span></div>').join(""):'<div class="goodText small">当前没有待处理 Recovery</div>';
+const audit=d.activity||[];$("auditRows").innerHTML=audit.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+esc(e.capability)+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+'</td><td>'+esc(e.workspaceId)+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="6" class="muted">暂无 Audit</td></tr>';
+const rec=d.recovery||[];$("recoveryRows").innerHTML=rec.length?rec.map(e=>'<div class="row"><span><strong>'+esc(e.capability)+'</strong><div class="small muted">'+sourceBadge(e)+' · '+esc(time(e.startedAt))+' · '+esc(e.errorCategory||"failed")+'</div></span><span class="pill">'+esc(e.recoveryHint)+'</span></div>').join(""):'<div class="goodText small">当前没有待处理 Recovery</div>';
 
-const caps=m.capabilities||[],exposed=new Set(ex.exposed||[]),groups={read:[],write:[],execute:[]};caps.forEach(x=>{if(exposed.has(x.name)){(groups[x.risk]||groups.read).push(x)}});
-$("toolGroups").innerHTML=["read","write","execute"].map(r=>'<h3>'+r.toUpperCase()+' ('+groups[r].length+')</h3>'+groups[r].map(x=>'<span class="pill '+r+'" title="'+esc(x.summary)+'">'+esc(x.name)+'</span>').join("")).join("");
-$("suppressedTools").innerHTML=(ex.suppressed||[]).map(x=>'<div class="row"><span class="mono">'+esc(x.tool)+'</span><span class="small muted">'+esc(x.reason)+'</span></div>').join("")||'<span class="goodText small">当前没有 suppressed tools</span>';
-$("logs").textContent=(d.logTail||[]).join("\\n")||"暂无日志";
+function renderToolSurface(slotKey,slot){
+  const m=slot?.mcp||{},ex=m.exposure||{},caps=m.capabilities||[],exposed=new Set(ex.exposed||[]),groups={read:[],write:[],execute:[]};
+  caps.forEach(x=>{if(exposed.has(x.name)){(groups[x.risk]||groups.read).push(x)}});
+  $("tool"+slotKey+"Groups").innerHTML=["read","write","execute"].map(r=>'<h3>'+r.toUpperCase()+' ('+groups[r].length+')</h3>'+groups[r].map(x=>'<span class="pill '+r+'" title="'+esc(x.summary)+'">'+esc(x.name)+'</span>').join("")).join("");
+  $("suppressed"+slotKey+"Tools").innerHTML=(ex.suppressed||[]).map(x=>'<div class="row"><span class="mono">'+esc(x.tool)+'</span><span class="small muted">'+esc(x.reason)+'</span></div>').join("")||'<span class="goodText small">当前没有 suppressed tools</span>';
+}
+renderToolSurface("A",slotA);
+renderToolSurface("B",slotB);
+$("logsA").textContent=(slotA.logTail||[]).join("\\n")||"暂无日志";
+$("logsB").textContent=(slotB.logTail||[]).join("\\n")||"暂无日志";
 renderAction(d.operator);buttons();
 }
 async function refresh(){try{render(await api("/api/status"))}catch(e){toast("状态刷新失败: "+e.message,true)}}

@@ -200,11 +200,19 @@ Hard technical confinement requires an OS boundary or external execution broker.
 
 ## Host authority
 
-`runtime_restart` is developer-visible but can only request the fixed external broker:
+`runtime_restart` is developer-visible, but it is not a generic host execution
+surface. It resolves the current Runtime slot and invokes the fixed repo-local
+restart request:
 
-    schtasks.exe /Run /TN P05-RestartBroker
+    scripts/deployment/request-restart-runtime-slot.ps1 -Slot A|B
 
-Host/system mutations should follow the same narrow external-broker / approval pattern rather than widening structured developer tools.
+The MCP caller cannot supply an arbitrary command, script path, task name,
+credential or elevation argument. The historical `P05-RestartBroker`
+Scheduled Task is retired and is not required by the current Runtime path.
+
+Other host/system mutations should continue to use explicit approval, narrow
+external brokers, or stronger OS isolation rather than widening structured
+developer tools.
 
 ## Planned capability layer
 

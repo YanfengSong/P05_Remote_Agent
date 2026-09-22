@@ -50,6 +50,20 @@ try {
   renderedScriptParses = false;
 }
 check("operator: rendered browser script parses", renderedScriptParses);
+
+const operatorServerSource = await fs.readFile(
+  path.join(REPO, "src", "operator", "server.ts"),
+  "utf8"
+);
+check(
+  "operator: server exposes only slot-scoped runtime/workspace mutation routes",
+  !operatorServerSource.includes('url.pathname === "/api/action/connect"') &&
+    !operatorServerSource.includes('url.pathname === "/api/action/disconnect"') &&
+    !operatorServerSource.includes('url.pathname === "/api/action/restart"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/select"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/root"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/register"')
+);
 check(
   "operator: obsolete Runtime A-only workspace main view is removed",
   !renderedPage.includes("Runtime A Workspace · 主视图") &&
@@ -134,67 +148,37 @@ const renderFixture = {
   recovery: [],
   connection: {
     connected: true,
-    bridge: {
-      online: true,
-      data: {
-        mcp: {
-          profile: "developer",
-          profileSource: "test",
-          exposure: { exposed: ["device_info"], suppressed: [] },
-          capabilities: []
-        },
-        workspace: {
-          current: {
-            id: "platform",
-            label: "Test Workspace",
-            root: "C:\\test",
-            kind: "platform-source",
-            plugins: [],
-            authorization: {
-              structuredCrossWorkspace: "deny",
-              externalPersistentWrite: "approval-required",
-              shellBoundary: "trusted-user"
-            }
-          },
-          all: [
-            { id: "platform", label: "Test Workspace", root: "C:\\test", kind: "platform-source", current: true, plugins: [] },
-            { id: "business", label: "Business Workspace", root: "C:\\business", kind: "git-project", current: false, plugins: [] }
-          ]
-        },
-        device: {
-          deviceId: "test-device",
-          hostname: "test-host",
-          agentVersion: "0.0.0",
-          platform: "win32",
-          release: "test",
-          arch: "x64",
-          startedAt: "2026-09-21T00:00:00.000Z"
-        },
-        plugins: [],
-        downstream: [{
-          id: "matlab",
-          label: "MathWorks MATLAB MCP Server",
-          pluginId: "matlab",
-          available: true,
-          enabled: true,
-          configured: true,
-          connected: false,
-          workspaceBinding: "active",
-          boundWorkspaceId: "platform"
-        }],
-        activity: [], liveActivity: [], recovery: []
-      }
+    slots: {
+      A: { connected: true, health: { ready: true, live: true }, bridge: { online: true } },
+      B: { connected: true, health: { ready: true, live: true }, bridge: { online: true } }
     },
-    health: { ready: true, live: true, baseUrl: "http://127.0.0.1:1" },
-    runtimeTask: { state: "running" },
-    restartTask: { exists: true, state: "ready" },
     processes: [{ Role: "MCP Server", ProcessName: "node", Id: 123, StartTime: "/Date(1789973000623)/" }]
   },
   slots: {
     A: {
       id: "A", connector: "@Boonray-A", connected: true,
       boundWorkspaceId: "platform", health: { ready: true, live: true }, bridge: { online: true },
-      device: { deviceId: "device-a" },
+      device: {
+        deviceId: "device-a",
+        hostname: "test-host",
+        agentVersion: "0.0.0",
+        platform: "win32",
+        release: "test",
+        arch: "x64",
+        startedAt: "2026-09-21T00:00:00.000Z"
+      },
+      mcp: {
+        profile: "developer-a",
+        profileSource: "env-a",
+        exposure: {
+          exposed: ["device_info"],
+          suppressed: [{ tool: "fs_write", reason: "A suppressed" }]
+        },
+        capabilities: [
+          { name: "device_info", risk: "read", summary: "A device info" },
+          { name: "fs_write", risk: "write", summary: "A file write" }
+        ]
+      },
       workspace: {
         current: { id: "platform", label: "A Workspace", root: "C:\\a", kind: "platform-source" },
         all: [
@@ -217,12 +201,36 @@ const renderFixture = {
       plugins: [
         { id: "matlab", label: "MATLAB / Simulink", version: "2.2.0", apiVersion: "1", enabled: true, state: "running", activeForWorkspace: true, capabilityNames: [], downstreamIds: ["matlab"] }
       ],
-      downstream: []
+      downstream: [{
+        id: "matlab-a",
+        label: "A MATLAB",
+        available: true,
+        enabled: true,
+        configured: true,
+        connected: false,
+        workspaceBinding: "active",
+        boundWorkspaceId: "platform"
+      }],
+      logTail: ["A tunnel line"]
     },
     B: {
       id: "B", connector: "@Boonray-B", connected: true,
       boundWorkspaceId: "business", health: { ready: true, live: true }, bridge: { online: true },
-      device: { deviceId: "device-b" },
+      device: {
+        deviceId: "device-b",
+        startedAt: "2026-09-21T00:00:01.000Z"
+      },
+      mcp: {
+        profile: "readonly-b",
+        profileSource: "env-b",
+        exposure: {
+          exposed: ["ping"],
+          suppressed: []
+        },
+        capabilities: [
+          { name: "ping", risk: "read", summary: "B ping" }
+        ]
+      },
       workspace: {
         current: { id: "business", label: "B Workspace", root: "C:\\b", kind: "git-project" },
         all: [
@@ -244,20 +252,21 @@ const renderFixture = {
       plugins: [
         { id: "matlab", label: "MATLAB / Simulink", version: "2.2.0", apiVersion: "1", enabled: true, state: "stopped", activeForWorkspace: false, capabilityNames: [], downstreamIds: ["matlab"] }
       ],
-      downstream: []
+      downstream: [{
+        id: "matlab-b",
+        label: "B MATLAB",
+        available: true,
+        enabled: true,
+        configured: true,
+        connected: true,
+        workspaceBinding: "active",
+        boundWorkspaceId: "business"
+      }],
+      logTail: ["B tunnel line"]
     }
   },
-  git: {
-    available: true,
-    branch: "feat/test",
-    dirty: false,
-    ahead: 0,
-    behind: 0,
-    counts: { staged: 0, modified: 0, untracked: 0, conflicted: 0 },
-    files: [],
-    diffStat: { unstaged: "", staged: "" }
-  },
-  logTail: [],
+  git: { A: {}, B: {} },
+  logTail: { A: ["A tunnel line"], B: ["B tunnel line"] },
   operator: {}
 };
 const browserRequests: Array<{ path: string; method: string; body?: string }> = [];
@@ -274,9 +283,7 @@ const browserContext = vm.createContext({
       status: 200,
       json: async () => requestPath === "/api/status"
         ? renderFixture
-        : requestPath === "/api/workspace/pick"
-          ? { selected: true, path: "C:\\picked" }
-          : requestPath.endsWith("/reference/pick")
+        : requestPath.endsWith("/reference/pick")
             ? { selected: true, path: "C:\\picked-reference" }
             : {}
     };
@@ -305,6 +312,43 @@ check(
   domElement("topBGit").textContent.includes("main") &&
   domElement("topBGit").textContent.includes("clean")
 );
+check(
+  "operator: MCP status panels render Runtime A and B independently",
+  domElement("mcpAStatusSummary").innerHTML.includes("developer-a") &&
+    domElement("mcpAProfileSource").textContent === "env-a" &&
+    domElement("mcpADeviceId").textContent === "device-a" &&
+    domElement("mcpBStatusSummary").innerHTML.includes("readonly-b") &&
+    domElement("mcpBProfileSource").textContent === "env-b" &&
+    domElement("mcpBDeviceId").textContent === "device-b"
+);
+check(
+  "operator: Downstream panels do not cross Runtime slots",
+  domElement("downstreamARows").innerHTML.includes("A MATLAB") &&
+    !domElement("downstreamARows").innerHTML.includes("B MATLAB") &&
+    domElement("downstreamBRows").innerHTML.includes("B MATLAB") &&
+    !domElement("downstreamBRows").innerHTML.includes("A MATLAB")
+);
+check(
+  "operator: Tool Surface panels do not cross Runtime slots",
+  domElement("toolAGroups").innerHTML.includes("device_info") &&
+    !domElement("toolAGroups").innerHTML.includes(">ping<") &&
+    domElement("suppressedATools").innerHTML.includes("fs_write") &&
+    domElement("toolBGroups").innerHTML.includes(">ping<") &&
+    !domElement("toolBGroups").innerHTML.includes("device_info"),
+  JSON.stringify({
+    A: domElement("toolAGroups").innerHTML,
+    ASuppressed: domElement("suppressedATools").innerHTML,
+    B: domElement("toolBGroups").innerHTML
+  })
+);
+check(
+  "operator: Tunnel logs are Runtime scoped",
+  domElement("logsA").textContent.includes("A tunnel line") &&
+    !domElement("logsA").textContent.includes("B tunnel line") &&
+    domElement("logsB").textContent.includes("B tunnel line") &&
+    !domElement("logsB").textContent.includes("A tunnel line")
+);
+
 check(
   "operator: detailed Git panels render Runtime A and B independently",
   domElement("gitASummary").innerHTML.includes("feat/runtime-a") &&
@@ -342,10 +386,11 @@ check(
 );
 
 check(
-  "operator: lazy downstream is rendered as READY with auto-connect hint",
-  domElement("downstreamRows").innerHTML.includes("READY") &&
-  domElement("downstreamRows").innerHTML.includes("首次调用时自动连接") &&
-  !domElement("downstreamRows").innerHTML.includes(">configured<")
+  "operator: Runtime A lazy downstream is READY and Runtime B connected state is independent",
+  domElement("downstreamARows").innerHTML.includes("READY") &&
+    domElement("downstreamARows").innerHTML.includes("首次调用时自动连接") &&
+    domElement("downstreamBRows").innerHTML.includes("CONNECTED") &&
+    !domElement("downstreamARows").innerHTML.includes(">configured<")
 );
 
 browserRequests.length = 0;
@@ -750,28 +795,20 @@ try {
     );
 
     const statusOverview = await operatorOverview() as any;
-    const guiData = statusOverview?.connection?.bridge?.data;
     check(
-      "operator: status overview satisfies GUI render contract",
+      "operator: status overview satisfies slot-native GUI render contract",
       typeof statusOverview?.timestamp === "string" &&
       typeof statusOverview?.connection?.connected === "boolean" &&
-      statusOverview?.connection?.bridge?.online === true &&
+      typeof statusOverview?.connection?.slots?.A?.bridge?.online === "boolean" &&
+      typeof statusOverview?.connection?.slots?.B?.bridge?.online === "boolean" &&
       Array.isArray(statusOverview?.connection?.processes) &&
-      typeof statusOverview?.git === "object" &&
-      Array.isArray(statusOverview?.logTail) &&
-      typeof guiData?.device?.deviceId === "string" &&
-      typeof guiData?.mcp?.profile === "string" &&
-      typeof guiData?.mcp?.profileSource === "string" &&
-      Array.isArray(guiData?.mcp?.exposure?.exposed) &&
-      Array.isArray(guiData?.mcp?.exposure?.suppressed) &&
-      Array.isArray(guiData?.mcp?.capabilities) &&
-      typeof guiData?.workspace?.current?.id === "string" &&
-      Array.isArray(guiData?.workspace?.all) &&
-      Array.isArray(guiData?.plugins) &&
-      Array.isArray(guiData?.downstream) &&
-      Array.isArray(guiData?.activity) &&
-      Array.isArray(guiData?.liveActivity) &&
-      Array.isArray(guiData?.recovery),
+      typeof statusOverview?.git?.A === "object" &&
+      typeof statusOverview?.git?.B === "object" &&
+      Array.isArray(statusOverview?.logTail?.A) &&
+      Array.isArray(statusOverview?.logTail?.B) &&
+      typeof statusOverview?.slots?.A === "object" &&
+      typeof statusOverview?.slots?.B === "object" &&
+      !("bridge" in statusOverview.connection && "data" in (statusOverview.connection.bridge ?? {})),
       JSON.stringify(statusOverview)
     );
 

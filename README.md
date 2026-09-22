@@ -940,22 +940,25 @@ npm run build
 PASS
 
 POLICY_PROFILES_OK
-249 checks
+251 checks
 
 PROFILE_EXPOSURE_OK
 161 checks
 
+HTTP_REVIEWER_OK
+55 checks
+
 FOUNDATION_OK
 40 checks
 
-OPERATOR_CONSOLE_OK
-53 checks
+GIT_MUTATIONS_OK
+13 checks
 
-HTTP_REVIEWER_OK
-53 checks
+OPERATOR_CONSOLE_OK
+58 checks
 
 OUTPUT_SCHEMA_OK
-69 checks
+177 checks
 
 PLUGIN_FRAMEWORK_OK
 35 checks
@@ -979,7 +982,7 @@ PLUGIN_API_V1_OK
 - Refresh Token；
 - Public HTTPS Quick Tunnel；
 - Gemini Connected App；
-- MCP ToolAnnotations；
+- MCP ToolAnnotations，并对全部 Core tools 的 `tools/list` annotations 做协议层回归；
 - Gemini 对真实 P02 工程执行 Git / 文档审查。
 
 ---

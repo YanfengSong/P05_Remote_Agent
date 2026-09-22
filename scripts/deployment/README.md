@@ -128,6 +128,14 @@ Runtime state is persistent under `.p05/runtime-<slot>/state` for configured slo
 - `run-operator.ps1`: starts Operator directly, without Task Scheduler.
 - `open-operator.ps1`: ensures Operator is running and opens the browser.
 
+Optional host-task helpers may still provision `P05-Runtime` and
+`P05-Operator` for manual/on-demand host integration, but current P05 does not
+install or require a RestartBroker task. Runtime restart uses the repo-local
+slot scripts above.
+
+`uninstall-host-tasks.ps1` also removes the historical
+`P05-RestartBroker` name as upgrade cleanup for older installations.
+
 The legacy names `run-runtime.ps1`, `run-runtime-b.ps1` and
 `restart-runtime.ps1` are thin wrappers around the slot scripts.
 

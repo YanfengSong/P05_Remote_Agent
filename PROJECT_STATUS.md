@@ -1,13 +1,15 @@
 ﻿# Project Status
 
-Updated: 2026-09-20
+Updated: 2026-09-22
 
 ## Baseline
 
 Version: **0.3.1**
-Branch: **main**
 Repository: **YanfengSong/P05_Remote_Agent**
-Milestone: **Foundation V2 operational**
+Release integration target: **develop -> main**
+Review-fix staging branch: **plugins**
+Main merge: **pending external-review closure**
+Milestone: **Foundation V2 operational / final integration review closure**
 
 P05 is now a multi-Workspace remote engineering Agent platform rather than a tool collection tied to the P05 source directory.
 
@@ -105,13 +107,14 @@ All current Core MCP tools advertise object-root `outputSchema` and return match
 Legacy text content is retained for compatibility.
 
 Regression:
-- `OUTPUT_SCHEMA_OK (71 checks)`;
-- full + temporary tool surface is checked for output schemas;
+- `OUTPUT_SCHEMA_OK (177 checks)`;
+- the current exposed Core tool surface is checked for output schemas;
+- every Core tool's MCP `ToolAnnotations` is verified against Capability Catalog risk/scope metadata at the real `tools/list` protocol boundary;
 - representative tools are called and verified to return structured objects.
 
 ### Operator Console
 
-V2 local Operator Console is implemented on the `feat/v2-operator-console` branch.
+V2 local Operator Console is integrated into the current Foundation V2 baseline.
 
 Implemented:
 - independent loopback GUI process on `127.0.0.1:56301`;
@@ -119,18 +122,18 @@ Implemented:
 - GUI survives P05 MCP/Tunnel restart;
 - local token-protected control bridge from MCP runtime to GUI;
 - live Workspace selection;
-- Runtime/Tunnel/MCP/process status;
-- structured Git visibility;
-- Plugin/downstream visibility;
+- Runtime A/B-independent Runtime, Workspace, MCP and Tunnel status;
+- Runtime A/B-independent structured Git visibility;
+- Runtime A/B-independent Plugin/downstream visibility;
 - persistent Audit/Recovery;
 - memory-only sanitized Live Activity;
 - MCP capability/exposure visibility;
 - one-click local launcher.
 
 Current automated regression:
-- `OPERATOR_CONSOLE_OK (53 checks)`.
+- `OPERATOR_CONSOLE_OK (58 checks)`.
 
-Latest merge-prep validation on this host executes **677 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
+Latest external-review-closure validation on this host executes **794 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -211,13 +214,13 @@ Latest full verification:
     ACTION check                  PASS
     ACTION build                  PASS
     DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            249 checks
+    POLICY_PROFILES_OK            251 checks
     PROFILE_EXPOSURE_OK           161 checks
-    HTTP_REVIEWER_OK              53 checks
+    HTTP_REVIEWER_OK              55 checks
     FOUNDATION_OK                 40 checks
     GIT_MUTATIONS_OK              13 checks
-    OPERATOR_CONSOLE_OK           53 checks
-    OUTPUT_SCHEMA_OK              69 checks
+    OPERATOR_CONSOLE_OK           58 checks
+    OUTPUT_SCHEMA_OK              177 checks
     PLUGIN_FRAMEWORK_OK           35 checks
     PLUGIN_API_V1_OK              4 checks
 
@@ -266,11 +269,17 @@ The research-backed target adds:
 V3-A remains one possible early implementation slice and MUST conform to the complete V3 contracts rather than define
 or narrow them.
 
-## Working tree
+## Integration / working tree
 
-Foundation V1, Git mutation and Foundation V2 work are still part of the current uncommitted working tree.
+The previously validated feature integration is already represented in `develop`;
+`main` has not yet been updated.
 
-`main` was already ahead of `origin/main` before this sequence. Review commit history before push.
+Current external-review closure fixes are being staged on `plugins` and must be
+re-integrated into `develop` after all blocking findings are closed and the full
+verification suite passes again.
+
+Do not infer release readiness from the checked-out branch name alone. The release
+gate is the verified `develop -> main` integration state.
 ## Plugin architecture references
 
 - `docs/architecture/PLUGIN-FRAMEWORK.md`

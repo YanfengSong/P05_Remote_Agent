@@ -28,6 +28,33 @@ function check(label: string, condition: boolean, detail = ""): void {
   if (!condition) throw new Error(`FAIL ${label}${detail ? " -> " + detail : ""}`);
 }
 
+const envExample = await fs.readFile(path.join(repo, ".env.example"), "utf8");
+const reviewerConfigSources = (
+  await Promise.all([
+    fs.readFile(path.join(repo, "src", "http-reviewer.ts"), "utf8"),
+    fs.readFile(path.join(repo, "src", "http", "reviewer.ts"), "utf8")
+  ])
+).join("\n");
+const reviewerEnvNames = [
+  ...new Set(
+    [...reviewerConfigSources.matchAll(/P05_HTTP_REVIEWER_[A-Z_]+/g)]
+      .map((match) => match[0])
+  )
+].sort();
+
+check(
+  "http reviewer: every implemented environment variable is documented in .env.example",
+  reviewerEnvNames.length > 0 &&
+    reviewerEnvNames.every((name) => envExample.includes(name + "=")),
+  reviewerEnvNames.filter((name) => !envExample.includes(name + "=")).join(", ")
+);
+check(
+  "http reviewer: .env.example does not enable reviewer secrets",
+  !envExample.split(/\r?\n/).some((line) =>
+    /^P05_HTTP_REVIEWER_(TOKEN|OAUTH_CLIENT_SECRET)=/.test(line.trim())
+  )
+);
+
 async function waitForReady(
   stderr: NodeJS.ReadableStream,
   timeoutMs = 15_000

@@ -23,7 +23,6 @@ import { runtimeRestartInvocation } from "../tools/runtime.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
 delete process.env.REMOTE_AGENT_DEFAULT_CWD;
-delete process.env.P05_OPERATOR_RESTART_TASK;
 
 let checks = 0;
 
@@ -160,6 +159,22 @@ check("spec: lookup returns undefined for an unknown tool", specFor("nope") === 
     "runtime-restart: slot B is fixed",
     b.args.includes("-Slot") && b.args.includes("B"),
     b.args.join(" ")
+  );
+  check(
+    "runtime-restart: does not invoke Task Scheduler or RestartBroker",
+    !/schtasks|RestartBroker/i.test(a.args.join(" ")) &&
+      !/schtasks|RestartBroker/i.test(b.args.join(" ")),
+    [a.args.join(" "), b.args.join(" ")].join(" | ")
+  );
+  const testDir = path.dirname(fileURLToPath(import.meta.url));
+  const testRepo = path.resolve(testDir, "..", "..");
+  const hostTaskInstaller = await readFile(
+    path.join(testRepo, "scripts", "deployment", "install-host-tasks.ps1"),
+    "utf8"
+  );
+  check(
+    "deployment: host task installer does not provision RestartBroker",
+    !/P05-RestartBroker|P05_OPERATOR_RESTART_TASK|restartTask|restartName/.test(hostTaskInstaller)
   );
   throws(
     "runtime-restart: invalid slot is refused",
