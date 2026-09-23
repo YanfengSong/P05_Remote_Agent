@@ -97,6 +97,8 @@ try {
     );
   }
 
+  // Runtime-confirmed tools are covered by permission tests. These samples validate
+  // structuredContent only for calls that are expected to execute without confirmation.
   const samples: Array<[string, Record<string, unknown>]> = [
     ["device_info", {}],
     ["ping", {}],
@@ -109,7 +111,6 @@ try {
     ["fs_read", { path: "README.md" }],
     ["git_status", {}],
     ["git_diff_stat", {}],
-    ["command_run", { action: "check" }],
     ["shell_run", { command: "Write-Output p05-structured-output" }],
     ["mcp_status", {}]
   ];

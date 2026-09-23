@@ -11,6 +11,10 @@ import {
 import { summarizeToolInput } from "../monitor/live-activity.js";
 import type { ExecutionRuntime } from "../runtime/execution.js";
 import {
+  permissionErrorMessage,
+  type ToolPermissionBroker
+} from "./permission-broker.js";
+import {
   assertToolDeclared,
   toolDecision,
   toolProfileReport,
@@ -50,7 +54,6 @@ export type Exposer = {
   report(): ToolProfileReport;
 };
 
-
 function capabilityAnnotations(
   name: string,
   catalog: CapabilityCatalog
@@ -73,7 +76,8 @@ export function createExposer(
   profile: ToolProfile,
   profileSource: ProfileSource,
   runtime?: ExecutionRuntime,
-  catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG
+  catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG,
+  permissionBroker?: ToolPermissionBroker
 ): Exposer {
   const exposed: string[] = [];
   const suppressed: { tool: string; reason: string }[] = [];
@@ -88,6 +92,13 @@ export function createExposer(
         throw new Error(
           `Tool "${name}" is not exposed by profile "${profile}": ${decision.reason}.`
         );
+      }
+
+      if (permissionBroker) {
+        const authorization = await permissionBroker.authorize(name, args[0]);
+        if (authorization.state !== "allowed") {
+          throw new Error(permissionErrorMessage(name, authorization));
+        }
       }
 
       const operation = () =>

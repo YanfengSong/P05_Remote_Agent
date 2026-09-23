@@ -1,6 +1,6 @@
 # ADR-0008 — Developer Shell Trust Model
 
-Status: Retired / Superseded
+Status: Retired / Superseded by ADR-0020
 Date: 2026-09-20
 Retired: 2026-09-22
 
@@ -40,7 +40,7 @@ Therefore `developer` must no longer expose unrestricted `shell_run`.
 
 ## Current decision
 
-`shell_run` is exposed only at the `full` profile.
+`shell_run` is no longer exposed as an unrestricted developer shell. ADR-0019 introduced the intermediate Workspace-aware Shell Approval Gate; ADR-0020 supersedes that Shell-specific architecture with the common Tool Permission Broker while retaining conservative Shell handling and one-shot Local Operator approval.
 
 The normal `developer` profile keeps structured and allowlisted development
 capabilities, including:

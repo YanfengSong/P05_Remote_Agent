@@ -15,9 +15,10 @@ import { PluginRegistry } from "./plugin/registry.js";
 import { PluginRuntime } from "./plugin/runtime.js";
 import { createExposer, logExposure } from "./policy/expose.js";
 import { resolveToolProfile } from "./policy/tool-profile.js";
+import { ToolPermissionBroker } from "./policy/permission-broker.js";
 import { BUILTIN_PLUGINS } from "./plugins/builtins.js";
 import { ExecutionRuntime } from "./runtime/execution.js";
-import { p05StatePath } from "./state.js";
+import { p05StateDir, p05StatePath } from "./state.js";
 import { registerControlTools } from "./tools/register-control.js";
 import { registerExecutionTools } from "./tools/register-execution.js";
 import { registerFsTools } from "./tools/register-fs.js";
@@ -155,12 +156,19 @@ serveStdio(() => {
       ...(runtimeSlot ? { runtimeSlot } : {})
     }
   );
+  const permissionBroker = new ToolPermissionBroker({
+    stateDir: p05StateDir(),
+    runtimeSlot,
+    workspaceManager,
+    capabilityCatalog
+  });
   const exposer = createExposer(
     server,
     profile,
     profileSource,
     executionRuntime,
-    capabilityCatalog
+    capabilityCatalog,
+    permissionBroker
   );
 
   registerDeviceTools(exposer);

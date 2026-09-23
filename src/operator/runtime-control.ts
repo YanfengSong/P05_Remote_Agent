@@ -61,6 +61,10 @@ function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
   return makeRuntimeSlot(slot, slotConnector(slot));
 }
 
+export function runtimeSlotStateDir(slot: RuntimeSlotId): string {
+  return runtimeSlotConfig(slot).stateDir;
+}
+
 const ACTIVE_WORKSPACE_BINDING_FILE = "active-workspace.txt";
 
 export function persistRuntimeSlotWorkspace(

@@ -20,6 +20,7 @@ import {
   toolProfileReport
 } from "../policy/tool-profile.js";
 import { runtimeRestartInvocation } from "../tools/runtime.js";
+import { DEFAULT_CAPABILITY_CATALOG } from "../capability/registry.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
 delete process.env.REMOTE_AGENT_DEFAULT_CWD;
@@ -56,10 +57,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
 const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
-// Arbitrary downstream execution, external Git push and unrestricted PowerShell
-// stay at `full`. Developer keeps only structured/allowlisted execution paths.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status"];
-const FULL_TOOLS = [...DEVELOPER_TOOLS, "shell_run", "mcp_call_tool", "git_push"];
+// shell_run is developer-visible but every call passes the common Tool Permission Broker.
+// Generic downstream execution and external Git push remain full-only.
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
 for (const spec of TOOL_SPECS) {
@@ -115,9 +116,9 @@ check("DoD: discovery is exactly device_info + ping",
 check("matrix: the generic downstream proxy sits at full", specFor("mcp_call_tool")?.minProfile === "full");
 check("matrix: developer cannot reach the generic downstream proxy", !isToolAllowed("developer", "mcp_call_tool"));
 check("matrix: full can reach the generic downstream proxy", isToolAllowed("full", "mcp_call_tool"));
-check("matrix: shell_run sits at full", specFor("shell_run")?.minProfile === "full");
-check("matrix: developer cannot reach shell_run", !isToolAllowed("developer", "shell_run"));
-check("matrix: full can reach shell_run", isToolAllowed("full", "shell_run"));
+check("matrix: shell_run sits at developer", specFor("shell_run")?.minProfile === "developer");
+check("matrix: developer can reach gated shell_run", isToolAllowed("developer", "shell_run"));
+check("matrix: readonly cannot reach shell_run", !isToolAllowed("readonly", "shell_run"));
 check("matrix: readonly can inspect workspaces", isToolAllowed("readonly", "workspace_list") && isToolAllowed("readonly", "workspace_current"));
 check("matrix: remote workspace switch is not a capability", specFor("workspace_switch") === undefined);
 check("matrix: activity is readonly", isToolAllowed("readonly", "activity_recent"));
@@ -133,12 +134,12 @@ for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
   }
 }
 
-check("decision: a suppressed tool explains the required profile",
-  toolDecision("developer", "shell_run").reason.includes('"full"'),
-  toolDecision("developer", "shell_run").reason);
-check("decision: an allowed full tool says so", toolDecision("full", "shell_run").allowed);
+check("decision: readonly shell suppression explains developer requirement",
+  toolDecision("readonly", "shell_run").reason.includes('"developer"'),
+  toolDecision("readonly", "shell_run").reason);
+check("decision: developer allows the gated shell tool", toolDecision("developer", "shell_run").allowed);
 throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "rm_rf_everything"), "not declared");
-check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "full");
+check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "developer");
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
 
 // ---------------------------------------------------------------- repo-local runtime restart
@@ -187,6 +188,109 @@ check("spec: lookup returns undefined for an unknown tool", specFor("nope") === 
 // ---------------------------------------------------------------- dangerous commands
 process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const { assertAllowedPath, assertPathShape, assertSafeCommand, protectionReason } = await import("../security.js");
+const { permissionDecision } = await import("../policy/permission.js");
+
+// ---------------------------------------------------------------- V2 common permission policy
+{
+  const workspaceRoot = path.resolve(".");
+  const allowRead = await permissionDecision(
+    "fs_read",
+    { path: "README.md" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: structured read defaults ALLOW", allowRead.mode === "allow");
+
+  const allowWrite = await permissionDecision(
+    "fs_write",
+    { path: "README.md", content: "x" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: structured Workspace write defaults ALLOW", allowWrite.mode === "allow");
+
+  const commandRun = await permissionDecision(
+    "command_run",
+    { action: "check" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: mutable repository validation defaults CONFIRM", commandRun.mode === "confirm");
+
+  const restart = await permissionDecision(
+    "runtime_restart",
+    {},
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: Runtime lifecycle defaults CONFIRM", restart.mode === "confirm");
+
+  const push = await permissionDecision(
+    "git_push",
+    { remote: "origin" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: external Git push defaults CONFIRM", push.mode === "confirm");
+
+  const genericMcp = await permissionDecision(
+    "mcp_call_tool",
+    { server: "matlab", tool: "model_edit" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: generic downstream MCP execution defaults CONFIRM", genericMcp.mode === "confirm");
+
+  const matlabRead = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "model_read", arguments: { model: "Example.slx", scope: "root", depth: "0" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: known MATLAB read tool defaults ALLOW", matlabRead.mode === "allow");
+
+  const matlabEdit = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "model_edit", arguments: { model: "Example.slx" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: MATLAB model mutation defaults CONFIRM", matlabEdit.mode === "confirm");
+
+  const matlabCode = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "evaluate_matlab_code", arguments: { code: "disp(1)" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary MATLAB code defaults CONFIRM", matlabCode.mode === "confirm");
+
+  const safeShell = await permissionDecision(
+    "shell_run",
+    { command: "Get-Date", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: known shell diagnostic defaults ALLOW", safeShell.mode === "allow");
+
+  const unknownShell = await permissionDecision(
+    "shell_run",
+    { command: "python script.py", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary shell execution defaults CONFIRM", unknownShell.mode === "confirm");
+
+  const destructiveShell = await permissionDecision(
+    "shell_run",
+    { command: "Clear-Disk -Number 0", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: catastrophic shell operation is DENY", destructiveShell.mode === "deny");
+}
+
+
 
 for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\Software", "Remove-Item -Recurse -Force C:\\Data", "rm -rf /"]) {
   throws(`command: "${command}" is denied`, () => assertSafeCommand(command), "blocked by safety policy");

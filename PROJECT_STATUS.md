@@ -1,6 +1,6 @@
 ﻿# Project Status
 
-Updated: 2026-09-22
+Updated: 2026-09-23
 
 ## Baseline
 
@@ -55,6 +55,13 @@ Descriptors carry:
 - optional gate.
 
 Application-plugin capabilities are declared in their plugin manifest and merged into the session catalog.
+
+V2 call-time permission is now centralized through the common Tool Permission Broker (ADR-0020):
+- `ALLOW` — execute immediately;
+- `CONFIRM` — Local Operator one-time approval;
+- `DENY` — refuse the operation.
+
+The Broker is a permission-subsystem refactor only; Runtime A/B, Workspace, Reference, Plugin and Downstream architectures are unchanged.
 
 ### Registration
 
@@ -131,9 +138,9 @@ Implemented:
 - one-click local launcher.
 
 Current automated regression:
-- `OPERATOR_CONSOLE_OK (60 checks)`.
+- `OPERATOR_CONSOLE_OK (68 checks)`.
 
-Latest external-review-closure validation on this host executes **797 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
+Latest external-review-closure validation on this host executes **850 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -170,10 +177,10 @@ Workspace switching changes active-bound downstream context and triggers reconne
 - command_run
 - runtime_restart
 - mcp_status / mcp_list_tools
+- shell_run (common Tool Permission Broker; small allowlist, CONFIRM for complex/arbitrary execution, DENY for catastrophic patterns)
 
 ### full
 - all developer capabilities
-- shell_run
 - git_push
 - mcp_call_tool
 
@@ -191,42 +198,45 @@ Implemented and tested:
 
 No structured force push or arbitrary refspec is exposed.
 
-## Shell boundary
+## Permission / Shell boundary
 
-`developer` no longer exposes `shell_run`. Normal remote development is limited
-to structured Workspace tools and server-side allowlisted `command_run` actions.
+ADR-0020 replaces the Shell-specific approval subsystem with one common Tool Permission Broker.
 
-`shell_run` is full-profile only and still follows the trusted-terminal model.
+Current V2 behavior:
+- structured read and Workspace-local structured mutation remain low-friction `ALLOW` paths;
+- `command_run`, `runtime_restart`, `git_push`, generic downstream execution, and mutating/arbitrary-code MATLAB tools are `CONFIRM`;
+- known MATLAB/Simulink read-only subtools are `ALLOW`;
+- `shell_run` uses a small Workspace-safe allowlist, `CONFIRM` for complex/arbitrary execution, and `DENY` for catastrophic disk/root destructive patterns;
+- approval is bound to exact Runtime + Workspace + Tool + Operation + canonicalized arguments;
+- approval expires after 15 minutes and is consumed before one execution.
 
-Technical boundary:
-- initial cwd must be inside active Workspace.
-
-Not yet a technical boundary:
-- a full-profile PowerShell command can use Windows-user authority outside that Workspace.
-
-Target invariant:
-- persistent outside-Workspace filesystem mutation requires explicit local human approval.
-
-Hard enforcement for arbitrary shell execution requires OS isolation or a local
-execution/approval broker; command blocklists are guard rails only.
+The Runtime cannot approve its own request. Shell uses the same common permission envelope and Tool Approval store as the other sensitive capabilities; it no longer owns a separate approval contract.
 
 ## Validation
 
-Latest full verification:
+Latest full verification after the current permission refactor:
 
     ACTION verify                 PASS
-    ACTION check                  PASS
+    Runtime B audit state         succeeded
+    Runtime B verify duration     ~67.8 s
+
+Latest targeted permission regression:
+
     ACTION build                  PASS
-    DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            250 checks
-    PROFILE_EXPOSURE_OK           163 checks
-    HTTP_REVIEWER_OK              55 checks
-    FOUNDATION_OK                 40 checks
-    GIT_MUTATIONS_OK              13 checks
-    OPERATOR_CONSOLE_OK           60 checks
-    OUTPUT_SCHEMA_OK              177 checks
+    POLICY_PROFILES_OK            264 checks
+    PROFILE_EXPOSURE_OK           195 checks
+    OPERATOR_CONSOLE_OK           68 checks
+    OUTPUT_SCHEMA_OK              176 checks
     PLUGIN_FRAMEWORK_OK           35 checks
-    PLUGIN_API_V1_OK              4 checks
+
+Live Tool Approval acceptance:
+
+    Runtime B                    PASS
+    Runtime A                    PASS
+
+Both live Runtime checks verified: CONFIRM before execution -> Local Operator
+one-time approval -> exact retry executes -> approval consumed before execution ->
+subsequent identical call creates a new approval request.
 
 Key V2 acceptance verified:
 - cross-Workspace absolute structured write refused;
@@ -247,11 +257,9 @@ Key V2 acceptance verified:
 
 ## Remaining foundation boundary
 
-The major residual security boundary is arbitrary shell.
+V2 now has a common Tool Permission Broker, but it is not an OS sandbox.
 
-P05 intentionally does not pretend a command blacklist can sandbox PowerShell.
-
-A future Approval/Execution Broker or OS-isolated worker can add hard containment without changing the Foundation V2 contracts.
+The remaining hard-containment gaps are arbitrary-code isolation, a unified hard execution boundary, and trusted/immutable build-test-restart runners. These are V3 requirements. P05 intentionally does not expand the V2 Shell parser or Permission Broker into a substitute for those mechanisms.
 
 ## Architecture V3 research baseline
 

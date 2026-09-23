@@ -1,5 +1,6 @@
 import http from "node:http";
 import { randomBytes } from "node:crypto";
+import { decideToolApproval, listToolApprovals, toolApprovalView } from "../approval/tool-approval.js";
 import {
   bridgeRequestForSlot,
   chooseWorkspaceFolder,
@@ -8,7 +9,8 @@ import {
   operatorConfigView,
   operatorOverview,
   persistRuntimeSlotWorkspace,
-  restartRuntimeSlot
+  restartRuntimeSlot,
+  runtimeSlotStateDir
 } from "./runtime-control.js";
 import { operatorPage } from "./ui.js";
 
@@ -106,8 +108,12 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/status") {
       const overview = await operatorOverview();
+      const approvals = (["A", "B"] as const).flatMap((slot) =>
+        listToolApprovals(runtimeSlotStateDir(slot), slot).map(toolApprovalView)
+      );
       json(response, 200, {
         ...overview,
+        approvals,
         operator: {
           startedAt,
           pid: process.pid,
@@ -115,6 +121,25 @@ const server = http.createServer(async (request, response) => {
           port: PORT,
           config: operatorConfigView
         }
+      });
+      return;
+    }
+
+    const approvalMatch = url.pathname.match(
+      /^\/api\/approval\/(A|B)\/([a-f0-9-]{36})\/(approve|deny)$/
+    );
+    if (request.method === "POST" && approvalMatch) {
+      const slot = approvalMatch[1] as "A" | "B";
+      const approvalId = approvalMatch[2]!;
+      const action = approvalMatch[3] as "approve" | "deny";
+      const record = decideToolApproval(
+        runtimeSlotStateDir(slot),
+        approvalId,
+        action
+      );
+      json(response, 200, {
+        ok: true,
+        ...toolApprovalView(record)
       });
       return;
     }

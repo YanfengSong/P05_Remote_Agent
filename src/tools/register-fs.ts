@@ -3,6 +3,7 @@ import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { listDirectory, patchTextFile, readTextFile, writeTextFile } from "./files.js";
 import { structuredResult } from "./result.js";
+import { assertWorkspaceWriteTarget } from "./write-target.js";
 
 export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceManager): void {
   exposer.expose("fs_read", {
@@ -22,7 +23,15 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
       bytes: z.number().int().nonnegative()
     })
   }, async ({ path: targetPath, content }) => {
-    const { bytes } = await writeTextFile(targetPath, content, workspaceManager.currentRoot());
+    await assertWorkspaceWriteTarget(
+      targetPath,
+      workspaceManager.currentRoot()
+    );
+    const { bytes } = await writeTextFile(
+      targetPath,
+      content,
+      workspaceManager.currentRoot()
+    );
     return structuredResult(
       { path: targetPath, bytes },
       `Wrote ${bytes} bytes to ${targetPath}`
@@ -43,6 +52,10 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
       sha256: z.string().regex(/^[a-fA-F0-9]{64}$/)
     })
   }, async ({ path, expected_sha256, old_text, new_text }) => {
+    await assertWorkspaceWriteTarget(
+      path,
+      workspaceManager.currentRoot()
+    );
     const result = await patchTextFile(
       path,
       expected_sha256,

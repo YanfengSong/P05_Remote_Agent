@@ -683,8 +683,8 @@ P05 使用累计权限 Profile，并 fail closed。
 |---|---|
 | `discovery` | `device_info`, `ping` |
 | `readonly` | Workspace awareness、Reference、Audit、Recovery、Plugin 查询、文件读取、Git status/diff |
-| `developer` | readonly + 文件修改、Git 本地修改、allowlisted validation、Runtime restart、downstream discovery |
-| `full` | developer + `shell_run` + `git_push` + generic downstream tool call |
+| `developer` | readonly + 文件修改、Git 本地修改、permission-gated validation/Runtime restart、downstream discovery、brokered `shell_run` |
+| `full` | developer + `git_push` + generic downstream tool call |
 
 重要：
 
@@ -696,46 +696,41 @@ Workspace 授权只能由 Local Operator 控制。
 
 ## 11. 权限模型
 
-当前 P05 的核心边界：
-
-### Workspace
+V2 采用统一 Tool Permission Broker。Tool Profile 先决定“这个工具是否可见”，具体调用再判定：
 
 ```text
-Human-authorized
-Read / Write / Git / Plugin
-Unrestricted Shell only when full profile is explicitly selected
+ALLOW   -> 直接执行
+CONFIRM -> Local Operator 单次审批
+DENY    -> 直接拒绝
 ```
 
-### Reference Root
+### Workspace / Reference
 
-```text
-Human-authorized
-Read / List only
-```
+结构化文件、Git、Reference Root 继续使用原有 Workspace/Reference 边界；Permission Broker 不替代路径授权。Workspace 内结构化读写保持低摩擦，Reference Root 仍然只读。
 
-### Remote Agent
+### 需要确认的 V2 操作
 
-```text
-Cannot expand Workspace authority
-Cannot authorize Reference Root
-Cannot switch Runtime Workspace
-```
+- `command_run`：执行当前仓库构建/测试代码；
+- `runtime_restart`：改变 Runtime 生命周期；
+- `git_push`：修改外部远程仓库；
+- generic `mcp_call_tool`：Core 无法保证下游工具没有副作用；
+- MATLAB/Simulink 的 `model_edit`、`evaluate_matlab_code` 等修改/代码执行工具；
+- 未知、动态、复合或任意 `shell_run`。
+
+已知 MATLAB/Simulink 只读工具以及结构化只读操作可以 `ALLOW`。
 
 ### Shell
 
-`developer` 不再暴露 `shell_run`。任意 PowerShell 仅在显式选择
-`full` Profile 时暴露。
+Shell 不再拥有独立审批子系统，也不继续扩展为完整 PowerShell 语义分析器。它只是统一 Broker 的一个策略适配器：
 
-`full` 下的 `shell_run` 仍采用 trusted-user 模型：
+- 小范围明确只读命令可 `ALLOW`；
+- 少量显式 Workspace-local 文件操作在路径/链接检查通过后可 `ALLOW`；
+- 复杂、任意或无法证明安全的命令 → `CONFIRM`；
+- 明确的磁盘/根目录灾难性操作 → `DENY`。
 
-- 起始 cwd 受 Workspace 边界约束；
-- PowerShell 实际拥有当前 Windows 用户权限；
-- 不是 OS Sandbox。
+审批绑定 Runtime + Workspace + Tool + Operation + 精确参数，15 分钟过期，并在执行前消费一次。Operator 会显示用途、触发审批原因和经过脱敏的调用摘要。
 
-因此：
-
-> Structured developer tools 已有严格 Workspace boundary；把 shell 移到 full 是立即止血，
-> 最终目标仍是通过本地审批/OS 边界强制实现“Workspace 外持久化修改必须人工批准”。
+OS-level Sandbox、统一硬执行边界和可信/不可变 Runner 属于 V3，不在 V2 中通过扩大命令解析器实现。
 
 ---
 
@@ -945,10 +940,10 @@ npm run build
 PASS
 
 POLICY_PROFILES_OK
-250 checks
+252 checks
 
 PROFILE_EXPOSURE_OK
-163 checks
+182 checks
 
 HTTP_REVIEWER_OK
 55 checks
@@ -960,7 +955,7 @@ GIT_MUTATIONS_OK
 13 checks
 
 OPERATOR_CONSOLE_OK
-60 checks
+63 checks
 
 OUTPUT_SCHEMA_OK
 177 checks

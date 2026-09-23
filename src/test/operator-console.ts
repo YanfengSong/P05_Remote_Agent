@@ -65,6 +65,24 @@ check(
     !operatorServerSource.includes('url.pathname === "/api/workspace/register"')
 );
 check(
+  "operator: tool approval decisions are exposed only through token-protected Operator API",
+  operatorServerSource.includes("approvalMatch") &&
+    operatorServerSource.includes("decideToolApproval") &&
+    operatorServerSource.includes("listToolApprovals")
+);
+check(
+  "operator: approval payload uses the canonical ToolApprovalView contract",
+  operatorServerSource.includes("toolApprovalView") &&
+    !operatorServerSource.includes('command: [') &&
+    !operatorServerSource.includes('cwd: "-"')
+);
+check(
+  "operator: approve/deny responses reuse the same ToolApprovalView contract",
+  operatorServerSource.includes("...toolApprovalView(record)") &&
+    !operatorServerSource.includes("id: record.id")
+);
+
+check(
   "operator: obsolete Runtime A-only workspace main view is removed",
   !renderedPage.includes("Runtime A Workspace · 主视图") &&
     renderedPage.includes('<section class="card span12">\n    <h2>Runtime / Host</h2>')
@@ -276,6 +294,19 @@ const renderFixture = {
   },
   git: { A: {}, B: {} },
   logTail: { A: ["A tunnel line"], B: ["B tunnel line"] },
+  approvals: [{
+    approvalId: "11111111-1111-4111-8111-111111111111",
+    slot: "B",
+    workspaceId: "business",
+    capability: "git_push",
+    operation: "git_push:origin",
+    inputSummary: "remote=origin",
+    reason: "Git push changes an external remote repository",
+    purpose: "把当前 Git 分支推送到远程仓库“origin”，会产生外部持久化修改。",
+    status: "pending",
+    requestedAt: "2026-09-21T00:00:03.000Z",
+    expiresAt: "2026-09-21T00:15:03.000Z"
+  }],
   operator: {}
 };
 const browserRequests: Array<{ path: string; method: string; body?: string }> = [];
@@ -302,7 +333,7 @@ const browserContext = vm.createContext({
   confirm: () => true,
   console
 });
-new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;").runInContext(browserContext);
+new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;").runInContext(browserContext);
 (browserContext as any).__p05Render(renderFixture);
 check(
   "operator: process time never renders Invalid Date",
@@ -396,6 +427,29 @@ check(
     domElement("slotBTitle").textContent === "Runtime B · @Fixture-B"
 );
 check(
+  "operator: pending tool approval renders tool, operation, reason and one-time approval controls",
+  domElement("approvalRows").innerHTML.includes("git_push") &&
+    domElement("approvalRows").innerHTML.includes("git_push:origin") &&
+    domElement("approvalRows").innerHTML.includes("批准一次") &&
+    domElement("approvalRows").innerHTML.includes("拒绝")
+);
+check(
+  "operator: Tool Approval UI consumes canonical approvalId/inputSummary fields",
+  domElement("approvalRows").innerHTML.includes("remote=origin") &&
+    renderedScript.includes("x.approvalId===id") &&
+    renderedScript.includes("a.approvalId") &&
+    !renderedScript.includes("a.command")
+);
+
+check(
+  "operator: tool approval explains purpose before call input",
+  domElement("approvalRows").innerHTML.includes("用途：") &&
+    domElement("approvalRows").innerHTML.includes("推送到远程仓库") &&
+    domElement("approvalRows").innerHTML.includes("触发审批：") &&
+    domElement("approvalRows").innerHTML.includes("调用内容")
+);
+
+check(
   "operator: Runtime A renders read-only reference roots",
   domElement("slotAReferenceList").innerHTML.includes("A Reference") &&
   domElement("slotAReferenceList").innerHTML.includes("C:\\ref-a")
@@ -407,6 +461,34 @@ check(
     domElement("downstreamARows").innerHTML.includes("首次调用时自动连接") &&
     domElement("downstreamBRows").innerHTML.includes("CONNECTED") &&
     !domElement("downstreamARows").innerHTML.includes(">configured<")
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05ToolApproval(
+  "B",
+  "11111111-1111-4111-8111-111111111111",
+  "approve"
+);
+check(
+  "operator: tool approval uses explicit slot/id/approve endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/approval/B/11111111-1111-4111-8111-111111111111/approve" &&
+    item.method === "POST"
+  )
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05ToolApproval(
+  "B",
+  "11111111-1111-4111-8111-111111111111",
+  "deny"
+);
+check(
+  "operator: tool approval uses the same explicit slot/id/deny endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/approval/B/11111111-1111-4111-8111-111111111111/deny" &&
+    item.method === "POST"
+  )
 );
 
 browserRequests.length = 0;

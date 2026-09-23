@@ -2,7 +2,7 @@
 
 Status: implemented and active
 Foundation: V2
-Updated: 2026-09-22
+Updated: 2026-09-23
 
 ## Source of truth
 
@@ -29,8 +29,8 @@ Profiles are cumulative and unknown values fail closed.
 |---|---|
 | discovery | `device_info`, `ping` |
 | readonly | discovery + `workspace_list`, `workspace_current`, `reference_list`, `reference_read`, `reference_list_directory`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat` |
-| developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools` |
-| full | developer + `shell_run`, `git_push`, `mcp_call_tool` |
+| developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools`, brokered `shell_run` |
+| full | developer + `git_push`, `mcp_call_tool` |
 
 ## Workspace semantics
 
@@ -139,16 +139,18 @@ The MCP schema remains a single non-empty string. Executable, cwd and arbitrary 
 
 ## Runtime authorization
 
-Registration-time policy determines which tools are advertised.
+Registration-time Tool Profile policy determines which tools are advertised.
 
-Call-time policy is rechecked through the common Execution Runtime:
+For exposed tools, the V2 common Tool Permission Broker evaluates the concrete call as `ALLOW`, `CONFIRM` or `DENY` before the handler executes. `CONFIRM` creates a Runtime-private Local Operator approval request; approved requests are one-shot and expire after 15 minutes.
+
+The normal Execution Runtime lifecycle remains unchanged:
 - prepare;
 - authorize;
 - execute;
 - verify;
 - complete/fail.
 
-A call-time denial is classified as a `policy` failure in the `authorize` phase.
+This is a permission-subsystem refactor only. Runtime A/B, Workspace, Plugin and Downstream architectures are unchanged.
 
 ## Audit / Recovery
 
@@ -188,33 +190,21 @@ MATLAB/Simulink is the first built-in application plugin.
 
 ## Shell
 
-`shell_run` is not exposed at developer. It is available only at full.
+`shell_run` is developer-visible and uses the same common Tool Permission Broker as other execution surfaces.
 
-Its starting cwd is technically confined to the active Workspace. The PowerShell
-command itself retains the paired Windows user's OS permissions.
+The Shell adapter intentionally stays small:
+- recognized diagnostics/read operations may ALLOW;
+- a small set of explicit Workspace-local file operations may ALLOW after existing path/link checks;
+- dynamic, compound, arbitrary or unrecognized execution is CONFIRM;
+- catastrophic disk/root destructive patterns are DENY.
 
-Therefore `shell_run` remains explicitly **not a sandbox**.
-
-Moving shell to full is an immediate containment measure. Persistent
-outside-Workspace modification still requires explicit user approval, and the
-target design is to enforce that rule through a local approval/execution broker
-or OS boundary rather than command-string filtering.
+Shell does not own a separate approval contract. CONFIRM/DENY decisions use the same common permission envelope and Tool Approval store as other sensitive capabilities. The long-term hard boundary for arbitrary code is a V3 Sandbox concern, not a larger PowerShell parser.
 
 ## Host authority
 
-`runtime_restart` is developer-visible, but it is not a generic host execution
-surface. It resolves the current Runtime slot and invokes the fixed repo-local
-restart request:
+`runtime_restart` remains developer-visible but is V2 `CONFIRM` because it changes Runtime lifecycle and currently invokes repo-local restart scripts. The caller still cannot supply an arbitrary command, script path, task name, credential or elevation argument.
 
-    scripts/deployment/request-restart-runtime-slot.ps1 -Slot A|B
-
-The MCP caller cannot supply an arbitrary command, script path, task name,
-credential or elevation argument. The historical `P05-RestartBroker`
-Scheduled Task is retired and is not required by the current Runtime path.
-
-Other host/system mutations should continue to use explicit approval, narrow
-external brokers, or stronger OS isolation rather than widening structured
-developer tools.
+Broader host/system mutations remain outside ordinary developer authority. Trusted/immutable restart/build runners and OS-level execution isolation are V3 requirements rather than V2 architecture changes.
 
 ## Planned capability layer
 
