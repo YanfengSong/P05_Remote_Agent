@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { p05StateDir } from "../state.js";
+import { defaultP05StateDir, p05StateDir } from "../state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,7 +35,7 @@ function slotProfileName(slot: RuntimeSlotId): string {
 
 function operatorRoot(): string {
   const override = process.env.P05_OPERATOR_ROOT?.trim();
-  return override ? path.resolve(override) : p05StateDir();
+  return override ? path.resolve(override) : defaultP05StateDir();
 }
 
 function makeRuntimeSlot(slot: RuntimeSlotId, connector: string): RuntimeSlotConfig {
@@ -191,21 +192,39 @@ async function processStatus() {
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
     return list.map((row) => {
       const command = row.CommandLine ?? "";
+      const slot =
+        row.Name === "tunnel-client.exe"
+          ? command.includes("--profile " + runtimeSlotConfig("A").profileName) ||
+            command.includes('--profile "' + runtimeSlotConfig("A").profileName + '"')
+            ? "A"
+            : command.includes("--profile " + runtimeSlotConfig("B").profileName) ||
+                command.includes('--profile "' + runtimeSlotConfig("B").profileName + '"')
+              ? "B"
+              : undefined
+          : /launch-runtime\.mjs"?\s+A(?:\s|$)/i.test(command)
+            ? "A"
+            : /launch-runtime\.mjs"?\s+B(?:\s|$)/i.test(command)
+              ? "B"
+              : undefined;
+      const operator = /dist[\\/]operator[\\/]server\.js/i.test(command);
       const role =
         row.Name === "tunnel-client.exe"
-          ? "Tunnel"
-          : /dist[\\/]operator[\\/]server\.js/i.test(command)
+          ? `Tunnel${slot ? " " + slot : ""}`
+          : operator
             ? "Operator Console"
-            : /dist[\\/]index\.js/i.test(command)
-              ? "MCP Server"
-              : "P05 Node";
+            : slot
+              ? `Runtime ${slot} MCP`
+              : /dist[\\/]index\.js/i.test(command)
+                ? "MCP Server"
+                : "P05 Node";
       return {
         Id: row.ProcessId,
         ProcessName: row.Name.replace(/\.exe$/i, ""),
         StartTime: row.CreationDate,
         Path: row.ExecutablePath,
         CommandLine: command,
-        Role: role
+        Role: role,
+        ...(operator ? { RestartTarget: "operator" as const } : slot ? { RestartTarget: slot } : {})
       };
     });
   } catch {
@@ -788,6 +807,46 @@ export async function restartRuntimeSlot(slot: RuntimeSlotId) {
     action: "restart",
     slot,
     message: `Runtime ${slot} restarted.`
+  };
+}
+
+export function requestOperatorRestart() {
+  const requestId = randomUUID();
+  const script = path.resolve(
+    process.cwd(),
+    "scripts",
+    "deployment",
+    "restart-operator.ps1"
+  );
+  const child = spawn(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-RequestId",
+      requestId,
+      "-DelayMilliseconds",
+      "1500"
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  child.unref();
+  return {
+    ok: true,
+    action: "restart",
+    target: "operator",
+    requestId,
+    message: "Operator Console restart scheduled."
   };
 }
 

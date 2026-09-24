@@ -663,12 +663,26 @@ for (const scenario of scenarios) {
       listed.tools.some((tool) => tool.name === "matlab.call_tool"),
       listed.tools.map((tool) => tool.name).join(",")
     );
+    const matlabEdit = await outcome(() =>
+      matlabSession.client.callTool({
+        name: "matlab.call_tool",
+        arguments: { tool: "model_edit", arguments: { model: "Example.slx" } }
+      })
+    );
+    check(
+      "permission contract: Workspace-scoped matlab model_edit bypasses approval and reaches downstream",
+      matlabEdit.failed &&
+        !matlabEdit.message.includes("PERMISSION_CONFIRM_REQUIRED") &&
+        (CONNECT_ERROR_CATEGORIES as readonly string[]).includes(matlabEdit.message.trim()),
+      matlabEdit.message.slice(0, 500)
+    );
+
     await expectToolConfirmation(
       matlabSession,
       "matlab.call_tool",
-      { tool: "model_edit", arguments: { model: "Example.slx" } },
-      "matlab:model_edit",
-      "tool=model_edit"
+      { tool: "evaluate_matlab_code", arguments: { code: "disp(1)" } },
+      "matlab:evaluate_matlab_code",
+      "tool=evaluate_matlab_code"
     );
   } finally {
     await closeSession(matlabSession);

@@ -7,7 +7,11 @@ import { CapabilityCatalog } from "../capability/registry.js";
 import { DownstreamRegistry } from "../downstream/registry.js";
 import { LiveActivityStore, summarizeToolInput } from "../monitor/live-activity.js";
 import { startLocalControlBridge } from "../operator/bridge.js";
-import { bridgeRequest, operatorOverview } from "../operator/runtime-control.js";
+import {
+  bridgeRequest,
+  operatorOverview,
+  runtimeSlotStateDir
+} from "../operator/runtime-control.js";
 import { operatorPage } from "../operator/ui.js";
 import { PluginRegistry } from "../plugin/registry.js";
 import { PluginRuntime } from "../plugin/runtime.js";
@@ -55,6 +59,18 @@ const operatorServerSource = await fs.readFile(
   path.join(REPO, "src", "operator", "server.ts"),
   "utf8"
 );
+const requestRestartOperatorSource = await fs.readFile(
+  path.join(REPO, "scripts", "deployment", "request-restart-operator.ps1"),
+  "utf8"
+);
+const restartOperatorSource = await fs.readFile(
+  path.join(REPO, "scripts", "deployment", "restart-operator.ps1"),
+  "utf8"
+);
+const envExampleSource = await fs.readFile(
+  path.join(REPO, ".env.example"),
+  "utf8"
+);
 check(
   "operator: server exposes only slot-scoped runtime/workspace mutation routes",
   !operatorServerSource.includes('url.pathname === "/api/action/connect"') &&
@@ -65,10 +81,37 @@ check(
     !operatorServerSource.includes('url.pathname === "/api/workspace/register"')
 );
 check(
+  "operator: exposes explicit Console restart endpoint separate from shutdown",
+  operatorServerSource.includes('url.pathname === "/api/operator/restart"') &&
+    operatorServerSource.includes("requestOperatorRestart()") &&
+    operatorServerSource.includes('url.pathname === "/api/operator/shutdown"')
+);
+
+check(
   "operator: tool approval decisions are exposed only through token-protected Operator API",
   operatorServerSource.includes("approvalMatch") &&
     operatorServerSource.includes("decideToolApproval") &&
     operatorServerSource.includes("listToolApprovals")
+);
+check(
+  "operator: restart request is detached and bounded instead of waiting on a long shell lifecycle",
+  requestRestartOperatorSource.includes("Start-Process") &&
+    requestRestartOperatorSource.includes("restart-operator.ps1") &&
+    requestRestartOperatorSource.includes("WaitSeconds = 20") &&
+    requestRestartOperatorSource.includes("OPERATOR_RESTARTED") &&
+    requestRestartOperatorSource.includes("OPERATOR_RESTART_SCHEDULED")
+);
+check(
+  "operator: restart worker owns stop/start and records request-scoped completion",
+  restartOperatorSource.includes("RequestId") &&
+    restartOperatorSource.includes("operator-restart-status.json") &&
+    restartOperatorSource.includes("Stop-Process") &&
+    restartOperatorSource.includes("run-operator.ps1") &&
+    restartOperatorSource.includes("succeeded")
+);
+check(
+  "operator: default shell timeout leaves transport completion headroom",
+  envExampleSource.includes("REMOTE_AGENT_SHELL_TIMEOUT_MS=90000")
 );
 check(
   "operator: approval payload uses the canonical ToolApprovalView contract",
@@ -179,7 +222,11 @@ const renderFixture = {
       A: { connected: true, health: { ready: true, live: true }, bridge: { online: true } },
       B: { connected: true, health: { ready: true, live: true }, bridge: { online: true } }
     },
-    processes: [{ Role: "MCP Server", ProcessName: "node", Id: 123, StartTime: "/Date(1789973000623)/" }]
+    processes: [
+      { Role: "Runtime A MCP", ProcessName: "node", Id: 123, StartTime: "/Date(1789973000623)/", RestartTarget: "A" },
+      { Role: "Tunnel B", ProcessName: "tunnel-client", Id: 124, StartTime: "/Date(1789973001623)/", RestartTarget: "B" },
+      { Role: "Operator Console", ProcessName: "node", Id: 125, StartTime: "/Date(1789973002623)/", RestartTarget: "operator" }
+    ]
   },
   slots: {
     A: {
@@ -294,19 +341,60 @@ const renderFixture = {
   },
   git: { A: {}, B: {} },
   logTail: { A: ["A tunnel line"], B: ["B tunnel line"] },
-  approvals: [{
-    approvalId: "11111111-1111-4111-8111-111111111111",
-    slot: "B",
-    workspaceId: "business",
-    capability: "git_push",
-    operation: "git_push:origin",
-    inputSummary: "remote=origin",
-    reason: "Git push changes an external remote repository",
-    purpose: "把当前 Git 分支推送到远程仓库“origin”，会产生外部持久化修改。",
-    status: "pending",
-    requestedAt: "2026-09-21T00:00:03.000Z",
-    expiresAt: "2026-09-21T00:15:03.000Z"
-  }],
+  approvals: [
+    {
+      approvalId: "22222222-2222-4222-8222-222222222222",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "runtime_restart",
+      operation: "runtime_restart",
+      inputSummary: "P05 runtime",
+      reason: "Runtime lifecycle change requires confirmation in V2",
+      purpose: "重启 Runtime A。",
+      status: "approved",
+      requestedAt: "2026-09-21T00:00:06.000Z",
+      expiresAt: "2026-09-21T00:15:06.000Z"
+    },
+    {
+      approvalId: "33333333-3333-4333-8333-333333333333",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "shell_run",
+      operation: "older-pending",
+      inputSummary: "older pending",
+      reason: "confirmation required",
+      purpose: "较早的 A 待审批请求。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:04.000Z",
+      expiresAt: "2026-09-21T00:15:04.000Z"
+    },
+    {
+      approvalId: "44444444-4444-4444-8444-444444444444",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "shell_run",
+      operation: "newer-pending",
+      inputSummary: "newer pending",
+      reason: "confirmation required",
+      purpose: "较新的 A 待审批请求。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:05.000Z",
+      expiresAt: "2026-09-21T00:15:05.000Z"
+    },
+    {
+      approvalId: "11111111-1111-4111-8111-111111111111",
+      slot: "B",
+      workspaceId: "business",
+      capability: "git_push",
+      operation: "git_push:origin",
+      inputSummary: "remote=origin",
+      reason: "Git push changes an external remote repository",
+      purpose: "把当前 Git 分支推送到远程仓库“origin”，会产生外部持久化修改。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:03.000Z",
+      expiresAt: "2026-09-21T00:15:03.000Z"
+    }
+  ],
   operator: {}
 };
 const browserRequests: Array<{ path: string; method: string; body?: string }> = [];
@@ -333,7 +421,7 @@ const browserContext = vm.createContext({
   confirm: () => true,
   console
 });
-new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;").runInContext(browserContext);
+new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;globalThis.__p05RestartOperator=restartOperatorConsole;globalThis.__p05RestartManagedProcess=restartManagedProcess;").runInContext(browserContext);
 (browserContext as any).__p05Render(renderFixture);
 check(
   "operator: process time never renders Invalid Date",
@@ -427,15 +515,46 @@ check(
     domElement("slotBTitle").textContent === "Runtime B · @Fixture-B"
 );
 check(
-  "operator: pending tool approval renders tool, operation, reason and one-time approval controls",
-  domElement("approvalRows").innerHTML.includes("git_push") &&
-    domElement("approvalRows").innerHTML.includes("git_push:origin") &&
-    domElement("approvalRows").innerHTML.includes("批准一次") &&
-    domElement("approvalRows").innerHTML.includes("拒绝")
+  "operator: managed P05 processes expose safe restart controls",
+  renderedPage.includes('id="restartOperator"') &&
+    domElement("processRows").innerHTML.includes("重启 A") &&
+    domElement("processRows").innerHTML.includes("重启 B") &&
+    domElement("processRows").innerHTML.includes("重启 Console") &&
+    renderedScript.includes('/api/operator/restart') &&
+    renderedScript.includes('/api/slot/"+target+"/action/restart')
+);
+
+check(
+  "operator: approval queue renders Runtime A/B as separate columns",
+  renderedPage.includes('id="approvalARows"') &&
+    renderedPage.includes('id="approvalBRows"') &&
+    domElement("approvalARows").innerHTML.includes("newer-pending") &&
+    !domElement("approvalARows").innerHTML.includes("git_push:origin") &&
+    domElement("approvalBRows").innerHTML.includes("git_push:origin") &&
+    !domElement("approvalBRows").innerHTML.includes("newer-pending")
 );
 check(
-  "operator: Tool Approval UI consumes canonical approvalId/inputSummary fields",
-  domElement("approvalRows").innerHTML.includes("remote=origin") &&
+  "operator: approval columns prioritize pending and sort newest pending first",
+  domElement("approvalARows").innerHTML.indexOf("newer-pending") <
+    domElement("approvalARows").innerHTML.indexOf("older-pending") &&
+    domElement("approvalARows").innerHTML.indexOf("older-pending") <
+      domElement("approvalARows").innerHTML.indexOf("runtime_restart") &&
+    domElement("approvalACount").textContent === "待审批 2" &&
+    domElement("approvalBCount").textContent === "待审批 1"
+);
+check(
+  "operator: pending tool approval renders tool, operation, reason and one-time approval controls",
+  domElement("approvalBRows").innerHTML.includes("git_push") &&
+    domElement("approvalBRows").innerHTML.includes("git_push:origin") &&
+    domElement("approvalBRows").innerHTML.includes("批准一次") &&
+    domElement("approvalBRows").innerHTML.includes("拒绝")
+);
+check(
+  "operator: Tool Approval UI visibly renders canonical approvalId/inputSummary fields",
+  domElement("approvalBRows").innerHTML.includes("审批 ID：") &&
+    domElement("approvalBRows").innerHTML.includes("11111111-1111-4111-8111-111111111111") &&
+    domElement("approvalBRows").innerHTML.includes("remote=origin") &&
+    renderedScript.includes("审批 ID: ") &&
     renderedScript.includes("x.approvalId===id") &&
     renderedScript.includes("a.approvalId") &&
     !renderedScript.includes("a.command")
@@ -443,10 +562,10 @@ check(
 
 check(
   "operator: tool approval explains purpose before call input",
-  domElement("approvalRows").innerHTML.includes("用途：") &&
-    domElement("approvalRows").innerHTML.includes("推送到远程仓库") &&
-    domElement("approvalRows").innerHTML.includes("触发审批：") &&
-    domElement("approvalRows").innerHTML.includes("调用内容")
+  domElement("approvalBRows").innerHTML.includes("用途：") &&
+    domElement("approvalBRows").innerHTML.includes("推送到远程仓库") &&
+    domElement("approvalBRows").innerHTML.includes("触发审批：") &&
+    domElement("approvalBRows").innerHTML.includes("调用内容")
 );
 
 check(
@@ -861,6 +980,15 @@ try {
 
   const previousStateDir = process.env.P05_STATE_DIR;
   const previousOperatorRoot = process.env.P05_OPERATOR_ROOT;
+
+  delete process.env.P05_OPERATOR_ROOT;
+  process.env.P05_STATE_DIR = path.join(FIXTURE, "runtime-owned-state");
+  check(
+    "operator: Runtime approval state ignores generic P05_STATE_DIR",
+    runtimeSlotStateDir("B") === path.join(REPO, ".p05", "runtime-b", "state"),
+    runtimeSlotStateDir("B")
+  );
+
   const operatorRoot = path.join(FIXTURE, "operator-root");
   const stateDir = path.join(operatorRoot, "runtime-a", "state");
   process.env.P05_OPERATOR_ROOT = operatorRoot;

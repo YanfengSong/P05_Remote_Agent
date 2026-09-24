@@ -25,7 +25,9 @@ select,input{width:100%;background:#0b1424;color:var(--text);border:1px solid va
 pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;overflow:auto;max-height:280px;font:11px/1.45 Consolas,monospace}
 .toast{position:fixed;right:18px;bottom:18px;background:#111b2f;border:1px solid var(--line);padding:11px 14px;border-radius:8px;display:none;max-width:520px;z-index:20}
 .detail{color:#c5d1e6;max-width:620px;overflow-wrap:anywhere}.workspaceCard{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:7px;background:#0c1525}.workspaceCard.current{border-color:#6887df}.empty{color:var(--muted);font-size:12px;padding:8px 0}
+.approvalGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.approvalColumn{min-width:0;border:1px solid var(--line);border-radius:9px;padding:10px;background:#0c1525}.approvalColumnHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.approvalColumnHeader strong{font-size:13px}.approvalCount{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;color:var(--muted)}.approvalCount.pending{border-color:#8e6d27;color:var(--warn)}
 @media(max-width:1100px){.span3,.span4{grid-column:span 6}.span5,.span6,.span7,.span8{grid-column:span 12}}
+@media(max-width:900px){.approvalGrid{grid-template-columns:1fr}}
 @media(max-width:680px){.headerline{align-items:flex-start;flex-direction:column}.span3,.span4,.span5,.span6,.span7,.span8,.span12{grid-column:span 12}main{padding:10px}}
 </style>
 </head>
@@ -38,6 +40,7 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     </div>
     <div class="actions">
       <button id="operatorState" class="primary" disabled>Console 已开启</button>
+      <button id="restartOperator" class="warning">重启 Console</button>
       <button id="closeOperator" class="danger">关闭 Console</button>
 
       <button id="refresh">刷新</button>
@@ -111,14 +114,25 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
   <section class="card span12">
     <h2>工具审批队列</h2>
     <div class="small muted" style="margin-bottom:8px">当工具调用被统一权限策略判定为 CONFIRM 时出现。批准只对同一 Runtime + Workspace + Tool + Operation + 输入生效一次，15 分钟过期。</div>
-    <div id="approvalRows"></div>
+    <div id="approvalRows" class="approvalGrid">
+      <div class="approvalColumn">
+        <div class="approvalColumnHeader"><strong>Runtime A</strong><span id="approvalACount" class="approvalCount">待审批 0</span></div>
+        <div id="approvalARows"></div>
+      </div>
+      <div class="approvalColumn">
+        <div class="approvalColumnHeader"><strong>Runtime B</strong><span id="approvalBCount" class="approvalCount">待审批 0</span></div>
+        <div id="approvalBRows"></div>
+      </div>
+    </div>
   </section>
 
   <section class="card span12">
     <h2>Runtime / Host</h2>
     <div id="runtimeRows"></div>
     <h3>设备</h3><div id="deviceRows"></div>
-    <h3>P05 相关进程</h3><div id="processRows" class="scroll"></div>
+    <h3>P05 相关进程</h3>
+    <div class="small muted" style="margin-bottom:6px">受控重启：Tunnel / MCP 属于对应 Runtime Slot，点击任一相关进程的重启按钮都会重启该 Slot 整体，避免半残进程。</div>
+    <div id="processRows" class="scroll"></div>
   </section>
 
   <section class="card span12">
@@ -225,6 +239,7 @@ function slotIsRunning(slot){
   return !!data?.connected||!!data?.health?.ready||!!data?.health?.live;
 }
 function buttons(){
+  $("restartOperator").disabled=busy;
   $("closeOperator").disabled=busy;
   for(const slot of ["A","B"]){
     const data=latest?.slots?.[slot]||{},online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=slotIsRunning(slot);
@@ -244,9 +259,31 @@ function buttons(){
     document.querySelectorAll("[data-plugin-action]").forEach(btn=>{btn.disabled=busy||btn.dataset.locked==="true"});
     document.querySelectorAll("[data-reference-action]").forEach(btn=>{btn.disabled=busy});
     document.querySelectorAll("[data-approval-action]").forEach(btn=>{btn.disabled=busy});
+    document.querySelectorAll("[data-process-action]").forEach(btn=>{btn.disabled=busy});
   }
 }
 async function action(name){if(busy)return;busy=true;buttons();try{await api("/api/action/"+name,{method:"POST",body:"{}"});await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}}
+async function restartOperatorConsole(){
+  if(busy||!confirm("确认重启 Operator Console？Runtime A/B 不会被重启。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/operator/restart",{method:"POST",body:"{}"});
+    toast("Operator Console 重启已调度，页面会短暂断开后自动恢复。");
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+async function restartManagedProcess(target){
+  if(target==="operator")return restartOperatorConsole();
+  if(target!=="A"&&target!=="B")return;
+  if(busy||!confirm("确认重启 Runtime "+target+"？该 Slot 的 Tunnel 与 MCP 会一起重启。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/slot/"+target+"/action/restart",{method:"POST",body:"{}"});
+    toast("Runtime "+target+" 已重启");
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
 function pluginForSlot(slot,id){return (latest?.slots?.[slot]?.plugins||[]).find(p=>p.id===id)}
 function pluginSlotHtml(slot,id){
   const runtime=latest?.slots?.[slot]||{},p=pluginForSlot(slot,id);
@@ -286,7 +323,7 @@ async function toolApproval(slot,id,actionName){
   const item=(latest?.approvals||[]).find(x=>x.slot===slot&&x.approvalId===id);
   if(!item)return toast("审批请求已不存在或已过期",true);
   const verb=actionName==="approve"?"批准":"拒绝";
-  const message=verb+"这一次工具调用？\\n\\n用途："+(item.purpose||"-")+"\\n触发审批："+(item.reason||"-")+"\\n\\nRuntime: "+slot+"\\nWorkspace: "+(item.workspaceId||"-")+"\\nTool: "+(item.capability||"-")+"\\nOperation: "+(item.operation||"-")+"\\n\\n调用内容：\\n"+(item.inputSummary||"(无额外输入)");
+  const message=verb+"这一次工具调用？\\n\\n审批 ID: "+(item.approvalId||id)+"\\n用途："+(item.purpose||"-")+"\\n触发审批："+(item.reason||"-")+"\\n\\nRuntime: "+slot+"\\nWorkspace: "+(item.workspaceId||"-")+"\\nTool: "+(item.capability||"-")+"\\nOperation: "+(item.operation||"-")+"\\n\\n调用内容：\\n"+(item.inputSummary||"(无额外输入)");
   if(!confirm(message))return;
   busy=true;buttons();
   try{
@@ -353,17 +390,41 @@ renderMcpPanel("mcpB",slotB);
 
 $("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,!!slotA.health?.ready)+esc(slotA.connected?"ONLINE":slotA.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,!!slotB.health?.ready)+esc(slotB.connected?"ONLINE":slotB.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
 $("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div>';
-const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>'<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span class="small">'+esc(dateTime(p.StartTime))+'</span></div>').join(""):'<div class="empty">未检测到 P05 相关进程</div>';
+const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>{
+  const target=p.RestartTarget;
+  const restart=target
+    ? '<button class="warning" data-process-action="true" onclick="restartManagedProcess(\\''+esc(target)+'\\')">'+esc(target==="operator"?"重启 Console":"重启 "+target)+'</button>'
+    : "";
+  return '<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span style="display:flex;align-items:center;gap:8px"><span class="small">'+esc(dateTime(p.StartTime))+'</span>'+restart+'</span></div>';
+}).join(""):'<div class="empty">未检测到 P05 相关进程</div>';
 
 const approvals=d.approvals||[];
-$("approvalRows").innerHTML=approvals.length?approvals.map(a=>{
+function approvalOrder(a,b){
+  const aPending=a.status==="pending"?0:1,bPending=b.status==="pending"?0:1;
+  if(aPending!==bPending)return aPending-bPending;
+  const aTime=Date.parse(a.requestedAt||"")||0,bTime=Date.parse(b.requestedAt||"")||0;
+  return bTime-aTime;
+}
+function approvalCard(a){
   const pending=a.status==="pending";
   const stateClass=a.status==="approved"?"goodText":a.status==="denied"?"badText":"warnText";
   const actions=pending
     ? '<span><button class="primary" data-approval-action="true" data-slot="'+esc(a.slot)+'" data-id="'+esc(a.approvalId)+'" data-decision="approve" onclick="toolApprovalFromButton(this)">批准一次</button> <button class="danger" data-approval-action="true" data-slot="'+esc(a.slot)+'" data-id="'+esc(a.approvalId)+'" data-decision="deny" onclick="toolApprovalFromButton(this)">拒绝</button></span>'
     : '<span class="'+stateClass+'">'+esc(String(a.status||"").toUpperCase())+'</span>';
-  return '<div class="workspaceCard"><div class="row"><span><strong>Runtime '+esc(a.slot)+' · '+esc(a.workspaceId||"-")+'</strong><div class="small mono"><strong>Tool：</strong>'+esc(a.capability||"-")+' · '+esc(a.operation||"-")+'</div><div class="small"><strong>用途：</strong>'+esc(a.purpose||"无法可靠解释，请谨慎判断。")+'</div><div class="small muted"><strong>触发审批：</strong>'+esc(a.reason||"-")+'</div></span>'+actions+'</div><div class="small muted" style="margin-top:7px">调用内容</div><pre>'+esc(a.inputSummary||"(无额外输入)")+'</pre><div class="small muted">请求 '+esc(dateTime(a.requestedAt))+' · 过期 '+esc(dateTime(a.expiresAt))+'</div></div>';
-}).join(""):'<div class="goodText small">当前没有待审批工具请求</div>';
+  return '<div class="workspaceCard"><div class="row"><span><strong>Runtime '+esc(a.slot)+' · '+esc(a.workspaceId||"-")+'</strong><div class="small mono"><strong>审批 ID：</strong>'+esc(a.approvalId||"-")+'</div><div class="small mono"><strong>Tool：</strong>'+esc(a.capability||"-")+' · '+esc(a.operation||"-")+'</div><div class="small"><strong>用途：</strong>'+esc(a.purpose||"无法可靠解释，请谨慎判断。")+'</div><div class="small muted"><strong>触发审批：</strong>'+esc(a.reason||"-")+'</div></span>'+actions+'</div><div class="small muted" style="margin-top:7px">调用内容</div><pre>'+esc(a.inputSummary||"(无额外输入)")+'</pre><div class="small muted">请求 '+esc(dateTime(a.requestedAt))+' · 过期 '+esc(dateTime(a.expiresAt))+'</div></div>';
+}
+function renderApprovalColumn(slot){
+  const items=approvals.filter(a=>a.slot===slot).sort(approvalOrder);
+  const pendingCount=items.filter(a=>a.status==="pending").length;
+  const count=$("approval"+slot+"Count");
+  count.textContent="待审批 "+pendingCount;
+  count.className="approvalCount"+(pendingCount?" pending":"");
+  $("approval"+slot+"Rows").innerHTML=items.length
+    ? items.map(approvalCard).join("")
+    : '<div class="empty">当前没有审批记录</div>';
+}
+renderApprovalColumn("A");
+renderApprovalColumn("B");
 
 const live=d.liveActivity||[];$("liveRows").innerHTML=live.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+riskPill(e.risk)+'</td><td><strong>'+esc(e.capability)+'</strong></td><td class="detail">'+esc(e.detail||e.summary||"-")+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+(e.phase&&e.state==="running"?' · '+esc(e.phase):'')+'</td><td>'+esc(e.scope||"-")+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="8" class="muted">暂无实时行为</td></tr>';
 
@@ -427,6 +488,7 @@ $("logsB").textContent=(slotB.logTail||[]).join("\\n")||"暂无日志";
 renderAction(d.operator);buttons();
 }
 async function refresh(){try{render(await api("/api/status"))}catch(e){toast("状态刷新失败: "+e.message,true)}}
+$("restartOperator").onclick=restartOperatorConsole;
 $("closeOperator").onclick=async()=>{
   if(busy||!confirm("确认关闭 Operator Console？Runtime A/B 不会被自动关闭。"))return;
   busy=true;buttons();

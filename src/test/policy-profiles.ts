@@ -255,7 +255,10 @@ const { permissionDecision } = await import("../policy/permission.js");
     DEFAULT_CAPABILITY_CATALOG,
     workspaceRoot
   );
-  check("permission: MATLAB model mutation defaults CONFIRM", matlabEdit.mode === "confirm");
+  check(
+    "permission: structured MATLAB model mutation defaults ALLOW",
+    matlabEdit.mode === "allow"
+  );
 
   const matlabCode = await permissionDecision(
     "matlab.call_tool",
@@ -264,6 +267,20 @@ const { permissionDecision } = await import("../policy/permission.js");
     workspaceRoot
   );
   check("permission: arbitrary MATLAB code defaults CONFIRM", matlabCode.mode === "confirm");
+
+  const matlabTest = await permissionDecision(
+    "matlab.call_tool",
+    {
+      tool: "model_test",
+      arguments: {
+        model: "Example.slx",
+        gherkin_file: "tests/example.feature"
+      }
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: MATLAB behavioral test still defaults CONFIRM", matlabTest.mode === "confirm");
 
   const safeShell = await permissionDecision(
     "shell_run",

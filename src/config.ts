@@ -101,7 +101,7 @@ export const config = {
   toolProfile: readOwnEnv("P05_TOOL_PROFILE"),
   allowedRoots,
   defaultCwd: parseDefaultCwd(readOwnEnv("REMOTE_AGENT_DEFAULT_CWD"), allowedRoots),
-  shellTimeoutMs: Number(readOwnEnv("REMOTE_AGENT_SHELL_TIMEOUT_MS") ?? "120000"),
+  shellTimeoutMs: Number(readOwnEnv("REMOTE_AGENT_SHELL_TIMEOUT_MS") ?? "90000"),
   maxReadBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_READ_BYTES") ?? String(2 * 1024 * 1024)),
   maxWriteBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_WRITE_BYTES") ?? String(2 * 1024 * 1024))
 };

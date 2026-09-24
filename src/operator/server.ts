@@ -9,6 +9,7 @@ import {
   operatorConfigView,
   operatorOverview,
   persistRuntimeSlotWorkspace,
+  requestOperatorRestart,
   restartRuntimeSlot,
   runtimeSlotStateDir
 } from "./runtime-control.js";
@@ -93,6 +94,11 @@ const server = http.createServer(async (request, response) => {
 
     if (!authorized(request)) {
       json(response, 403, { error: "operator token required" });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/operator/restart") {
+      json(response, 200, requestOperatorRestart());
       return;
     }
 

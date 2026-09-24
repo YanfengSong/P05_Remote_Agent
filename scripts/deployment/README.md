@@ -127,6 +127,8 @@ Runtime state is persistent under `.p05/runtime-<slot>/state` for configured slo
 - `write-runtime-profiles.ps1`: generates A/B profiles under `.p05/tunnel/profiles`.
 - `run-operator.ps1`: starts Operator directly, without Task Scheduler.
 - `open-operator.ps1`: ensures Operator is running and opens the browser.
+- `restart-operator.ps1`: performs the actual Operator stop/start and records a request-scoped completion state.
+- `request-restart-operator.ps1`: schedules Operator restart in the background and waits only for a short bounded completion window.
 
 Optional host-task helpers may still provision `P05-Runtime` and
 `P05-Operator` for manual/on-demand host integration, but current P05 does not

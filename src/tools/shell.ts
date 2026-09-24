@@ -16,7 +16,7 @@ export async function runPowerShell(
   command: string,
   workspaceRoot: string,
   cwd?: string,
-  timeoutMs = 120000
+  timeoutMs = 90000
 ): Promise<{ stdout: string; stderr: string }> {
   assertSafeCommand(command);
   // The working directory goes through the same guard as the fs tools. A string-only

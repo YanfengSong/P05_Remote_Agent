@@ -24,6 +24,10 @@ const MATLAB_READ_TOOLS = new Set([
   "model_resolve_params"
 ]);
 
+const MATLAB_WORKSPACE_MUTATION_TOOLS = new Set([
+  "model_edit"
+]);
+
 function record(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" && !Array.isArray(input)
     ? input as Record<string, unknown>
@@ -83,17 +87,35 @@ export async function permissionDecision(
 
   if (capability === "matlab.call_tool") {
     const tool = stringField(input, "tool") ?? "unknown";
-    const readOnly = MATLAB_READ_TOOLS.has(tool);
+
+    if (MATLAB_READ_TOOLS.has(tool)) {
+      return common(
+        capability,
+        "allow",
+        `matlab:${tool}`,
+        "recognized read-only MATLAB/Simulink downstream tool",
+        `调用 MATLAB/Simulink 只读工具“${tool}”读取或检查当前 Workspace。`,
+        args
+      );
+    }
+
+    if (MATLAB_WORKSPACE_MUTATION_TOOLS.has(tool)) {
+      return common(
+        capability,
+        "allow",
+        `matlab:${tool}`,
+        "structured MATLAB/Simulink mutation is guarded to the active Workspace by the MATLAB plugin",
+        `调用 MATLAB/Simulink 结构化工具“${tool}”修改当前 Workspace 内模型；路径边界由 MATLAB Plugin 强制检查。`,
+        args
+      );
+    }
+
     return common(
       capability,
-      readOnly ? "allow" : "confirm",
+      "confirm",
       `matlab:${tool}`,
-      readOnly
-        ? "recognized read-only MATLAB/Simulink downstream tool"
-        : "MATLAB/Simulink execution or mutation requires confirmation",
-      readOnly
-        ? `调用 MATLAB/Simulink 只读工具“${tool}”读取或检查当前 Workspace。`
-        : `调用 MATLAB/Simulink 工具“${tool}”；该工具可能执行代码、运行测试或修改模型。`,
+      "MATLAB/Simulink execution or unclassified mutation requires confirmation",
+      `调用 MATLAB/Simulink 工具“${tool}”；该工具可能执行任意代码、运行测试或产生未分类副作用。`,
       args
     );
   }
