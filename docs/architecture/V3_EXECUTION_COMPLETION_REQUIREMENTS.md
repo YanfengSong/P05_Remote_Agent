@@ -51,6 +51,14 @@ and:
 
 > transport disconnect != host operation failure
 
+Approval follows the same principle:
+
+> approval wait != execution failure
+
+and:
+
+> approval resolution is a state transition of the same execution, not a request to create a new execution.
+
 ## 3. Requirements
 
 ### V3-EXEC-01 — Stable Execution Identity
@@ -257,11 +265,148 @@ The system SHOULD expose the next safe action:
 - retry;
 - request human action.
 
+### V3-EXEC-13 — Approval as a durable execution wait state
+
+Approval SHALL be represented as a waiting state of the same durable execution.
+
+Conceptually:
+
+    CREATED
+      -> PREPARING
+      -> AUTHORIZING
+      -> WAITING_APPROVAL
+      -> RUNNING
+      -> VERIFYING
+      -> SUCCEEDED / FAILED
+
+An operation entering approval SHALL NOT be treated as failed merely because execution has paused for human authorization.
+
+### V3-EXEC-14 — Approval identity linked to execution identity
+
+Approval and execution SHALL have distinct stable identities.
+
+Conceptually:
+
+    Execution E123
+      -> Approval A456
+
+The Approval record SHALL reference the Execution it governs.
+
+The Execution SHALL expose whether it is waiting on an Approval and which Approval is pending.
+
+This preserves a clean distinction between:
+
+- work identity;
+- authorization decision identity.
+
+### V3-EXEC-15 — Approval resolution resumes the original execution
+
+When an Approval is resolved as ALLOW, the original waiting Execution SHALL resume.
+
+The normal flow SHALL be:
+
+    Execution E123
+      -> WAITING_APPROVAL
+      -> Approval A456 = ALLOWED
+      -> E123 AUTHORIZED
+      -> E123 RUNNING
+      -> E123 SUCCEEDED / FAILED
+
+The caller SHALL NOT be required to submit the same operation a second time merely to consume an approval.
+
+A second invocation SHOULD NOT create a new Execution for work that is already represented by the approved waiting Execution.
+
+### V3-EXEC-16 — Deny and expiry are explicit execution outcomes
+
+Approval decisions SHALL map deterministically into the waiting Execution lifecycle.
+
+At minimum:
+
+- ALLOW -> resume authorization/execution;
+- DENY -> terminal denied/failed authorization state;
+- EXPIRE -> explicit approval-expired state or terminal authorization failure according to policy;
+- CANCEL -> explicit cancellation where supported.
+
+The resulting Execution state SHALL remain queryable by execution identity.
+
+### V3-EXEC-17 — Approval event propagation
+
+Approval state changes SHALL be observable through the same durable state/event infrastructure used for execution completion.
+
+When an Approval changes state, interested surfaces SHOULD be able to observe the transition without polling generic recent activity.
+
+Relevant consumers include:
+
+- Local Operator;
+- remote MCP caller;
+- Workflow/Skill Runtime;
+- future Web Dashboard;
+- other authorized control-plane clients.
+
+The transport mechanism MAY be:
+
+- event stream;
+- resumable subscription;
+- direct execution-status update;
+- callback;
+- bounded polling against the known execution ID.
+
+The authoritative decision remains transport-independent.
+
+### V3-EXEC-18 — Fast approval flow
+
+The approval architecture SHALL support a low-friction human approval loop.
+
+A representative flow is:
+
+    caller invokes operation
+      -> executionId returned/known
+      -> Execution = WAITING_APPROVAL
+      -> Operator shows pending approval
+      -> user selects Allow
+      -> Approval state persists
+      -> original Execution resumes automatically
+      -> completion state propagates
+
+The user SHOULD NOT need to return to the initiating chat merely to type "approved" before execution can continue.
+
+### V3-EXEC-19 — Approval Queue with execution context
+
+The Local Operator SHOULD expose pending approvals as a queue/view linked to durable executions.
+
+Each approval entry SHOULD provide enough context to identify:
+
+- Runtime Slot;
+- Workspace;
+- execution ID;
+- approval ID;
+- capability/operation;
+- purpose;
+- approval reason;
+- relevant scope/effect;
+- expiry.
+
+Resolving one Approval SHALL affect only the linked Execution unless an explicit persistent permission rule applies.
+
+### V3-EXEC-20 — Same truth across approval and completion surfaces
+
+Approval state and execution state SHALL not be separately inferred by different clients.
+
+For one execution, Operator, remote caller and future UI surfaces SHOULD converge on the same authoritative sequence, for example:
+
+    E123 WAITING_APPROVAL
+    A456 ALLOWED
+    E123 RUNNING
+    E123 SUCCEEDED
+
+This common state model is the basis for fast approval, reliable completion reporting and durable Audit correlation.
+
 ## 4. Relationship to existing V3 contracts
 
 This requirement extends, rather than replaces:
 
 - the common execution lifecycle;
+- Permission / Approval;
 - Audit / Recovery;
 - Durable Run semantics;
 - Runtime supervision;
@@ -277,23 +422,37 @@ Conceptually:
     Invocation / Execution ID
         |
         v
-    Permission / Approval
+    Permission
         |
-        v
-    Durable Execution State
-        |
-        +--> Local Process / Service / Runtime action
-        |
-        +--> Audit / Diagnostics
-        |
-        +--> Completion / Reconciliation
-        |
-        v
-    Client / Operator / Workflow
+        +---- allow -----------------------+
+        |                                 |
+        +---- confirm -> Approval ID       |
+                          |                |
+                    WAITING_APPROVAL       |
+                          |                |
+                    ALLOW / DENY           |
+                          |                |
+                          +------ allow ----+
+                                           |
+                                           v
+                               Durable Execution State
+                                           |
+                    +----------------------+------------------+
+                    |                      |                  |
+                    v                      v                  v
+             Local Process           Audit/Diagnostics   Completion/
+             Service/Runtime                           Reconciliation
+                                           |
+                                           v
+                              Client / Operator / Workflow
 
 Transport is a view onto this lifecycle, not the owner of execution truth.
 
-## 5. V2 observed scenario motivating this requirement
+Approval is a durable authorization transition inside the lifecycle, not a request/retry protocol.
+
+## 5. V2 observed scenarios motivating this requirement
+
+### 5.1 Completion ambiguity
 
 Observed V2 behavior:
 
@@ -306,11 +465,33 @@ Observed V2 behavior:
 
 This demonstrates that V2 already has useful Audit evidence, but the completion state is not returned/reconciled through a first-class operation contract.
 
-The V3 requirement is therefore not "make every long command synchronous".
+### 5.2 Approval retry friction
+
+Observed V2 approval interaction often requires:
+
+    invoke
+      -> approval_required
+      -> Operator approval
+      -> user returns to chat
+      -> caller retries same request
+      -> approved request is consumed
+      -> execution finally starts
+
+This works as a safety gate but introduces unnecessary interaction and creates two request attempts around one logical operation.
+
+V3 SHOULD preserve the human authorization boundary while removing the retry choreography:
+
+    invoke once
+      -> WAITING_APPROVAL
+      -> user approves in Operator
+      -> same Execution resumes
+      -> final completion propagates
+
+The V3 requirement is therefore not "remove approval".
 
 It is:
 
-> make asynchronous, long-running and connection-disrupting completion explicit, durable and queryable.
+> make approval a durable, observable wait/resume state of the original execution.
 
 ## 6. Non-goals
 
@@ -321,14 +502,17 @@ This requirement does NOT mean:
 - a caller disconnect should automatically cancel host work;
 - all operations are safe to retry;
 - Audit should be removed;
-- lifecycle actions must stay inside the same process they restart.
+- lifecycle actions must stay inside the same process they restart;
+- approval can be bypassed because a caller is waiting;
+- Operator approval grants broader authority than the exact policy scope;
+- all approvals become persistent permission rules.
 
 ## 7. Acceptance direction
 
-V3 execution completion design is not complete until the system can answer:
+V3 execution completion and approval design is not complete until the system can answer:
 
 1. What execution did this request create?
-2. Was it merely accepted, or actually completed?
+2. Was it merely accepted, waiting for approval, running, or actually completed?
 3. Did the caller stop waiting while execution continued?
 4. Was the timeout transport-level or execution-level?
 5. What is the current authoritative state?
@@ -337,3 +521,9 @@ V3 execution completion design is not complete until the system can answer:
 8. If a restart broke the channel, did the replacement process actually become ready?
 9. Is retry safe, duplicated, or reconciliation-required?
 10. Can Operator and remote clients observe the same result without manually inferring it from recent activity?
+11. Which approval governs this execution?
+12. Can approval be resolved without requiring the caller to resubmit the same operation?
+13. Does ALLOW resume the original execution?
+14. Are DENY/EXPIRE/CANCEL represented explicitly?
+15. Can approval changes propagate to authorized clients as state/events?
+16. Can the user approve rapidly from the Operator while the original execution continues automatically?
