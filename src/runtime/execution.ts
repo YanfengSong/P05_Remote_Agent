@@ -13,10 +13,16 @@ import {
 import type { LiveActivityStore } from "../monitor/live-activity.js";
 import { classifyError, type ErrorCategory } from "./errors.js";
 
+export type ExecutionAuthorizationContext = {
+  approvalId?: string;
+  operation?: string;
+};
+
 export type ExecutionPlan<T> = {
   authorize?: () => void | Promise<void>;
   execute: () => Promise<T>;
   verify?: (result: T) => void | Promise<void>;
+  authorizationContext?: () => ExecutionAuthorizationContext | undefined;
 };
 
 function recoveryHint(category: ErrorCategory): RecoveryHint {
@@ -104,6 +110,19 @@ export class ExecutionRuntime {
       recoveryHint: "inspect"
     };
 
+    const authorizationFields = (): Pick<
+      AuditEvent,
+      "approvalId" | "authorizationOperation"
+    > => {
+      const context = plan.authorizationContext?.();
+      return {
+        ...(context?.approvalId ? { approvalId: context.approvalId } : {}),
+        ...(context?.operation
+          ? { authorizationOperation: context.operation }
+          : {})
+      };
+    };
+
     const liveBase = {
       id,
       capability,
@@ -135,7 +154,12 @@ export class ExecutionRuntime {
 
     const mark = (nextPhase: ExecutionPhase): void => {
       phase = nextPhase;
-      this.#audit.upsert({ ...base, phase, state: "running" });
+      this.#audit.upsert({
+        ...base,
+        ...authorizationFields(),
+        phase,
+        state: "running"
+      });
       this.#liveActivity?.upsert({
         ...liveBase,
         state: "running",
@@ -164,6 +188,7 @@ export class ExecutionRuntime {
       const finishedAt = new Date(finished).toISOString();
       this.#audit.upsert({
         ...base,
+        ...authorizationFields(),
         phase: "complete",
         state: "succeeded",
         finishedAt,
@@ -184,6 +209,7 @@ export class ExecutionRuntime {
       const category = classifyError(error);
       this.#audit.upsert({
         ...base,
+        ...authorizationFields(),
         phase,
         state: "failed",
         finishedAt,

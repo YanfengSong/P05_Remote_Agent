@@ -6,6 +6,7 @@ import {
   type ToolApprovalGate,
   type ToolApprovalPublicFields
 } from "../approval/tool-approval.js";
+import { preflightShellExecution } from "../shell/preflight.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { permissionDecision } from "./permission.js";
 
@@ -173,6 +174,31 @@ export class ToolPermissionBroker {
       purpose: gate.purpose,
       reason: gate.reason
     };
+  }
+
+  async preflight(capability: string, args: unknown): Promise<void> {
+    if (
+      capability !== "shell_run" ||
+      !args ||
+      typeof args !== "object" ||
+      Array.isArray(args)
+    ) {
+      return;
+    }
+
+    const input = args as Record<string, unknown>;
+    const command =
+      typeof input.command === "string" ? input.command : "";
+    const cwd =
+      typeof input.cwd === "string" && input.cwd.trim()
+        ? input.cwd
+        : undefined;
+
+    await preflightShellExecution(
+      command,
+      this.options.workspaceManager.currentRoot(),
+      cwd
+    );
   }
 
   consumeApproval(approvalId: string): void {

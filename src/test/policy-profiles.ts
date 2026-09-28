@@ -298,6 +298,134 @@ const { permissionDecision } = await import("../policy/permission.js");
   );
   check("permission: arbitrary shell execution defaults CONFIRM", unknownShell.mode === "confirm");
 
+  const sshAptUpdate = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo apt-get update\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote apt update still CONFIRM", sshAptUpdate.mode === "confirm");
+
+  const sshFullUpgrade = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo apt-get full-upgrade -y\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote full-upgrade still CONFIRM", sshFullUpgrade.mode === "confirm");
+
+  const sshService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo systemctl enable --now chrony\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote service mutation still CONFIRM", sshService.mode === "confirm");
+
+  const sshInteractive = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: interactive SSH remains CONFIRM", sshInteractive.mode === "confirm");
+
+  const sshForward = await permissionDecision(
+    "shell_run",
+    { command: "ssh -L 9000:localhost:9000 h1 inventory", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH forwarding remains CONFIRM", sshForward.mode === "confirm");
+
+  const sshGateInventory = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 inventory", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate inventory verb defaults ALLOW", sshGateInventory.mode === "allow");
+
+  const sshGateService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 service-status chrony", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate service-status verb defaults ALLOW", sshGateService.mode === "allow");
+
+  const sshGateToolkitInstall = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 install-nvidia-toolkit 1.20.1-1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate toolkit install defaults ALLOW", sshGateToolkitInstall.mode === "allow");
+
+  const sshGateToolkitWrongVersion = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 install-nvidia-toolkit 1.20.0-1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: unsupported SSH gate toolkit version stays CONFIRM", sshGateToolkitWrongVersion.mode === "confirm");
+
+  const sshGateK3sStart = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-start", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed async K3s start requires one CONFIRM", sshGateK3sStart.mode === "confirm");
+
+  const sshGateK3sStatus = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-status", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed K3s status defaults ALLOW", sshGateK3sStatus.mode === "allow");
+
+  const sshGateK3sExtraArg = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-start extra", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: K3s gate extra arguments stay CONFIRM", sshGateK3sExtraArg.mode === "confirm");
+
+  const sshGateUnknownService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 service-status docker", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH gate unknown service still CONFIRM", sshGateUnknownService.mode === "confirm");
+
+  const sshGateExtraArg = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 evidence extra", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH gate extra arguments still CONFIRM", sshGateExtraArg.mode === "confirm");
+
+  const sshScript = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo bash /tmp/bootstrap.sh\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary remote sudo script still CONFIRM", sshScript.mode === "confirm");
+
+  const sshDisk = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo dd if=/dev/zero of=/dev/sda\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: remote disk write still CONFIRM", sshDisk.mode === "confirm");
+
   const destructiveShell = await permissionDecision(
     "shell_run",
     { command: "Clear-Disk -Number 0", cwd: workspaceRoot },

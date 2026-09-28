@@ -218,6 +218,81 @@ function catastrophic(tokens: string[]): string | undefined {
   return undefined;
 }
 
+const SSH_SAFE_OPTIONS_WITH_VALUE = new Set(["-i", "-p", "-l"]);
+
+function sshRemoteTokens(tokens: string[]): string[] | undefined {
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+
+    // OpenSSH short options are case-sensitive: -l is login name, while -L
+    // opens a local forwarding socket. Never lowercase before classifying them.
+    if (SSH_SAFE_OPTIONS_WITH_VALUE.has(token)) {
+      if (!tokens[i + 1]) return undefined;
+      i += 2;
+      continue;
+    }
+    if (/^-(?:i|p|l).+/.test(token)) {
+      i += 1;
+      continue;
+    }
+
+    // Forwarding, proxying, remote command overrides, multiplexing and all
+    // other SSH modes stay behind confirmation. The auto-allow path is only
+    // for a normal connection that invokes one fixed gate verb.
+    return undefined;
+  }
+
+  if (i >= tokens.length) return undefined;
+  i += 1; // target
+  if (i >= tokens.length) return undefined; // interactive SSH is never auto-approved
+
+  const remote = tokens.slice(i).join(" ").trim();
+  if (hasDynamicOrCompoundSyntax(remote)) return undefined;
+  return tokenize(remote);
+}
+
+function sshGateMode(
+  tokens: string[]
+): "allow" | "confirm" | undefined {
+  if (!tokens.length) return undefined;
+
+  const executable = tokens[0]!.toLowerCase();
+  const args = tokens.slice(1).map((token) => token.toLowerCase());
+
+  if (
+    executable === "inventory" ||
+    executable === "apt-update" ||
+    executable === "evidence" ||
+    executable === "k3s-phase1-status"
+  ) {
+    return args.length === 0 ? "allow" : undefined;
+  }
+  if (executable === "install-nvidia-toolkit") {
+    return args.length === 1 && args[0] === "1.20.1-1"
+      ? "allow"
+      : undefined;
+  }
+  if (executable === "k3s-phase1-start") {
+    return args.length === 0 ? "confirm" : undefined;
+  }
+  if (executable === "service-status") {
+    return (
+      args.length === 1 &&
+      ["chrony", "ssh", "nftables"].includes(args[0]!)
+    )
+      ? "allow"
+      : undefined;
+  }
+
+  return undefined;
+}
+
 async function allPathsInside(
   values: string[],
   access: "read" | "write",
@@ -275,6 +350,27 @@ export async function classifyShellCommand(
     return { mode: "deny", reason: destructive, purpose };
   }
 
+  const executable = tokens[0]!.toLowerCase();
+  if (executable === "ssh" || executable === "ssh.exe") {
+    const remoteTokens = sshRemoteTokens(tokens);
+    const gateMode = remoteTokens ? sshGateMode(remoteTokens) : undefined;
+    if (gateMode) {
+      return {
+        mode: gateMode,
+        reason:
+          gateMode === "allow"
+            ? "recognized fixed SSH gate command"
+            : "fixed asynchronous SSH gate mutation requires one confirmation",
+        purpose
+      };
+    }
+    return {
+      mode: "confirm",
+      reason: "SSH command is outside the V2 remote-maintenance allowlist",
+      purpose
+    };
+  }
+
   if (hasDynamicOrCompoundSyntax(command)) {
     return {
       mode: "confirm",
@@ -283,7 +379,6 @@ export async function classifyShellCommand(
     };
   }
 
-  const executable = tokens[0]!.toLowerCase();
   if (/[\\/]/.test(tokens[0]!) || /^[a-zA-Z]:/.test(tokens[0]!)) {
     return {
       mode: "confirm",

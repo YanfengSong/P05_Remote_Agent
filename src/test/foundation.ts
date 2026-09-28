@@ -138,6 +138,48 @@ try {
       approvalAfterExecuteStart.approvalId !== approvalFirst.approvalId
   );
 
+  const preflightCwd = path.join(manager.currentRoot(), "approval-preflight");
+  await fs.mkdir(preflightCwd, { recursive: true });
+  const preflightRequest = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: preflightCwd, timeoutMs: 90000 }
+  );
+  check(
+    "approval: preflight fixture requests confirmation",
+    preflightRequest.state === "approval_required"
+  );
+  if (preflightRequest.state !== "approval_required") {
+    throw new Error("FAIL approval: expected preflight approval request");
+  }
+  decideToolApproval(APPROVAL_STATE, preflightRequest.approvalId, "approve");
+
+  await fs.rm(preflightCwd, { recursive: true, force: true });
+  let preflightFailed = false;
+  try {
+    await approvalBroker.preflight(
+      "shell_run",
+      { command: "python script.py", cwd: preflightCwd, timeoutMs: 90000 }
+    );
+  } catch {
+    preflightFailed = true;
+  }
+  check(
+    "approval: local shell preflight can fail before consumption",
+    preflightFailed
+  );
+
+  await fs.mkdir(preflightCwd, { recursive: true });
+  const preflightRetry = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: preflightCwd, timeoutMs: 600000 }
+  );
+  check(
+    "approval: preflight failure preserves approved request for retry",
+    preflightRetry.state === "allowed" &&
+      preflightRetry.approvalId === preflightRequest.approvalId
+  );
+  approvalBroker.consumeApproval(preflightRequest.approvalId);
+
   await writeTextFile("marker.txt", "A", manager.currentRoot());
   check("workspace: relative file write/read uses active root",
     (await readTextFile("marker.txt", manager.currentRoot())) === "A");
@@ -277,7 +319,11 @@ try {
   try {
     await runtime.run("fs_write", {
       authorize: () => { throw new AuthorizationError("synthetic policy denial"); },
-      execute: async () => "unreachable"
+      execute: async () => "unreachable",
+      authorizationContext: () => ({
+        approvalId: "approval-test",
+        operation: "synthetic-write"
+      })
     });
   } catch {
     // expected
@@ -302,6 +348,12 @@ try {
       event.errorCategory === "policy" &&
       event.phase === "authorize" &&
       event.recoveryHint === "human"));
+  check("audit: approval correlation survives authorization failure",
+    recent.some((event) =>
+      event.capability === "fs_write" &&
+      event.errorCategory === "policy" &&
+      event.approvalId === "approval-test" &&
+      event.authorizationOperation === "synthetic-write"));
   check("runtime: timeout errors classified",
     recent.some((event) =>
       event.capability === "workspace_current" &&

@@ -1,0 +1,5 @@
+# P05 H1 SSH gate: only the fixed apt metadata refresh and pinned toolkit install need root.
+# Install as /etc/sudoers.d/p05-ssh-gate with mode 0440 and validate with visudo -cf.
+Cmnd_Alias P05_SSH_GATE_APT = /usr/bin/apt-get update, /usr/bin/apt-get install -y nvidia-container-toolkit=1.20.1-1 nvidia-container-toolkit-base=1.20.1-1 libnvidia-container-tools=1.20.1-1 libnvidia-container1=1.20.1-1
+Cmnd_Alias P05_SSH_GATE_K3S = /usr/bin/bash /home/vaesadmin/04_h1_k3s_install.sh /home/vaesadmin/phase1.env
+vaesadmin ALL=(root) NOPASSWD: P05_SSH_GATE_APT, P05_SSH_GATE_K3S

@@ -96,25 +96,29 @@ export function createExposer(
       }
 
       let approvalId: string | undefined;
+      let authorizationOperation: string | undefined;
       const authorize = async (): Promise<void> => {
         if (!permissionBroker) return;
         const authorization = await permissionBroker.authorize(name, args[0]);
+        authorizationOperation = authorization.operation;
+        if ("approvalId" in authorization) {
+          approvalId = authorization.approvalId;
+        }
         if (authorization.state !== "allowed") {
           throw new AuthorizationError(
             permissionErrorMessage(name, authorization)
           );
         }
-        approvalId = authorization.approvalId;
       };
 
-      const operation = () => {
-        // Consume only when execution is actually about to begin. This avoids
-        // losing an approval when authorization succeeds but the call never
-        // reaches the handler. Once execution starts, the approval is single-use
-        // even if the command later fails or times out.
+      const operation = async () => {
+        // Run capability-specific local preflight before consuming approval.
+        // In particular, shell_run validates the local safety guard and cwd
+        // before the one-shot approval is spent. This prevents a local
+        // pre-spawn failure from forcing the user through a second approval.
         if (approvalId && permissionBroker) {
+          await permissionBroker.preflight(name, args[0]);
           permissionBroker.consumeApproval(approvalId);
-          approvalId = undefined;
         }
         return Promise.resolve(
           (handler as unknown as (...innerArgs: unknown[]) => unknown)(...args)
@@ -133,7 +137,16 @@ export function createExposer(
       const client = server.server.getClientVersion();
       return runtime.run(
         name,
-        { authorize, execute: operation },
+        {
+          authorize,
+          execute: operation,
+          authorizationContext: () => ({
+            ...(approvalId ? { approvalId } : {}),
+            ...(authorizationOperation
+              ? { operation: authorizationOperation }
+              : {})
+          })
+        },
         liveDetail,
         client
           ? {
