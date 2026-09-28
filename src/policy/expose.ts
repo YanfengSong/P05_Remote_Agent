@@ -10,6 +10,7 @@ import {
 } from "../capability/registry.js";
 import { summarizeToolInput } from "../monitor/live-activity.js";
 import type { ExecutionRuntime } from "../runtime/execution.js";
+import { AuthorizationError } from "../runtime/errors.js";
 import {
   permissionErrorMessage,
   type ToolPermissionBroker
@@ -94,20 +95,37 @@ export function createExposer(
         );
       }
 
-      if (permissionBroker) {
+      let approvalId: string | undefined;
+      const authorize = async (): Promise<void> => {
+        if (!permissionBroker) return;
         const authorization = await permissionBroker.authorize(name, args[0]);
         if (authorization.state !== "allowed") {
-          throw new Error(permissionErrorMessage(name, authorization));
+          throw new AuthorizationError(
+            permissionErrorMessage(name, authorization)
+          );
         }
-      }
+        approvalId = authorization.approvalId;
+      };
 
-      const operation = () =>
-        Promise.resolve(
+      const operation = () => {
+        // Consume only when execution is actually about to begin. This avoids
+        // losing an approval when authorization succeeds but the call never
+        // reaches the handler. Once execution starts, the approval is single-use
+        // even if the command later fails or times out.
+        if (approvalId && permissionBroker) {
+          permissionBroker.consumeApproval(approvalId);
+          approvalId = undefined;
+        }
+        return Promise.resolve(
           (handler as unknown as (...innerArgs: unknown[]) => unknown)(...args)
         );
+      };
 
       const liveDetail = summarizeToolInput(name, args[0]);
-      if (!runtime) return operation();
+      if (!runtime) {
+        await authorize();
+        return operation();
+      }
 
       // MCP client identity is negotiated at initialize-time by the SDK. It is
       // audit metadata only; authorization never depends on the client-reported
@@ -115,7 +133,7 @@ export function createExposer(
       const client = server.server.getClientVersion();
       return runtime.run(
         name,
-        operation,
+        { authorize, execute: operation },
         liveDetail,
         client
           ? {

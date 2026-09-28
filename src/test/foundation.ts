@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuditStore } from "../audit/store.js";
-import { capabilityDescriptor, capabilityRegistry } from "../capability/registry.js";
+import { decideToolApproval } from "../approval/tool-approval.js";
+import { capabilityDescriptor, capabilityRegistry, DEFAULT_CAPABILITY_CATALOG } from "../capability/registry.js";
 import { ExecutionRuntime } from "../runtime/execution.js";
 import { AuthorizationError } from "../runtime/errors.js";
 import { resolveDownstreamTarget } from "../downstream/types.js";
+import { ToolPermissionBroker } from "../policy/permission-broker.js";
 import { readTextFile, writeTextFile } from "../tools/files.js";
 import { gitStatus } from "../tools/git.js";
 import { runPowerShell } from "../tools/shell.js";
@@ -22,6 +24,7 @@ const REGISTRY_ALLOWED = path.join(FIXTURE, "registry-allowed");
 const REGISTRY_OUTSIDE = path.join(FIXTURE, "registry-outside");
 const REGISTRY_JUNCTION = path.join(REGISTRY_ALLOWED, "escape-link");
 const EXPLICIT_STATE = path.join(FIXTURE, "explicit-state");
+const APPROVAL_STATE = path.join(FIXTURE, "approval-state");
 const DYNAMIC_OUTSIDE = path.join(path.dirname(FIXTURE), "_p05_foundation_dynamic_workspace");
 
 let checks = 0;
@@ -73,6 +76,67 @@ try {
   const manager = new WorkspaceManager(parsed, "a");
   check("workspace: initial id selected", manager.current().id === "a");
   check("workspace: list does not expose root", !JSON.stringify(manager.list()).includes(REPO));
+
+  const approvalBroker = new ToolPermissionBroker({
+    stateDir: APPROVAL_STATE,
+    runtimeSlot: "B",
+    workspaceManager: manager,
+    capabilityCatalog: DEFAULT_CAPABILITY_CATALOG
+  });
+  const approvalFirst = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 90000 }
+  );
+  check(
+    "approval: arbitrary shell first requests confirmation",
+    approvalFirst.state === "approval_required"
+  );
+  if (approvalFirst.state !== "approval_required") {
+    throw new Error("FAIL approval: expected initial approval request");
+  }
+
+  const approvalPendingRepeat = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 600000 }
+  );
+  check(
+    "approval: repeated pending shell request reuses approval id",
+    approvalPendingRepeat.state === "approval_required" &&
+      approvalPendingRepeat.approvalId === approvalFirst.approvalId
+  );
+
+  decideToolApproval(APPROVAL_STATE, approvalFirst.approvalId, "approve");
+
+  const approvalRetry = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 600000 }
+  );
+  check(
+    "approval: shell retry ignores transport timeout in fingerprint",
+    approvalRetry.state === "allowed" &&
+      approvalRetry.approvalId === approvalFirst.approvalId
+  );
+
+  const approvalBeforeExecute = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 30000 }
+  );
+  check(
+    "approval: authorization alone does not consume approval",
+    approvalBeforeExecute.state === "allowed" &&
+      approvalBeforeExecute.approvalId === approvalFirst.approvalId
+  );
+
+  approvalBroker.consumeApproval(approvalFirst.approvalId);
+  const approvalAfterExecuteStart = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 30000 }
+  );
+  check(
+    "approval: consumed approval is single-use after execution begins",
+    approvalAfterExecuteStart.state === "approval_required" &&
+      approvalAfterExecuteStart.approvalId !== approvalFirst.approvalId
+  );
 
   await writeTextFile("marker.txt", "A", manager.currentRoot());
   check("workspace: relative file write/read uses active root",

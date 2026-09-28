@@ -328,7 +328,7 @@ async function toolApproval(slot,id,actionName){
   busy=true;buttons();
   try{
     await api("/api/approval/"+slot+"/"+encodeURIComponent(id)+"/"+actionName,{method:"POST",body:"{}"});
-    toast("工具请求已"+verb+"。"+(actionName==="approve"?"请让远程端重试完全相同的工具调用。":""));
+    toast("工具请求已"+verb+"。"+(actionName==="approve"?"支持自动恢复的客户端会继续执行；否则仅重试一次完全相同的调用。":""));
     await refresh();
   }catch(e){toast(e.message,true)}
   finally{busy=false;buttons()}

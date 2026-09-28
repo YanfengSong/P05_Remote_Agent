@@ -1,5 +1,7 @@
+import path from "node:path";
 import type { CapabilityCatalog } from "../capability/registry.js";
 import {
+  consumeToolApproval,
   gateToolApproval,
   type ToolApprovalGate,
   type ToolApprovalPublicFields
@@ -29,6 +31,41 @@ export type PermissionAuthorization =
       purpose: string;
       reason: string;
     };
+
+function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32"
+    ? resolved.toLowerCase()
+    : resolved;
+}
+
+function approvalFingerprintArgs(
+  capability: string,
+  args: unknown,
+  workspaceRoot: string
+): unknown {
+  if (
+    capability !== "shell_run" ||
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args)
+  ) {
+    return args;
+  }
+
+  const input = args as Record<string, unknown>;
+  const command =
+    typeof input.command === "string" ? input.command.trim() : "";
+  const explicitCwd =
+    typeof input.cwd === "string" && input.cwd.trim()
+      ? canonicalPath(path.resolve(workspaceRoot, input.cwd.trim()))
+      : undefined;
+
+  // timeoutMs affects transport waiting only. The implicit cwd is already
+  // represented by workspaceRoot in the outer fingerprint, so omit it here;
+  // this also avoids path-casing noise across Windows MCP invocations.
+  return explicitCwd ? { command, cwd: explicitCwd } : { command };
+}
 
 export class ToolPermissionBroker {
   constructor(
@@ -91,7 +128,7 @@ export class ToolPermissionBroker {
         workspaceRoot,
         capability,
         operation: decision.operation,
-        args,
+        args: approvalFingerprintArgs(capability, args, workspaceRoot),
         ...(decision.inputSummary
           ? { inputSummary: decision.inputSummary }
           : {}),
@@ -137,6 +174,10 @@ export class ToolPermissionBroker {
       reason: gate.reason
     };
   }
+
+  consumeApproval(approvalId: string): void {
+    consumeToolApproval(this.options.stateDir, approvalId);
+  }
 }
 
 export function permissionErrorMessage(
@@ -173,7 +214,7 @@ export function permissionErrorMessage(
     `reason: ${authorization.reason}`,
     ...(authorization.state === "approval_required"
       ? [
-          "Approve this request in the Local Operator, then retry the same tool call once."
+          "Approve this request in the Local Operator. Compatible clients may resume it automatically; otherwise retry the same tool call once."
         ]
       : [])
   ].join("\n");

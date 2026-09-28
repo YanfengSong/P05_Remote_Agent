@@ -123,6 +123,13 @@ function records(stateDir: string): ToolApprovalRecord[] {
   );
 }
 
+function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32"
+    ? resolved.toLowerCase()
+    : resolved;
+}
+
 export function toolApprovalFingerprint(input: {
   slot: "A" | "B";
   workspaceId: string;
@@ -134,8 +141,8 @@ export function toolApprovalFingerprint(input: {
   return createHash("sha256")
     .update(JSON.stringify([
       input.slot,
-      input.workspaceId,
-      path.resolve(input.workspaceRoot),
+      input.workspaceId.toLowerCase(),
+      canonicalPath(input.workspaceRoot),
       input.capability,
       input.operation,
       canonical(input.args)
@@ -182,12 +189,6 @@ export function gateToolApproval(
 
   const approved = matching.find((record) => record.status === "approved");
   if (approved) {
-    const consumed: ToolApprovalRecord = {
-      ...approved,
-      status: "consumed",
-      consumedAt: new Date().toISOString()
-    };
-    writeAtomic(recordPath(stateDir, approved.id), consumed);
     return { state: "approved", approvalId: approved.id };
   }
 
@@ -240,6 +241,29 @@ export function gateToolApproval(
     reason: input.reason,
     purpose: input.purpose
   };
+}
+
+export function consumeToolApproval(
+  stateDir: string,
+  id: string
+): ToolApprovalRecord {
+  const target = recordPath(stateDir, id);
+  const record = readRecord(target);
+  if (!record) throw new Error("Tool approval request not found.");
+  if (Date.parse(record.expiresAt) <= Date.now()) {
+    throw new Error("Tool approval request has expired.");
+  }
+  if (record.status !== "approved") {
+    throw new Error(`Tool approval request is not approved (status=${record.status}).`);
+  }
+
+  const consumed: ToolApprovalRecord = {
+    ...record,
+    status: "consumed",
+    consumedAt: new Date().toISOString()
+  };
+  writeAtomic(target, consumed);
+  return consumed;
 }
 
 export function listToolApprovals(
