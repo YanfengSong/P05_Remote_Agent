@@ -552,8 +552,11 @@ check(
 check(
   "operator: Tool Approval UI visibly renders canonical approvalId/inputSummary fields",
   domElement("approvalBRows").innerHTML.includes("审批 ID：") &&
+    domElement("approvalBRows").innerHTML.includes("approvalIdLine mono") &&
     domElement("approvalBRows").innerHTML.includes("11111111-1111-4111-8111-111111111111") &&
     domElement("approvalBRows").innerHTML.includes("remote=origin") &&
+    renderedPage.includes(".approvalIdLine{font-size:14px") &&
+    renderedPage.includes("color:var(--warn)") &&
     renderedScript.includes("审批 ID: ") &&
     renderedScript.includes("x.approvalId===id") &&
     renderedScript.includes("a.approvalId") &&

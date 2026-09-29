@@ -47,10 +47,369 @@ const SAFE_PATH_WRITE = new Set([
   "remove-item"
 ]);
 
+const SAFE_IMPLICIT_CWD_READ = new Set([
+  "get-childitem",
+  "dir",
+  "ls"
+]);
+
+const SAFE_PIPE_FILTER = new Set([
+  "select-object",
+  "sort-object",
+  "group-object",
+  "measure-object",
+  "format-table",
+  "format-list",
+  "out-string",
+  "convertto-json"
+]);
+
 const PATH_FLAGS = new Set(["-path", "-literalpath"]);
 
+const SAFE_SSH_FLAG_OPTIONS = new Set(["-4", "-6", "-q", "-T"]);
+const SAFE_REMOTE_SIMPLE = new Set([
+  "df",
+  "findmnt",
+  "free",
+  "id",
+  "ls",
+  "lsblk",
+  "ps",
+  "pwd",
+  "ss",
+  "stat",
+  "uname"
+]);
+const SAFE_SYSTEMCTL_READ = new Set([
+  "cat",
+  "is-active",
+  "is-enabled",
+  "is-failed",
+  "is-system-running",
+  "list-dependencies",
+  "list-jobs",
+  "list-unit-files",
+  "list-units",
+  "show",
+  "show-environment",
+  "status"
+]);
+const SAFE_KUBECTL_READ = new Set([
+  "api-resources",
+  "api-versions",
+  "auth",
+  "cluster-info",
+  "describe",
+  "get",
+  "logs",
+  "version"
+]);
+const KUBECTL_SENSITIVE_RESOURCES = new Set(["secret", "secrets"]);
+
+function safeSshOption(value: string): boolean {
+  const equals = value.indexOf("=");
+  if (equals <= 0) return false;
+  const key = value.slice(0, equals).toLowerCase();
+  const optionValue = value.slice(equals + 1).toLowerCase();
+
+  if (key === "batchmode" || key === "identitiesonly") {
+    return optionValue === "yes";
+  }
+  if (key === "stricthostkeychecking") {
+    return optionValue === "yes";
+  }
+  if (key === "connecttimeout" || key === "serveraliveinterval" || key === "serveralivecountmax") {
+    return /^\d{1,4}$/.test(optionValue);
+  }
+  if (key === "loglevel") {
+    return ["quiet", "fatal", "error", "info"].includes(optionValue);
+  }
+  return false;
+}
+
+function sshRemoteCommand(tokens: string[]): string | undefined {
+  let i = 1;
+
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+    if (!token.startsWith("-") || token === "-") break;
+
+    if (SAFE_SSH_FLAG_OPTIONS.has(token)) {
+      i += 1;
+      continue;
+    }
+
+    const lower = token.toLowerCase();
+    if (lower === "-i") {
+      const identity = tokens[i + 1];
+      if (!identity || identity.startsWith("-")) return undefined;
+      i += 2;
+      continue;
+    }
+    if (lower === "-p") {
+      const port = tokens[i + 1];
+      if (!port || !/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+        return undefined;
+      }
+      i += 2;
+      continue;
+    }
+    if (lower === "-l") {
+      const user = tokens[i + 1];
+      if (!user || !/^[A-Za-z0-9._-]+$/.test(user)) return undefined;
+      i += 2;
+      continue;
+    }
+    if (lower === "-o") {
+      const option = tokens[i + 1];
+      if (!option || !safeSshOption(option)) return undefined;
+      i += 2;
+      continue;
+    }
+    if (lower.startsWith("-o") && token.length > 2) {
+      if (!safeSshOption(token.slice(2))) return undefined;
+      i += 1;
+      continue;
+    }
+
+    return undefined;
+  }
+
+  const destination = tokens[i];
+  if (
+    !destination ||
+    !/^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$/.test(destination)
+  ) {
+    return undefined;
+  }
+
+  const remote = tokens.slice(i + 1).join(" ").trim();
+  return remote || undefined;
+}
+
+function hostnameReadOnly(tokens: string[]): boolean {
+  if (tokens.length === 1) return true;
+  const flags = new Set([
+    "-a", "--alias",
+    "-d", "--domain",
+    "-f", "--fqdn", "--long",
+    "-i", "--ip-address",
+    "-I", "--all-ip-addresses",
+    "-s", "--short",
+    "-y", "--yp", "--nis"
+  ]);
+  return tokens.slice(1).every((token) => flags.has(token));
+}
+
+function uptimeReadOnly(tokens: string[]): boolean {
+  const flags = new Set(["-p", "--pretty", "-s", "--since", "-V", "--version"]);
+  return tokens.slice(1).every((token) => flags.has(token));
+}
+
+function ipReadOnly(tokens: string[]): boolean {
+  const mutations = new Set([
+    "add", "append", "change", "del", "delete", "flush",
+    "replace", "set"
+  ]);
+  if (tokens.slice(1).some((token) => mutations.has(token.toLowerCase()))) return false;
+
+  const object = tokens
+    .slice(1)
+    .find((token) => !token.startsWith("-"))
+    ?.toLowerCase();
+  return Boolean(object && [
+    "addr", "address", "link", "neigh", "neighbor", "route", "rule"
+  ].includes(object));
+}
+
+function systemctlReadOnly(tokens: string[]): boolean {
+  const sub = tokens.slice(1).find((token) => !token.startsWith("-"))?.toLowerCase();
+  return Boolean(sub && SAFE_SYSTEMCTL_READ.has(sub));
+}
+
+function passwdReadOnly(tokens: string[]): boolean {
+  return (
+    tokens.length === 3 &&
+    ["-s", "--status"].includes(tokens[1]!.toLowerCase()) &&
+    /^[A-Za-z0-9._-]+$/.test(tokens[2]!)
+  );
+}
+
+function grepAptConfigReadOnly(tokens: string[]): boolean {
+  if (tokens.length < 3) return false;
+
+  const allowedFlags = new Set([
+    "-r", "-R",
+    "-n", "--line-number",
+    "-H", "--with-filename",
+    "-h", "--no-filename",
+    "-i", "--ignore-case",
+    "-F", "--fixed-strings",
+    "-E", "--extended-regexp"
+  ]);
+
+  let i = 1;
+  while (i < tokens.length && tokens[i]!.startsWith("-")) {
+    if (!allowedFlags.has(tokens[i]!)) return false;
+    i += 1;
+  }
+
+  if (i >= tokens.length - 1) return false;
+  i += 1; // skip the literal search pattern
+
+  const paths = tokens.slice(i);
+  return paths.length > 0 && paths.every((value) => {
+    if (value === "/etc/apt") return true;
+    if (!value.startsWith("/etc/apt/")) return false;
+    const segments = value.slice("/etc/apt/".length).split("/");
+    return segments.length > 0 && segments.every((segment) =>
+      Boolean(segment) &&
+      segment !== "." &&
+      segment !== ".." &&
+      !/[*?~]/.test(segment)
+    );
+  });
+}
+
+function dpkgReadOnly(tokens: string[]): boolean {
+  if (tokens.length < 2) return false;
+  const action = tokens[1]!.toLowerCase();
+  return [
+    "-s", "--status",
+    "-l", "--list",
+    "-s", "--search"
+  ].includes(action);
+}
+
+function dpkgQueryReadOnly(tokens: string[]): boolean {
+  if (tokens.length < 2) return false;
+  const action = tokens[1]!.toLowerCase();
+  return [
+    "-s", "--status",
+    "-l", "--list",
+    "-w", "--show",
+    "-s", "--search"
+  ].includes(action);
+}
+
+function nvidiaSmiReadOnly(tokens: string[]): boolean {
+  if (tokens.length === 1) return true;
+  if (tokens.length === 2 && ["-l", "--list-gpus"].includes(tokens[1]!.toLowerCase())) {
+    return true;
+  }
+  return tokens.slice(1).every((token) => {
+    const lower = token.toLowerCase();
+    return lower.startsWith("--query-gpu=") ||
+      lower.startsWith("--query-compute-apps=") ||
+      lower.startsWith("--format=");
+  });
+}
+
+function kubectlReadOnly(tokens: string[]): boolean {
+  if (!tokens.length) return false;
+  const sub = tokens.find((token) => !token.startsWith("-"))?.toLowerCase();
+  if (!sub || !SAFE_KUBECTL_READ.has(sub)) return false;
+
+  if (sub === "auth") {
+    return tokens.some((token) => token.toLowerCase() === "can-i");
+  }
+
+  if (sub === "get" || sub === "describe") {
+    const subIndex = tokens.findIndex((token) => token.toLowerCase() === sub);
+    const resource = tokens
+      .slice(subIndex + 1)
+      .find((token) => !token.startsWith("-"))
+      ?.split(/[\/,]/)[0]
+      ?.toLowerCase();
+    if (resource && KUBECTL_SENSITIVE_RESOURCES.has(resource)) return false;
+  }
+
+  return true;
+}
+
+function remoteCommandReadOnly(command: string, depth = 0): boolean {
+  if (depth > 2 || hasDynamicOrCompoundSyntax(command)) return false;
+
+  const tokens = tokenize(command.trim());
+  if (!tokens?.length) return false;
+
+  const executable = tokens[0]!.toLowerCase();
+  if (/[\\/]/.test(tokens[0]!) || /^[a-zA-Z]:/.test(tokens[0]!)) return false;
+
+  if (executable === "ssh" || executable === "ssh.exe") {
+    const nested = sshRemoteCommand(tokens);
+    return Boolean(nested && remoteCommandReadOnly(nested, depth + 1));
+  }
+
+  if (executable === "sudo") {
+    if (tokens[1]?.toLowerCase() !== "-n" || tokens.length < 3) return false;
+    return remoteCommandReadOnly(tokens.slice(2).join(" "), depth + 1);
+  }
+
+  if (executable === "k3s") {
+    if (tokens[1]?.toLowerCase() !== "kubectl") return false;
+    return kubectlReadOnly(tokens.slice(2));
+  }
+
+  if (executable === "kubectl") return kubectlReadOnly(tokens.slice(1));
+  if (executable === "hostname") return hostnameReadOnly(tokens);
+  if (executable === "uptime") return uptimeReadOnly(tokens);
+  if (executable === "whoami" || executable === "date") return tokens.length === 1;
+  if (executable === "ip") return ipReadOnly(tokens);
+  if (executable === "systemctl") return systemctlReadOnly(tokens);
+  if (executable === "passwd") return passwdReadOnly(tokens);
+  if (executable === "nvidia-smi") return nvidiaSmiReadOnly(tokens);
+  if (executable === "dpkg") return dpkgReadOnly(tokens);
+  if (executable === "dpkg-query") return dpkgQueryReadOnly(tokens);
+  if (executable === "grep") return grepAptConfigReadOnly(tokens);
+  return SAFE_REMOTE_SIMPLE.has(executable);
+}
+
+
 function hasDynamicOrCompoundSyntax(command: string): boolean {
-  return /[\r\n;|&><`$(){}\[\],]/.test(command);
+  return /[\r\n;&><`$(){}\[\]]/.test(command);
+}
+
+function splitSimplePipeline(command: string): string[] | undefined {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+
+  for (let i = 0; i < command.length; i += 1) {
+    const char = command[i]!;
+    if (quote) {
+      if (char === quote) quote = undefined;
+      current += char;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    if (char === "|") {
+      if (command[i + 1] === "|") return undefined;
+      const segment = current.trim();
+      if (!segment) return undefined;
+      segments.push(segment);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (quote) return undefined;
+  const tail = current.trim();
+  if (!tail) return undefined;
+  segments.push(tail);
+  return segments;
 }
 
 function tokenize(command: string): string[] | undefined {
@@ -259,7 +618,69 @@ export async function classifyShellCommand(
   workspaceRoot: string,
   cwd: string
 ): Promise<ShellPolicyDecision> {
-  const tokens = tokenize(command.trim());
+  const trimmed = command.trim();
+  const pipeline = splitSimplePipeline(trimmed);
+
+  if (!pipeline) {
+    return {
+      mode: "confirm",
+      reason: "command could not be parsed conservatively",
+      purpose: "执行一条无法可靠解析的 PowerShell 命令；系统无法确认其完整行为。"
+    };
+  }
+
+  if (pipeline.length > 1) {
+    if (hasDynamicOrCompoundSyntax(trimmed)) {
+      return {
+        mode: "confirm",
+        reason: "dynamic, compound or nested shell syntax requires confirmation",
+        purpose: "执行包含动态表达式的 PowerShell 流水线；系统无法证明其只读。"
+      };
+    }
+
+    const segmentTokens = pipeline.map((segment) => tokenize(segment));
+    if (segmentTokens.some((tokens) => !tokens?.length)) {
+      return {
+        mode: "confirm",
+        reason: "pipeline segment could not be parsed conservatively",
+        purpose: "执行一条无法可靠解析的 PowerShell 流水线。"
+      };
+    }
+
+    for (const tokens of segmentTokens as string[][]) {
+      const destructive = catastrophic(tokens);
+      if (destructive) {
+        return { mode: "deny", reason: destructive, purpose: describe(tokens) };
+      }
+    }
+
+    const source = await classifyShellCommand(pipeline[0]!, workspaceRoot, cwd);
+    if (source.mode !== "allow") return source;
+
+    for (let i = 1; i < segmentTokens.length; i += 1) {
+      const tokens = segmentTokens[i] as string[];
+      const executable = tokens[0]!.toLowerCase();
+      if (
+        /[\\/]/.test(tokens[0]!) ||
+        /^[a-zA-Z]:/.test(tokens[0]!) ||
+        !SAFE_PIPE_FILTER.has(executable)
+      ) {
+        return {
+          mode: "confirm",
+          reason: "pipeline contains a command that is not a recognized read-only filter",
+          purpose: "读取数据后执行未被证明为只读的流水线处理。"
+        };
+      }
+    }
+
+    return {
+      mode: "allow",
+      reason: "recognized read-only command pipeline",
+      purpose: source.purpose + " 结果仅经过只读筛选或格式化。"
+    };
+  }
+
+  const tokens = tokenize(trimmed);
   const purpose = describe(tokens);
 
   if (!tokens?.length) {
@@ -275,7 +696,7 @@ export async function classifyShellCommand(
     return { mode: "deny", reason: destructive, purpose };
   }
 
-  if (hasDynamicOrCompoundSyntax(command)) {
+  if (hasDynamicOrCompoundSyntax(trimmed)) {
     return {
       mode: "confirm",
       reason: "dynamic, compound or nested shell syntax requires confirmation",
@@ -289,6 +710,22 @@ export async function classifyShellCommand(
       mode: "confirm",
       reason: "explicit executable paths require confirmation",
       purpose
+    };
+  }
+
+  if (executable === "ssh" || executable === "ssh.exe") {
+    const remote = sshRemoteCommand(tokens);
+    if (remote && remoteCommandReadOnly(remote)) {
+      return {
+        mode: "allow",
+        reason: "static SSH invocation contains only recognized read-only remote behavior",
+        purpose: "通过 SSH 执行静态、可证明只读的远端查询命令。"
+      };
+    }
+    return {
+      mode: "confirm",
+      reason: "SSH invocation is interactive, mutating, transport-mutating or not provably read-only",
+      purpose: "通过 SSH 执行无法证明为纯只读的远端行为；需要人工确认。"
     };
   }
 
@@ -314,6 +751,13 @@ export async function classifyShellCommand(
 
     const explicit = flagValues(tokens, PATH_FLAGS);
     const paths = explicit.length ? explicit : positionalPaths(tokens);
+    if (paths.length === 0 && SAFE_IMPLICIT_CWD_READ.has(executable)) {
+      return {
+        mode: "allow",
+        reason: "recognized read-only command using the current Workspace directory",
+        purpose
+      };
+    }
     return (await allPathsInside(paths, "read", cwd, workspaceRoot))
       ? {
           mode: "allow",

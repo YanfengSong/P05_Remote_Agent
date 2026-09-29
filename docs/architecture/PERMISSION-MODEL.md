@@ -1,6 +1,6 @@
 # P05 Permission and Self-Development Model
 
-Updated: 2026-09-23
+Updated: 2026-09-29
 Foundation: V2
 
 ## Core rule
@@ -54,9 +54,11 @@ Failures are classified for audit/recovery.
 
 ### 6. Persistent audit / recovery
 
-Audit stores metadata only and is persisted in protected P05 state.
+Audit stores bounded execution metadata in protected P05 state.
 
-It does not retain raw command text, file content or raw arguments.
+It does not persist raw argument payloads or file content. For diagnosis it may persist
+a bounded, sanitized `inputSummary` produced by the same summarizer used for Live
+Activity. Known secret forms are redacted, including SSH identity-file arguments.
 
 An execution left running across restart is marked interrupted.
 
@@ -80,19 +82,22 @@ stronger OS execution boundary as appropriate.
 
 ## Operation classes
 
-Foundation V2 separates profile exposure from call-time permission. The Tool Profile determines whether a capability may be exposed at all; the common Tool Permission Broker then returns ALLOW / CONFIRM / DENY for the concrete call.
+Foundation V2 separates profile exposure from call-time permission. The Tool Profile
+determines whether a capability may be exposed at all; the common Tool Permission
+Broker then returns ALLOW / CONFIRM / DENY for the concrete call.
 
 | Class | Examples | V2 call-time policy |
 |---|---|---|
 | Observe | fs_read, fs_list, git_status, activity_recent | ALLOW |
 | Workspace mutate | fs_write, apply_patch, git_add, git_commit, git_branch | ALLOW through existing structured Workspace guard |
 | Platform execute | command_run(check/build/verify) | CONFIRM |
-| Shell | shell_run | small Workspace-safe allowlist; otherwise CONFIRM; catastrophic patterns DENY |
+| Shell | shell_run | Workspace-local safe behavior and provably read-only SSH may ALLOW; unknown or mutating behavior CONFIRM; catastrophic patterns DENY |
+| Typed remote read | remote_read | fixed H1/J1 read-only operations ALLOW; caller cannot supply host/key/command text |
 | Runtime lifecycle | runtime_restart | CONFIRM |
 | External remote mutate | git_push | CONFIRM when exposed by full profile |
 | Generic downstream execute | mcp_call_tool | CONFIRM when exposed by full profile |
-| MATLAB/Simulink downstream | matlab.call_tool | known read-only subtools ALLOW; mutation/code execution CONFIRM |
-| Host/system mutate | services, firewall, registry, system packages | DENY or explicit broker; not ordinary V2 developer authority |
+| MATLAB/Simulink downstream | matlab.call_tool | known reads and Workspace-scoped model_edit ALLOW; arbitrary code/test or unclassified mutation CONFIRM |
+| Host/system mutate | services, firewall, registry, system packages | CONFIRM through an explicit typed/brokered mutation path; not a low-friction generic Shell path |
 
 ## Git rules
 
@@ -120,17 +125,43 @@ Foundation V2 separates profile exposure from call-time permission. The Tool Pro
 
 ## Common Tool Permission boundary
 
-All normal Core and Plugin tool registrations pass through the V2 common Tool Permission Broker defined by ADR-0020.
+All normal Core and Plugin tool registrations pass through the V2 common Tool
+Permission Broker defined by ADR-0020.
 
-The Broker evaluates the concrete call as ALLOW / CONFIRM / DENY after Tool Profile exposure has already succeeded. CONFIRM creates a Runtime-private Local Operator request bound to Runtime slot, active Workspace, capability, operation and exact canonicalized arguments. Approval expires after 15 minutes and is consumed before one execution.
+The Broker evaluates each concrete call as ALLOW / CONFIRM / DENY after Tool Profile
+exposure has already succeeded. CONFIRM creates a Runtime-private Local Operator
+request bound to Runtime slot, active Workspace, capability, operation and exact
+canonicalized arguments. Approval expires after 15 minutes and is consumed before one
+execution.
 
-`shell_run` is one consumer of this common Broker. Its policy adapter intentionally remains small: recognized Workspace-safe reads and a small set of explicit Workspace-local file operations may auto-run; complex, arbitrary or external execution requires CONFIRM; catastrophic disk/root destructive patterns are DENY. Shell parsing is not treated as a general sandbox.
+`shell_run` is one consumer of this common Broker. Its policy is behavior-aware:
+- recognized local diagnostics and Workspace-local reads may ALLOW;
+- static Workspace-local file writes may ALLOW only after existing path/link guards prove the target remains inside the active Workspace;
+- static SSH may ALLOW only when transport options are non-mutating and the complete remote command is provably read-only;
+- nested H1 -> J1 SSH is supported when every hop remains non-interactive and the final behavior is read-only;
+- bare SSH, forwarding, host-key trust mutation such as `accept-new`, dynamic/compound syntax, unknown commands and remote mutations remain CONFIRM;
+- catastrophic disk/root destructive patterns remain DENY.
 
-`command_run`, `runtime_restart`, `git_push`, generic `mcp_call_tool`, and mutating/arbitrary-code MATLAB downstream tools are confirmation-gated in V2. Known MATLAB/Simulink read-only subtools are allowed directly.
+The closed SSH read classifier is extended by regression evidence. Current examples
+include `hostname`, `uptime`, read-only `ip`, read-only `systemctl`,
+`passwd -S`, `nvidia-smi`, selected read-only `kubectl`, `dpkg` /
+`dpkg-query` status/list/search, and APT-config `grep` constrained to
+`/etc/apt`.
 
-Structured Workspace tools keep their existing path guards. The Permission Broker does not replace Workspace/Reference authorization.
+`remote_read(target, operation)` is the preferred typed remote-read surface for fixed
+H1/J1 maintenance queries. The caller selects only a known target and operation; host,
+user, key and command text are local configuration.
 
-OS-level Sandbox, immutable runner and unified hard execution boundary remain V3 requirements.
+`command_run`, `runtime_restart`, `git_push`, generic `mcp_call_tool`,
+arbitrary-code MATLAB operations and remote/system mutations remain confirmation-gated.
+Known MATLAB/Simulink reads and Workspace-scoped structured `model_edit` are allowed
+directly.
+
+Structured Workspace tools keep their existing path guards. The Permission Broker does
+not replace Workspace/Reference authorization.
+
+OS-level Sandbox, immutable runner and unified hard execution boundary remain V3
+requirements.
 
 ## Plugin permissions
 

@@ -83,6 +83,57 @@ try {
     workspaceManager: manager,
     capabilityCatalog: DEFAULT_CAPABILITY_CATALOG
   });
+  const structuredRead = await approvalBroker.authorize(
+    "fs_read",
+    { path: "marker.txt" }
+  );
+  check(
+    "approval: structured read is allowed without confirmation",
+    structuredRead.state === "allowed"
+  );
+
+  const remoteRead = await approvalBroker.authorize(
+    "remote_read",
+    { target: "h1", operation: "network.status" }
+  );
+  check(
+    "approval: typed remote read is allowed without confirmation",
+    remoteRead.state === "allowed"
+  );
+
+  const sshReadOnly = await approvalBroker.authorize(
+    "shell_run",
+    {
+      command: 'ssh -o BatchMode=yes example-host "systemctl is-active ssh"',
+      cwd: manager.currentRoot()
+    }
+  );
+  check(
+    "approval: static read-only SSH is allowed without confirmation",
+    sshReadOnly.state === "allowed"
+  );
+
+  const sshRemoteWrite = await approvalBroker.authorize(
+    "shell_run",
+    {
+      command: 'ssh -o BatchMode=yes example-host "touch /tmp/p05-write"',
+      cwd: manager.currentRoot()
+    }
+  );
+  check(
+    "approval: SSH remote mutation still requests confirmation",
+    sshRemoteWrite.state === "approval_required"
+  );
+
+  const structuredWrite = await approvalBroker.authorize(
+    "fs_write",
+    { path: "approval-write.txt", content: "x" }
+  );
+  check(
+    "approval: structured Workspace write is allowed without confirmation",
+    structuredWrite.state === "allowed"
+  );
+
   const approvalFirst = await approvalBroker.authorize(
     "shell_run",
     { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 90000 }
@@ -296,6 +347,11 @@ try {
   check("capability: registry is non-empty", registry.length > 0);
   check("capability: names are unique", new Set(registry.map((entry) => entry.name)).size === registry.length);
   check("capability: shell is workspace scoped", capabilityDescriptor("shell_run").scope === "workspace");
+  check(
+    "capability: remote_read is external read-only",
+    capabilityDescriptor("remote_read").scope === "external" &&
+      capabilityDescriptor("remote_read").risk === "read"
+  );
   check("capability: restart is host scoped", capabilityDescriptor("runtime_restart").scope === "host");
   check("capability: remote workspace switch is absent",
     !capabilityRegistry().some((entry) => entry.name === "workspace_switch"));
@@ -315,7 +371,7 @@ try {
   await runtime.run(
     "workspace_current",
     async () => "ok",
-    undefined,
+    "workspace-current test summary",
     {
       clientName: "foundation-client",
       clientVersion: "1.2.3"
@@ -390,6 +446,11 @@ try {
     "audit: per-call MCP client identity is recorded",
     attributed?.clientName === "foundation-client" &&
       attributed?.clientVersion === "1.2.3",
+    JSON.stringify(attributed)
+  );
+  check(
+    "audit: bounded sanitized input summary is persisted",
+    attributed?.inputSummary === "workspace-current test summary",
     JSON.stringify(attributed)
   );
   check("audit: one final record per execution id",

@@ -9,7 +9,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "reference_list", minProfile: "readonly", risk: "read", scope: "reference", summary: "List locally authorized read-only reference roots without exposing host paths." },
   { name: "reference_read", minProfile: "readonly", risk: "read", scope: "reference", summary: "Read a UTF-8 text file inside a locally authorized read-only reference root." },
   { name: "reference_list_directory", minProfile: "readonly", risk: "read", scope: "reference", summary: "List direct children inside a locally authorized read-only reference root." },
-  { name: "activity_recent", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show recent bounded execution metadata without tool inputs or secret content." },
+  { name: "activity_recent", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show recent bounded execution metadata with sanitized input summaries and without raw tool inputs or secret content." },
   { name: "recovery_status", minProfile: "readonly", risk: "read", scope: "platform", summary: "Show failed or interrupted executions that may need recovery." },
   { name: "plugin_list", minProfile: "readonly", risk: "read", scope: "platform", summary: "List installed application plugins, versions and active-workspace availability." },
 
@@ -25,6 +25,8 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "git_commit", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create a local Git commit in the active workspace." },
   { name: "git_branch", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create, switch or safely delete a local branch in the active workspace." },
   { name: "git_push", minProfile: "full", risk: "write", scope: "external", summary: "Push the current branch to a named Git remote without force or arbitrary refspec." },
+
+  { name: "remote_read", minProfile: "readonly", risk: "read", scope: "external", summary: "Run one fixed read-only H1/J1 maintenance query through configured SSH targets." },
 
   { name: "command_run", minProfile: "developer", risk: "execute", scope: "platform", summary: "Run one server-side allowlisted P05 platform validation action." },
   { name: "runtime_restart", minProfile: "developer", risk: "execute", scope: "host", summary: "Restart only the current P05 runtime slot through the repo-local restart controller." },

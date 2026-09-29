@@ -1,6 +1,6 @@
 ﻿# Project Status
 
-Updated: 2026-09-23
+Updated: 2026-09-29
 
 ## Baseline
 
@@ -106,7 +106,7 @@ A record left running across Agent restart is converted to:
 - interrupted;
 - recoveryHint=inspect.
 
-Raw command text, file content and raw argument payloads are not stored.
+Raw argument payloads and file content are not stored. Audit may persist a bounded sanitized `inputSummary`; known secret patterns, including SSH identity-file arguments, are redacted.
 
 ### MCP output contracts
 
@@ -169,6 +169,7 @@ Workspace switching changes active-bound downstream context and triggers reconne
 - plugin_list
 - fs_read / fs_list
 - git_status / git_diff / git_diff_stat
+- remote_read (fixed H1/J1 read-only operations)
 
 ### developer
 - all readonly capabilities
@@ -177,7 +178,7 @@ Workspace switching changes active-bound downstream context and triggers reconne
 - command_run
 - runtime_restart
 - mcp_status / mcp_list_tools
-- shell_run (common Tool Permission Broker; small allowlist, CONFIRM for complex/arbitrary execution, DENY for catastrophic patterns)
+- shell_run (behavior-aware common Tool Permission Broker)
 
 ### full
 - all developer capabilities
@@ -200,17 +201,32 @@ No structured force push or arbitrary refspec is exposed.
 
 ## Permission / Shell boundary
 
-ADR-0020 replaces the Shell-specific approval subsystem with one common Tool Permission Broker.
+ADR-0020 replaces the Shell-specific approval subsystem with one common Tool Permission
+Broker.
 
 Current V2 behavior:
-- structured read and Workspace-local structured mutation remain low-friction `ALLOW` paths;
-- `command_run`, `runtime_restart`, `git_push`, generic downstream execution, and mutating/arbitrary-code MATLAB tools are `CONFIRM`;
-- known MATLAB/Simulink read-only subtools are `ALLOW`;
-- `shell_run` uses a small Workspace-safe allowlist, `CONFIRM` for complex/arbitrary execution, and `DENY` for catastrophic disk/root destructive patterns;
+- structured reads and Workspace-local structured mutations are low-friction `ALLOW`;
+- Workspace-scoped structured MATLAB `model_edit` is `ALLOW`; arbitrary-code/test or unclassified MATLAB behavior remains `CONFIRM`;
+- `remote_read` provides fixed H1/J1 read-only operations at readonly profile;
+- `shell_run` is behavior-aware: local safe operations and provably read-only SSH may `ALLOW`; bare/forwarding/dynamic/unclassified/mutating SSH remains `CONFIRM`; catastrophic disk/root destructive patterns remain `DENY`;
+- current SSH read regressions cover nested H1 -> J1 identity/network/service queries, `passwd -S`, package-status queries and constrained APT-config reads;
+- `command_run`, `runtime_restart`, `git_push`, generic downstream execution and remote/system mutations remain `CONFIRM`;
 - approval is bound to exact Runtime + Workspace + Tool + Operation + canonicalized arguments;
 - approval expires after 15 minutes and is consumed before one execution.
 
-The Runtime cannot approve its own request. Shell uses the same common permission envelope and Tool Approval store as the other sensitive capabilities; it no longer owns a separate approval contract.
+The Runtime cannot approve its own request. P05 Local Operator approval is also not a
+promise that an independent upstream client/platform safety layer will execute an
+arbitrary high-risk Shell command. Repeated maintenance mutations should move toward
+typed maintenance capabilities rather than attempts to bypass that independent layer.
+
+### 2026-09-29 live acceptance
+
+Runtime A live checks verified no-approval execution for H1/J1 `hostname`, J1
+`passwd -S`, `ip route`, `systemctl is-active`, `dpkg -s nftables`, and
+APT-config `grep` under `/etc/apt`. A remote `touch` remained confirmation-gated
+and a cross-Workspace structured write remained denied.
+
+See `docs/handoff/V2_BRANCH_BASELINE_2026-09-29.md` for the branch handoff.
 
 ## Validation
 
@@ -283,15 +299,19 @@ or narrow them.
 
 ## Integration / working tree
 
-The previously validated feature integration is already represented in `develop`;
-`main` has not yet been updated.
+The 2026-09-29 V2 permission / remote-execution baseline is finalized first on
+`feature/shell-approval-gate`. After this baseline commit is pushed, a long-lived
+`V2` branch is created from the exact same commit and becomes the development line
+for subsequent V2 work.
 
-Current external-review closure fixes are being staged on `plugins` and must be
-re-integrated into `develop` after all blocking findings are closed and the full
-verification suite passes again.
+`main` remains the release branch. Promotion from `V2` to `main` requires an
+explicit integration/release decision and a fresh full verification; branch naming
+alone is not release evidence.
 
-Do not infer release readiness from the checked-out branch name alone. The release
-gate is the verified `develop -> main` integration state.
+V3 architecture/research documents may live alongside V2 implementation code as
+design inputs, but implementation work on the `V2` branch must not claim unimplemented
+V3 contracts as delivered behavior.
+
 ## Plugin architecture references
 
 - `docs/architecture/PLUGIN-FRAMEWORK.md`

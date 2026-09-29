@@ -6,6 +6,11 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import { runDeveloperAction } from "./dev-command.js";
 import { requestRuntimeRestart } from "./runtime.js";
 import { runPowerShell } from "./shell.js";
+import {
+  REMOTE_READ_OPERATIONS,
+  REMOTE_READ_TARGETS,
+  runRemoteRead
+} from "./remote-read.js";
 import { structuredResult } from "./result.js";
 
 export function registerExecutionTools(
@@ -36,6 +41,33 @@ export function registerExecutionTools(
   }, async () => {
     const status = await requestRuntimeRestart();
     return structuredResult({ status }, status);
+  });
+
+  exposer.expose("remote_read", {
+    description:
+      "Run a fixed read-only maintenance query against configured H1/J1 SSH targets. The caller selects only target and operation; host, user, identity files and remote command text are local configuration.",
+    inputSchema: z.object({
+      target: z.enum(REMOTE_READ_TARGETS),
+      operation: z.enum(REMOTE_READ_OPERATIONS)
+    }),
+    outputSchema: z.object({
+      target: z.enum(REMOTE_READ_TARGETS),
+      operation: z.enum(REMOTE_READ_OPERATIONS),
+      stdout: z.string(),
+      stderr: z.string()
+    })
+  }, async ({ target, operation }) => {
+    const result = await runRemoteRead(target, operation);
+    const output = {
+      target,
+      operation,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+    return structuredResult(
+      output,
+      "STDOUT:\n" + result.stdout + "\nSTDERR:\n" + result.stderr
+    );
   });
 
   exposer.expose("shell_run", {

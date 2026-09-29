@@ -56,7 +56,7 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat", "remote_read"];
 // shell_run is developer-visible but every call passes the common Tool Permission Broker.
 // Generic downstream execution and external Git push remain full-only.
 const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
@@ -290,6 +290,38 @@ const { permissionDecision } = await import("../policy/permission.js");
   );
   check("permission: known shell diagnostic defaults ALLOW", safeShell.mode === "allow");
 
+  const cwdReadShell = await permissionDecision(
+    "shell_run",
+    { command: "Get-ChildItem", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: implicit-cwd shell read defaults ALLOW", cwdReadShell.mode === "allow");
+
+  const readPipeline = await permissionDecision(
+    "shell_run",
+    { command: "Get-ChildItem | Select-Object Name,Length", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: recognized read-only shell pipeline defaults ALLOW", readPipeline.mode === "allow");
+
+  const writeShell = await permissionDecision(
+    "shell_run",
+    { command: "Set-Content -Path README.md -Value x", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: static Workspace-local shell file writes default ALLOW", writeShell.mode === "allow");
+
+  const dynamicPipeline = await permissionDecision(
+    "shell_run",
+    { command: "Get-ChildItem | ForEach-Object { Remove-Item $_.FullName }", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: dynamic shell pipeline still requires CONFIRM", dynamicPipeline.mode === "confirm");
+
   const unknownShell = await permissionDecision(
     "shell_run",
     { command: "python script.py", cwd: workspaceRoot },
@@ -298,13 +330,98 @@ const { permissionDecision } = await import("../policy/permission.js");
   );
   check("permission: arbitrary shell execution defaults CONFIRM", unknownShell.mode === "confirm");
 
-  const rawSsh = await permissionDecision(
+  const sshRead = await permissionDecision(
     "shell_run",
     { command: "ssh example-host uptime", cwd: workspaceRoot },
     DEFAULT_CAPABILITY_CATALOG,
     workspaceRoot
   );
-  check("permission: generic SSH execution remains CONFIRM", rawSsh.mode === "confirm");
+  check("permission: static read-only SSH defaults ALLOW", sshRead.mode === "allow");
+
+  const sshNestedRead = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh -o BatchMode=yes -o ConnectTimeout=10 -i C:\\keys\\h1 vaesadmin@192.168.8.243 "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i /home/vaesadmin/.ssh/h1_j1_ed25519 vaesadmin@192.168.137.20 hostname"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: nested static read-only SSH defaults ALLOW", sshNestedRead.mode === "allow");
+
+  const sshAptGrep = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh example-host "grep -R 192.168.137.1:8889 /etc/apt"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH grep under /etc/apt defaults ALLOW", sshAptGrep.mode === "allow");
+
+  const sshSensitiveGrep = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh example-host "grep -R root /etc/shadow"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH grep outside /etc/apt remains CONFIRM", sshSensitiveGrep.mode === "confirm");
+
+  const sshAptTraversalGrep = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh example-host "grep -R root /etc/apt/../shadow"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH grep lexical escape from /etc/apt remains CONFIRM", sshAptTraversalGrep.mode === "confirm");
+
+  const sshDpkgStatus = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh example-host "dpkg -s nftables"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH dpkg package status defaults ALLOW", sshDpkgStatus.mode === "allow");
+
+  const sshDpkgInstall = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh example-host "sudo -n dpkg -i package.deb"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH dpkg install remains CONFIRM", sshDpkgInstall.mode === "confirm");
+
+  const sshPasswdStatus = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh -o BatchMode=yes example-host "sudo -n passwd -S vaesadmin"',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH passwd status query defaults ALLOW", sshPasswdStatus.mode === "allow");
+
+  const sshBare = await permissionDecision(
+    "shell_run",
+    { command: "ssh example-host", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: bare interactive SSH remains CONFIRM", sshBare.mode === "confirm");
 
   const sshForward = await permissionDecision(
     "shell_run",
@@ -313,6 +430,25 @@ const { permissionDecision } = await import("../policy/permission.js");
     workspaceRoot
   );
   check("permission: SSH forwarding remains CONFIRM", sshForward.mode === "confirm");
+
+  const sshTrustMutation = await permissionDecision(
+    "shell_run",
+    {
+      command: 'ssh -o StrictHostKeyChecking=accept-new example-host hostname',
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH accept-new remains CONFIRM", sshTrustMutation.mode === "confirm");
+
+  const sshRemoteWrite = await permissionDecision(
+    "shell_run",
+    { command: 'ssh example-host "touch /tmp/p05-write"', cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH remote write remains CONFIRM", sshRemoteWrite.mode === "confirm");
 
   const destructiveShell = await permissionDecision(
     "shell_run",

@@ -18,7 +18,7 @@ OpenAI Tunnel
 Native Streamable HTTP MCP Reviewer
 ```
 
-> 当前分支仍包含一批尚未提交的 V2.x 能力增强。本文描述的是**当前工作树已实现并验证的能力**，不等同于已发布 Release。
+> 本文描述的是**当前 V2 开发基线已实现并验证的能力**，不等同于已发布 Release。后续 V2 开发以 `V2` 分支为长期开发线。
 
 ## 近期新增能力记录
 

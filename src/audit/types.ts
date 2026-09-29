@@ -49,6 +49,7 @@ export type AuditEvent = {
   clientVersion?: string;
   approvalId?: string;
   authorizationOperation?: string;
+  inputSummary?: string;
   state: ExecutionState;
   phase: ExecutionPhase;
   startedAt: string;

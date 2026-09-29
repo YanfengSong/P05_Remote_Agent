@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tool profile exposure end-to-end check.
  *
  * Spawns the real server over stdio for each profile and asserts what a remote client
@@ -46,7 +46,7 @@ await fs.writeFile(
 );
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat", "remote_read"];
 const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 // External Git push and arbitrary downstream execution remain full-only.
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
@@ -204,6 +204,26 @@ async function expectToolConfirmation(
   return approvalId;
 }
 
+async function callToolWithApproval(
+  session: Session,
+  name: string,
+  args: Record<string, unknown>
+): Promise<unknown> {
+  const first = await session.client.callTool({ name, arguments: args });
+  const message = textOf(first);
+  if (!message.includes("PERMISSION_CONFIRM_REQUIRED")) return first;
+
+  const approvalId =
+    message.split("approvalId: ")[1]?.split("\n")[0]?.trim() ?? "";
+  check(
+    `permission contract: ${name} write requires confirmation before execution`,
+    /^[a-f0-9-]{36}$/i.test(approvalId),
+    message.slice(0, 400)
+  );
+  decideToolApproval(STATE_DIR, approvalId, "approve");
+  return session.client.callTool({ name, arguments: args });
+}
+
 async function pathExists(target: string): Promise<boolean> {
   try {
     await fs.access(target);
@@ -257,6 +277,23 @@ for (const scenario of scenarios) {
       check("command_run action schema does not embed the server allowlist",
         !Array.isArray(actionSchema?.enum),
         JSON.stringify(actionSchema));
+
+      const remoteRead = tools.find((tool) => tool.name === "remote_read");
+      const remoteReadSchema = remoteRead?.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      } | undefined;
+      check("remote_read schema is present at developer", Boolean(remoteRead));
+      sameSet(
+        "remote_read exposes only target + operation caller fields",
+        Object.keys(remoteReadSchema?.properties ?? {}),
+        ["target", "operation"]
+      );
+      sameSet(
+        "remote_read requires both fixed selector fields",
+        remoteReadSchema?.required ?? [],
+        ["target", "operation"]
+      );
     }
 
     const reportLine = session.stderrText().split(/\r?\n/).find((line) => line.includes("p05.tool_profile"));
@@ -322,7 +359,7 @@ for (const scenario of scenarios) {
 
 // ----------------------------------------------------------- runtime-scoped reference roots
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B" }));
   try {
     const refs = textOf(await session.client.callTool({
       name: "reference_list",
@@ -372,10 +409,7 @@ for (const scenario of scenarios) {
     );
 
     const writeAttempt = await outcome(() =>
-      session.client.callTool({
-        name: "fs_write",
-        arguments: { path: path.join(REFERENCE_ROOT, "planted.txt"), content: "must-not-land" }
-      })
+      callToolWithApproval(session, "fs_write", { path: path.join(REFERENCE_ROOT, "planted.txt"), content: "must-not-land" })
     );
     check(
       "reference: workspace write cannot modify reference root",
@@ -390,7 +424,7 @@ for (const scenario of scenarios) {
 
 // ---------------------------------------------------------------- write + real filesystem guards
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B" }));
   const outsideTarget = path.join(OUTSIDE_FIXTURES, "_p05_junction_target");
   const outsideName = "_p05_junction_target";
   const outlink = path.join(ROOT, "_p05_junction_probe");
@@ -424,7 +458,15 @@ for (const scenario of scenarios) {
     await fs.mkdir(PROBE_DIR, { recursive: true });
     await fs.mkdir(path.join(gitDir, "hooks"), { recursive: true });
     const probe = path.join(PROBE_DIR, "probe.txt");
-    await session.client.callTool({ name: "fs_write", arguments: { path: probe, content: "p05-probe" } });
+    const localWrite = await session.client.callTool({
+      name: "fs_write",
+      arguments: { path: probe, content: "p05-probe" }
+    });
+    check(
+      "developer: Workspace-local fs_write bypasses approval",
+      !textOf(localWrite).includes("PERMISSION_CONFIRM_REQUIRED"),
+      textOf(localWrite).slice(0, 300)
+    );
     const readBack = await session.client.callTool({ name: "fs_read", arguments: { path: probe } });
     check("developer: fs_write round-trips through fs_read", textOf(readBack).includes("p05-probe"), textOf(readBack));
 
@@ -432,7 +474,7 @@ for (const scenario of scenarios) {
     // sharpest probe: it resolves against the server's working directory, so returning
     // the resolved form would hand the remote that directory.
     const REL_FILE = "p05-relative-write-probe.txt";
-    const relativeText = textOf(await session.client.callTool({ name: "fs_write", arguments: { path: REL_FILE, content: "rel" } }));
+    const relativeText = textOf(await callToolWithApproval(session, "fs_write", { path: REL_FILE, content: "rel" }));
     check("developer: fs_write echoes the caller's path, not a resolved one",
       relativeText.includes(REL_FILE) && !relativeText.includes(ROOT), relativeText.slice(0, 200));
 
@@ -441,13 +483,10 @@ for (const scenario of scenarios) {
     await fs.writeFile(structuredHardlinkTarget, "outside-original\n", "utf8");
     await fs.link(structuredHardlinkTarget, structuredHardlinkAlias);
     const structuredHardlinkWrite = await outcome(() =>
-      session.client.callTool({
-        name: "fs_write",
-        arguments: {
+      callToolWithApproval(session, "fs_write", {
           path: structuredHardlinkAlias,
           content: "must-not-cross-hardlink"
-        }
-      })
+        })
     );
     check("hardlink: structured fs_write refuses a multi-link target",
       structuredHardlinkWrite.failed,
@@ -463,7 +502,7 @@ for (const scenario of scenarios) {
     check("junction: read through a link leaving the active workspace is refused",
       readOut.failed && readOut.message.includes("a link resolves outside the active workspace"), readOut.message.slice(0, 200));
     const writeOut = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(outlink, "planted.txt"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(outlink, "planted.txt"), content: "x" })
     );
     check("junction: write through a link leaving the active workspace is refused", writeOut.failed, writeOut.message.slice(0, 200));
     check("junction: nothing was planted outside the workspace", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
@@ -471,26 +510,26 @@ for (const scenario of scenarios) {
     // 2. a junction inside the allowed root that lands on a protected path
     mklink(gitlink, gitDir);
     const writeGit = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(gitlink, "hooks", "pre-commit"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(gitlink, "hooks", "pre-commit"), content: "x" })
     );
     check("junction: write through a link landing on .git is refused", writeGit.failed, writeGit.message.slice(0, 200));
 
     // 3. trailing dot on the .git segment
     const dottedResult = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(PROBE_DIR, ".git.", "hooks", "pre-commit"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(PROBE_DIR, ".git.", "hooks", "pre-commit"), content: "x" })
     );
     check("trailing-dot .git spelling is refused", dottedResult.failed, dottedResult.message.slice(0, 200));
     check("trailing-dot write created no hook file", !(await pathExists(path.join(gitDir, "hooks", "pre-commit"))));
 
     // 4. plain .git write
     const plainGit = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(gitDir, "hooks", "pre-commit"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(gitDir, "hooks", "pre-commit"), content: "x" })
     );
     check(".git/hooks write is refused", plainGit.failed && plainGit.message.includes("refused"), plainGit.message.slice(0, 200));
 
     // 5. alternate data stream + extended-length prefix
     const adsResult = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(PROBE_DIR, "probe.txt:evil"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(PROBE_DIR, "probe.txt:evil"), content: "x" })
     );
     check("alternate data stream is refused", adsResult.failed, adsResult.message.slice(0, 200));
     const extendedResult = await outcome(() =>
@@ -507,7 +546,7 @@ for (const scenario of scenarios) {
     check("dangling junction: read is refused", danglingRead.failed && danglingRead.message.includes("does not exist"),
       danglingRead.message.slice(0, 200));
     const danglingWrite = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(goneJunction, "sub", "x.txt"), content: "x" } })
+      callToolWithApproval(session, "fs_write", { path: path.join(goneJunction, "sub", "x.txt"), content: "x" })
     );
     check("dangling junction: write is refused", danglingWrite.failed, danglingWrite.message.slice(0, 200));
     check("dangling junction: nothing was created at the target", !(await pathExists(goneTarget)));
@@ -523,7 +562,7 @@ for (const scenario of scenarios) {
       [".vscode", "tasks.json"]
     ]) {
       const target = path.join(REPO, ...rel);
-      const attempt = await outcome(() => session.client.callTool({ name: "fs_write", arguments: { path: target, content: "x" } }));
+      const attempt = await outcome(() => callToolWithApproval(session, "fs_write", { path: target, content: "x" }));
       check(`write side: ${rel.join("/")} is refused`, attempt.failed, attempt.message.slice(0, 200));
     }
     check("write side: package.json was not modified", (await fs.readFile(packageJsonPath, "utf8")) === packageJsonBefore);
@@ -548,7 +587,7 @@ for (const scenario of scenarios) {
     const shortBase = shortGit ? path.basename(shortGit) : "";
     if (shortBase && shortBase !== ".git") {
       const shortResult = await outcome(() =>
-        session.client.callTool({ name: "fs_write", arguments: { path: path.join(path.dirname(shortGit), shortBase, "hooks", "pre-commit"), content: "x" } })
+        callToolWithApproval(session, "fs_write", { path: path.join(path.dirname(shortGit), shortBase, "hooks", "pre-commit"), content: "x" })
       );
       check(`short-name ${shortBase} spelling is refused`, shortResult.failed, shortResult.message.slice(0, 200));
       console.log(`ok  short-name probe used "${shortBase}" for .git`);
@@ -711,10 +750,7 @@ for (const scenario of scenarios) {
     check("platform binding: business workspace is active", current.includes('"id": "business"'), current.slice(0, 240));
 
     const crossWrite = await outcome(() =>
-      session.client.callTool({
-        name: "fs_write",
-        arguments: { path: crossProbe, content: "must-not-land" }
-      })
+      callToolWithApproval(session, "fs_write", { path: crossProbe, content: "must-not-land" })
     );
     check("workspace boundary: business cannot write platform workspace by absolute path",
       crossWrite.failed && crossWrite.message.includes("outside the active workspace"),
@@ -829,7 +865,7 @@ for (const scenario of scenarios) {
       arguments: { command: insideCommand, cwd: ROOT }
     });
     check(
-      "developer shell: statically proven Workspace-local write is ALLOW",
+      "developer shell: Workspace-local write is ALLOW",
       structuredOf(inside).status === "executed",
       textOf(inside).slice(0, 300)
     );

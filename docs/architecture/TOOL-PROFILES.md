@@ -2,7 +2,7 @@
 
 Status: implemented and active
 Foundation: V2
-Updated: 2026-09-23
+Updated: 2026-09-29
 
 ## Source of truth
 
@@ -28,7 +28,7 @@ Profiles are cumulative and unknown values fail closed.
 | Profile | Implemented capabilities |
 |---|---|
 | discovery | `device_info`, `ping` |
-| readonly | discovery + `workspace_list`, `workspace_current`, `reference_list`, `reference_read`, `reference_list_directory`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat` |
+| readonly | discovery + `workspace_list`, `workspace_current`, `reference_list`, `reference_read`, `reference_list_directory`, `activity_recent`, `recovery_status`, `plugin_list`, `fs_read`, `fs_list`, `git_status`, `git_diff`, `git_diff_stat`, `remote_read` |
 | developer | readonly + `fs_write`, `apply_patch`, `git_add`, `git_commit`, `git_branch`, `command_run`, `runtime_restart`, `mcp_status`, `mcp_list_tools`, brokered `shell_run` |
 | full | developer + `git_push`, `mcp_call_tool` |
 
@@ -158,9 +158,12 @@ Readonly tools:
 - `activity_recent`
 - `recovery_status`
 
-Audit is bounded and metadata-only. It does not store raw tool args, command text or file contents.
+Audit is bounded and metadata-oriented. It does not persist raw tool-argument payloads
+or file contents. It may persist a bounded sanitized `inputSummary` for diagnosis;
+known secret patterns and SSH identity-file arguments are redacted.
 
-Persistent state is stored under the protected P05 state directory. A running record found after restart is converted to an `interrupted` failure.
+Persistent state is stored under the protected P05 state directory. A running record
+found after restart is converted to an `interrupted` failure.
 
 Error categories:
 - policy;
@@ -190,15 +193,29 @@ MATLAB/Simulink is the first built-in application plugin.
 
 ## Shell
 
-`shell_run` is developer-visible and uses the same common Tool Permission Broker as other execution surfaces.
+`shell_run` is developer-visible and uses the same common Tool Permission Broker as
+other execution surfaces.
 
-The Shell adapter intentionally stays small:
+The Shell adapter classifies behavior rather than transport:
 - recognized diagnostics/read operations may ALLOW;
-- a small set of explicit Workspace-local file operations may ALLOW after existing path/link checks;
-- dynamic, compound, arbitrary or unrecognized execution is CONFIRM;
+- explicit Workspace-local file operations may ALLOW after existing path/link checks;
+- static SSH may ALLOW when all transport options are non-mutating and the complete remote behavior is in the closed read-only classifier;
+- nested H1 -> J1 read-only SSH is supported;
+- bare SSH, forwarding, host-key trust mutation, dynamic/compound syntax, arbitrary commands and remote mutations are CONFIRM;
 - catastrophic disk/root destructive patterns are DENY.
 
-Shell does not own a separate approval contract. CONFIRM/DENY decisions use the same common permission envelope and Tool Approval store as other sensitive capabilities. The long-term hard boundary for arbitrary code is a V3 Sandbox concern, not a larger PowerShell parser.
+Current SSH read examples include `hostname`, `uptime`, read-only `ip`,
+read-only `systemctl`, `passwd -S`, `nvidia-smi`, selected read-only
+`kubectl`, `dpkg` / `dpkg-query` status queries and APT-config `grep`
+constrained to `/etc/apt`.
+
+`remote_read` is available at readonly profile for fixed H1/J1 maintenance reads.
+Callers cannot provide arbitrary host, identity path or command text.
+
+Shell does not own a separate approval contract. CONFIRM/DENY decisions use the same
+common permission envelope and Tool Approval store as other sensitive capabilities. The
+long-term hard boundary for arbitrary code is a V3 Sandbox concern, not a larger
+PowerShell parser.
 
 ## Host authority
 

@@ -43,6 +43,7 @@ const auditEventSchema = z.object({
   clientVersion: z.string().optional(),
   approvalId: z.string().optional(),
   authorizationOperation: z.string().optional(),
+  inputSummary: z.string().optional(),
   state: z.enum(["running", "succeeded", "failed"]),
   phase: z.enum(["prepare", "authorize", "execute", "verify", "complete"]),
   startedAt: z.string(),
@@ -97,7 +98,7 @@ export function registerControlTools(
   });
 
   exposer.expose("activity_recent", {
-    description: "Show recent execution metadata. Inputs, file content and command text are not stored.",
+    description: "Show recent execution metadata with bounded sanitized input summaries. Raw tool inputs, file content and secrets are not stored.",
     inputSchema: z.object({ limit: z.number().int().min(1).max(100).optional() }),
     outputSchema: z.object({ events: z.array(auditEventSchema) })
   }, async ({ limit }) => {

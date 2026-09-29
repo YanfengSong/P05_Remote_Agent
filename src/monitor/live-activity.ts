@@ -65,6 +65,8 @@ const SECRET_ASSIGNMENT =
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+\/-]{8,}/gi;
 const SECRET_CLI_ARGUMENT =
   /--?(password|passwd|pwd|token|secret|api[_-]?key|authorization)\s+(?:"[^"]*"|'[^']*'|\S+)/gi;
+const SSH_IDENTITY_ARGUMENT =
+  /(^|\s)-i\s+(?:"[^"]*"|'[^']*'|\S+)/gi;
 
 function shorten(value: string, max = 180): string {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -78,7 +80,9 @@ export function sanitizeShellCommand(command: string): string {
     command
       .replace(SECRET_ASSIGNMENT, (_match, key: string) => `${key}=<redacted>`)
       .replace(SECRET_CLI_ARGUMENT, (_match, key: string) => `--${key} <redacted>`)
-      .replace(BEARER, "Bearer <redacted>")
+      .replace(SSH_IDENTITY_ARGUMENT, (_match, prefix: string) => `${prefix}-i <redacted>`)
+      .replace(BEARER, "Bearer <redacted>"),
+    600
   );
 }
 
@@ -136,6 +140,12 @@ export function summarizeToolInput(
     case "git_push": {
       const remote = stringValue(value, "remote") ?? "origin";
       return `remote=${remote}`;
+    }
+
+    case "remote_read": {
+      const target = stringValue(value, "target");
+      const operation = stringValue(value, "operation");
+      return [target, operation].filter(Boolean).join(" / ");
     }
 
     case "command_run":

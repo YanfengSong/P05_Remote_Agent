@@ -104,6 +104,7 @@ export class ExecutionRuntime {
       ...(effectiveAttribution.clientVersion
         ? { clientVersion: effectiveAttribution.clientVersion }
         : {}),
+      ...(liveDetail ? { inputSummary: liveDetail } : {}),
       state: "running",
       phase,
       startedAt: new Date(started).toISOString(),
