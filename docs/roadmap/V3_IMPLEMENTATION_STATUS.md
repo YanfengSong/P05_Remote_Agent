@@ -1,3 +1,11 @@
+> **2026-09-29 T03/T06/T13/T17/T20 验收闭环**
+>
+> - T03：broken optional/workflow catalog 明确进入 DEGRADED，同时 Core liveness 与最小读路径保持可用。
+> - T06：64 路 reconcile flood 不重复启动；重复崩溃触发并锁定 CRASH_LOOP restart budget。
+> - T13：event cursor 支持重连续读，Operator 与 MCP/Edge 对终态版本和结果保持一致。
+> - T17：pending approval 期间 workspace/input/binding 被固定，替换 binding 或外部目标变化不会重定向原意图。
+> - T20：即使审计 events 被删除，持久 Run 与 execution receipt 仍独立保持终态真相。
+> - 当前矩阵：PASS 24 / PARTIAL 26 / NOT_RUN 20 / N/A 0；完整 npm run verify:v3 已于 2026-09-29 再次通过。
 > **2026-09-29 验证门禁补强**
 >
 > - verify:v3 现定义为统一本机源代码门禁：类型检查、单次构建、V2 完整兼容回归、V3 默认全套测试以及 T01–T70 追踪矩阵完整性检查。

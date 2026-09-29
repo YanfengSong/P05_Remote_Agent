@@ -8,24 +8,24 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 |---|---|---|---|
 | T01 | PARTIAL | V2 test:compiled; src/test/v3-v2-regression.ts | Core V2 regression is gated; live MATLAB and deployment applicability remain separate |
 | T02 | NOT_RUN | none | Need A/B different-workspace test with A restart while B has live work |
-| T03 | PARTIAL | v3-core, v3-optional, v3-component-host | Need one scenario spanning bad optional config/plugin startup and Core degraded status |
+| T03 | PASS | v3-core optional-failure/hang tests; v3-application broken workflow catalog | Bad optional startup/config is bounded and reports DEGRADED while Core liveness and minimal read path remain available |
 | T04 | PARTIAL | v3-protection, v3-recovery | Need explicit invalid trust-manifest Recovery/LOCKED acceptance |
 | T05 | PASS | v3-core, v3-recovery, host ownership-lock tests | Slot ownership and stale-owner fencing are exercised |
-| T06 | PARTIAL | v3-core, scheduler backoff tests | Need workload flood plus repeated-crash restart-budget acceptance |
+| T06 | PASS | v3-core 64-way reconcile flood plus persistent crash-loop restart budget | Reconcile flood starts one child only; repeated crashes latch CRASH_LOOP until explicit recovery |
 | T07 | PASS | v3-durable, v3-application | Stable execution identity and non-terminal wait timeout covered |
 | T08 | PARTIAL | durable lifecycle primitives | Full Core lifecycle disconnect/reconnect health proof not closed |
 | T09 | PASS | v3-process-bridge, v3-recovery | External process survives Core observation loss and reconciles to original Run |
 | T10 | PASS | v3-durable, v3-process-bridge, v3-recovery | Crash windows preserve UNKNOWN and prohibit blind replay |
 | T11 | PASS | v3-durable | Idempotency identity/conflict behavior covered |
 | T12 | PARTIAL | durable/process/terminal timeout tests | SSH/session timeout classes are not implemented |
-| T13 | PARTIAL | durable events and workflow scheduler tests | Need event-cursor reconnect plus Operator/MCP terminal-state parity |
+| T13 | PASS | v3-durable event sequence/cursor; v3-application fresh-client cursor continuation and Operator/MCP terminal parity | Cursor resumes without replay and authenticated Operator/MCP views agree on terminal Run version/result |
 | T14 | PASS | v3-durable, v3-application, v3-recovery | Approval-linked Run survives restart |
 | T15 | PASS | v3-durable, v3-application | Approval CAS and single-side-effect continuation covered |
 | T16 | PASS | v3-durable, v3-application | Deny/cancel/late-decision behavior covered |
-| T17 | PARTIAL | v3-application, component binding tests | Need complete workspace/binding/input mutation acceptance while pending |
+| T17 | PASS | v3-durable pending approval freezes workspace/input and rejects replacement binding; v3-application revalidates content/link/auth revision | Pending approval cannot be retargeted by context/input/binding or external target changes |
 | T18 | PARTIAL | durable approval reservation logic | Need preflight/resource-queue/uncertain-dispatch authorization-consumption scenario |
 | T19 | PARTIAL | V2 operator tests; V3 approval metadata | V3 contextual queue and fast-approval UI path are incomplete |
-| T20 | PARTIAL | StateStore/receipt tests | Need audit deletion/unavailability acceptance proving completion truth independence |
+| T20 | PASS | v3-durable terminal receipt survives deliberate audit-event deletion | SUCCEEDED Run/result remains authoritative with receipt intact even when audit events are absent |
 | T21 | PARTIAL | V2 policy profiles; V3 authorization tests | Full hierarchical Grant/revocation/version matrix is not closed |
 | T22 | PASS | v3-protection, v3-application | Real-path, ACL, link/junction and write-boundary checks covered |
 | T23 | NOT_RUN | none | Production OS-denied immutable Runner/policy/Slot-data test requires strong isolation backend |

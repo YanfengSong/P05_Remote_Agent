@@ -108,6 +108,55 @@ try {
   assert.equal(executions, 2);
   await runtime.kernel.close();
 
+  // Pending approval freezes context/input and never retargets to a replacement binding.
+  const pendingBindingPath = join(dir, 'pending-binding.db');
+  const pendingContext: ExecutionContext = { ...context };
+  const pendingInput = { frozen: 'original' };
+  let oldBindingExecutions = 0, newBindingExecutions = 0;
+  let bindingRuntime = createDurableKernel({ store: new DurableStore(pendingBindingPath, { clock }),
+    authorize: () => ({ decision: 'CONFIRM' as const, reason: 'binding approval', expiresAt: now + 1000 }), revalidate: () => true });
+  bindingRuntime.kernel.register({ capability: 'binding-write', capabilityVersion: '1', bindingVersion: '1', execute: async () => { oldBindingExecutions++; return null; } });
+  const pendingBinding = bindingRuntime.kernel.submit(pendingContext, { capability: 'binding-write', input: pendingInput, idempotencyKey: 'binding-pending' });
+  pendingContext.workspaceRoot = 'retargeted-after-submit'; pendingInput.frozen = 'mutated-after-submit';
+  let bindingWaiting = bindingRuntime.kernel.status(context, pendingBinding.executionId);
+  for (let i = 0; bindingWaiting.state !== 'WAITING_APPROVAL' && i < 200; i++) { await sleep(5); bindingWaiting = bindingRuntime.kernel.status(context, pendingBinding.executionId); }
+  assert.equal(bindingWaiting.state, 'WAITING_APPROVAL');
+  assert.equal(bindingWaiting.context.workspaceRoot, dir);
+  const bindingApproval = bindingWaiting.approval!;
+  await bindingRuntime.kernel.close();
+  const frozenIntent = new DurableStore(pendingBindingPath, { clock });
+  assert.deepEqual(frozenIntent.input(pendingBinding.executionId), { frozen: 'original' });
+  frozenIntent.close();
+  bindingRuntime = createDurableKernel({ store: new DurableStore(pendingBindingPath, { clock }), authorize: () => ({ decision: 'ALLOW' as const }), revalidate: () => true });
+  bindingRuntime.kernel.register({ capability: 'binding-write', capabilityVersion: '1', bindingVersion: '2', execute: async () => { newBindingExecutions++; return null; } });
+  bindingRuntime.operator.decide({ approvalId: bindingApproval.approvalId, expectedDecisionVersion: bindingApproval.decisionVersion, decision: 'APPROVE', actor: 'operator' });
+  let bindingFailed = bindingRuntime.kernel.status(context, pendingBinding.executionId);
+  for (let i = 0; bindingFailed.state !== 'FAILED' && i < 200; i++) { await sleep(5); bindingFailed = bindingRuntime.kernel.status(context, pendingBinding.executionId); }
+  assert.equal(bindingFailed.state, 'FAILED');
+  assert.equal(bindingFailed.error, 'PINNED_BINDING_UNAVAILABLE');
+  assert.equal(oldBindingExecutions, 0); assert.equal(newBindingExecutions, 0);
+  await bindingRuntime.kernel.close();
+
+  // Terminal truth is carried by the Run/receipt, not by retention of audit events.
+  const auditPath = join(dir, 'audit-independent.db');
+  const auditStore = new DurableStore(auditPath, { clock });
+  const auditIdentity = { capability: 'write', capabilityVersion: '1', bindingVersion: '1' }; const auditRun = auditStore.create(context, auditIdentity, { audited: true }, 'audit-independent');
+  const auditAttempt = auditStore.dispatch(auditRun.executionId, auditRun.stateVersion);
+  auditStore.finish(auditRun.executionId, auditAttempt, 'SUCCEEDED', { truth: 'receipt' });
+  assert.ok(auditStore.events(context, auditRun.executionId).length > 0);
+  auditStore.close();
+  const auditDb = new DatabaseSync(auditPath);
+  auditDb.exec("DELETE FROM events WHERE run_id='" + auditRun.executionId.replace(/'/g, "''") + "'");
+  assert.equal((auditDb.prepare('SELECT COUNT(*) AS n FROM receipts WHERE attempt_id=?').get(auditAttempt) as { n: number }).n, 1);
+  auditDb.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  auditDb.close();
+  const withoutAudit = new DurableStore(auditPath, { clock });
+  assert.equal(withoutAudit.status(context, auditRun.executionId).state, 'SUCCEEDED');
+  assert.deepEqual(withoutAudit.status(context, auditRun.executionId).result, { truth: 'receipt' });
+  assert.equal(withoutAudit.events(context, auditRun.executionId).length, 0);
+  withoutAudit.close();
+  await sleep(250);
+
   // Admission limits do not break safe retries and terminal state cannot be overwritten.
   const bounded = new DurableStore(join(dir, 'bounded.db'), { maxRuns: 1 });
   const identity = { capability: 'write', capabilityVersion: '1', bindingVersion: '1' };
@@ -283,7 +332,7 @@ try {
   assert.equal(invalid.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='events'").get()!.n, 0);
   invalid.close();
   console.log('v3-durable: durable recovery, idempotency, approval CAS, ownership, wait, cancellation, revocation and receipts passed');
-} finally { await runtime.kernel.close(); await rm(dir, { recursive: true, force: true }); }
+} finally { await runtime.kernel.close(); await rm(dir, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 }); }
 }
 if (process.env.P05_V3_DURABLE_CRASH_TEST) await crashChild(process.env.P05_V3_DURABLE_CRASH_TEST);
 else await suite();

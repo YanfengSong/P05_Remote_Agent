@@ -97,6 +97,17 @@ try {
   await operator.call("operator_decide", approval);
   const result = await awaitState(rpc, submitted.executionId, "SUCCEEDED");
   assert.equal(await fs.readFile(path.join(fixture.workspace, "output.txt"), "utf8"), "approved\n");
+  type EventPage = { events: { sequence: number }[]; nextSequence: number };
+  const firstEventPage = await rpc.call("execution_events", { id: result.executionId, afterSequence: 0, limit: 1 }) as EventPage;
+  assert.equal(firstEventPage.events.length, 1);
+  const reconnectedRpc = createRpcClient({ url: application.endpoint, token: token.trim() });
+  const resumedEventPage = await reconnectedRpc.call("execution_events", { id: result.executionId, afterSequence: firstEventPage.nextSequence, limit: 100 }) as EventPage;
+  assert.ok(resumedEventPage.events.length > 0);
+  assert.ok(resumedEventPage.events.every(event => event.sequence > firstEventPage.nextSequence));
+  const operatorTerminal = await operator.call("operator_inspect", { id: result.executionId }) as { run: RunView };
+  assert.equal(operatorTerminal.run.state, result.state);
+  assert.equal(operatorTerminal.run.stateVersion, result.stateVersion);
+  assert.deepEqual(operatorTerminal.run.result, result.result);
   assert.equal((await rpc.call("execution_submit", input) as RunView).executionId, result.executionId);
   assert.ok("error" in (await operator.call("operator_decide", approval) as object));
 
@@ -145,7 +156,11 @@ try {
     P05_V3_ENDPOINT: application.endpoint, P05_V3_CLIENT_TOKEN_FILE: application.clientTokenFile
   }, stderr: "pipe" }));
   const reply = await edge.callTool({ name: "execution_status", arguments: { id: submitted.executionId } });
-  assert.equal((reply.structuredContent as RunView).state, "SUCCEEDED");
+  const edgeRun = reply.structuredContent as RunView;
+  assert.equal(edgeRun.state, "SUCCEEDED");
+  assert.equal(edgeRun.state, operatorTerminal.run.state);
+  assert.equal(edgeRun.stateVersion, operatorTerminal.run.stateVersion);
+  assert.deepEqual(edgeRun.result, operatorTerminal.run.result);
   await edge.close(); edge = undefined;
   assert.equal((await rpc.call("core_status", {}) as { liveness: boolean }).liveness, true);
 
@@ -161,6 +176,7 @@ try {
   application = await startV3Application(configFile);
   rpc = createRpcClient({ url: application.endpoint, token: token.trim() });
   assert.equal(application.status().workflow.available, false);
+  assert.equal(application.status().mode, "DEGRADED");
   assert.equal((await rpc.call("core_status", {}) as { liveness: boolean }).liveness, true);
   assert.equal((await rpc.call("workflow_list", {}) as { error: { code: string } }).error.code, "DEPENDENCY_UNAVAILABLE");
   const degradedRead = await rpc.call("execution_submit", { capability: "fs_read", input: { path: "output.txt" }, idempotencyKey: randomUUID() }) as RunView;

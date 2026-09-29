@@ -165,8 +165,8 @@ if (process.argv[2] === "--owner-child") {
     await services.setDesired("test-child", { state: "running", manualHold: false }, 1);
     await services.reconcile("test-child");
     check(starts === 1 && services.describe("test-child").observation.state === "running", "reconcile actually starts owned test process");
-    await Promise.all([services.reconcile("test-child"), services.reconcile("test-child")]);
-    check(starts === 1, "concurrent reconciliation never duplicates running process");
+    await Promise.all(Array.from({ length: 64 }, () => services.reconcile("test-child")));
+    check(starts === 1, "64-way reconciliation flood never duplicates running process");
     await services.setDesired("test-child", { state: "running", manualHold: true }, 2);
     await services.reconcile("test-child");
     await services.reconcile("test-child");
