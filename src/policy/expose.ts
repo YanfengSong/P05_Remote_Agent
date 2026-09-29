@@ -1,6 +1,7 @@
 import type {
   McpServer,
   StandardSchemaWithJSON,
+  ToolAnnotations,
   ToolCallback
 } from "@modelcontextprotocol/server";
 import {
@@ -9,6 +10,11 @@ import {
 } from "../capability/registry.js";
 import { summarizeToolInput } from "../monitor/live-activity.js";
 import type { ExecutionRuntime } from "../runtime/execution.js";
+import { AuthorizationError } from "../runtime/errors.js";
+import {
+  permissionErrorMessage,
+  type ToolPermissionBroker
+} from "./permission-broker.js";
 import {
   assertToolDeclared,
   toolDecision,
@@ -25,6 +31,7 @@ export type ToolConfig<
   description?: string;
   inputSchema?: Args;
   outputSchema?: Output;
+  annotations?: ToolAnnotations;
 };
 
 export type Exposer = {
@@ -48,12 +55,30 @@ export type Exposer = {
   report(): ToolProfileReport;
 };
 
+function capabilityAnnotations(
+  name: string,
+  catalog: CapabilityCatalog
+): ToolAnnotations {
+  const descriptor = catalog.descriptor(name);
+  const readOnly = descriptor.risk === "read";
+  const openWorld =
+    descriptor.scope === "downstream" || descriptor.scope === "external";
+
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: !readOnly,
+    idempotentHint: readOnly,
+    openWorldHint: openWorld
+  };
+}
+
 export function createExposer(
   server: McpServer,
   profile: ToolProfile,
   profileSource: ProfileSource,
   runtime?: ExecutionRuntime,
-  catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG
+  catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG,
+  permissionBroker?: ToolPermissionBroker
 ): Exposer {
   const exposed: string[] = [];
   const suppressed: { tool: string; reason: string }[] = [];
@@ -70,13 +95,66 @@ export function createExposer(
         );
       }
 
-      const operation = () =>
-        Promise.resolve(
+      let approvalId: string | undefined;
+      let authorizationOperation: string | undefined;
+      const authorize = async (): Promise<void> => {
+        if (!permissionBroker) return;
+        const authorization = await permissionBroker.authorize(name, args[0]);
+        authorizationOperation = authorization.operation;
+        if ("approvalId" in authorization) {
+          approvalId = authorization.approvalId;
+        }
+        if (authorization.state !== "allowed") {
+          throw new AuthorizationError(
+            permissionErrorMessage(name, authorization)
+          );
+        }
+      };
+
+      const operation = async () => {
+        // Run capability-specific local preflight before consuming approval.
+        // In particular, shell_run validates the local safety guard and cwd
+        // before the one-shot approval is spent. This prevents a local
+        // pre-spawn failure from forcing the user through a second approval.
+        if (approvalId && permissionBroker) {
+          await permissionBroker.preflight(name, args[0]);
+          permissionBroker.consumeApproval(approvalId);
+        }
+        return Promise.resolve(
           (handler as unknown as (...innerArgs: unknown[]) => unknown)(...args)
         );
+      };
 
       const liveDetail = summarizeToolInput(name, args[0]);
-      return runtime ? runtime.run(name, operation, liveDetail) : operation();
+      if (!runtime) {
+        await authorize();
+        return operation();
+      }
+
+      // MCP client identity is negotiated at initialize-time by the SDK. It is
+      // audit metadata only; authorization never depends on the client-reported
+      // name/version because those values are descriptive, not trusted identity.
+      const client = server.server.getClientVersion();
+      return runtime.run(
+        name,
+        {
+          authorize,
+          execute: operation,
+          authorizationContext: () => ({
+            ...(approvalId ? { approvalId } : {}),
+            ...(authorizationOperation
+              ? { operation: authorizationOperation }
+              : {})
+          })
+        },
+        liveDetail,
+        client
+          ? {
+              clientName: client.name,
+              clientVersion: client.version
+            }
+          : undefined
+      );
     };
 
     // Single deliberate erasure boundary: the runtime signature is the SDK's.
@@ -95,13 +173,19 @@ export function createExposer(
       // The SDK overload couples input/output schema generics more tightly than this
       // policy wrapper can preserve. Keep the erasure at this single registration
       // boundary; every caller still passes typed StandardSchema objects.
+      const registrationConfig = {
+        ...config,
+        annotations:
+          config.annotations ?? capabilityAnnotations(name, catalog)
+      };
+
       (
         server.registerTool as unknown as (
           toolName: string,
           toolConfig: unknown,
           toolHandler: unknown
         ) => unknown
-      )(name, config, guard(name, handler));
+      )(name, registrationConfig, guard(name, handler));
       exposed.push(name);
     },
 

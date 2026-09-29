@@ -2,6 +2,10 @@ import type {
   CapabilityScope,
   ToolRisk
 } from "../capability/types.js";
+import type {
+  AuditSource,
+  AuditTransport
+} from "../audit/types.js";
 import type { ErrorCategory } from "../runtime/errors.js";
 
 export type LiveActivityState = "running" | "succeeded" | "failed";
@@ -12,6 +16,12 @@ export type LiveActivityRecord = {
   risk: ToolRisk;
   scope: CapabilityScope;
   workspaceId: string;
+  source?: AuditSource;
+  transport?: AuditTransport;
+  runtimeSlot?: "A" | "B";
+  principal?: string;
+  clientName?: string;
+  clientVersion?: string;
   summary: string;
   detail?: string;
   state: LiveActivityState;
@@ -94,9 +104,14 @@ export function summarizeToolInput(
     case "fs_list":
     case "fs_write":
     case "apply_patch":
-    case "read_file":
-    case "list_directory":
       return stringValue(value, "path");
+
+    case "reference_read":
+    case "reference_list_directory": {
+      const reference = stringValue(value, "reference_id");
+      const target = stringValue(value, "path");
+      return [reference, target].filter(Boolean).join(" · ");
+    }
 
     case "git_add": {
       const paths = Array.isArray(value.paths)
@@ -133,9 +148,6 @@ export function summarizeToolInput(
       if (cwd) parts.push(`cwd=${shorten(cwd, 100)}`);
       return parts.join(" · ");
     }
-
-    case "workspace_switch":
-      return stringValue(value, "id");
 
     case "mcp_list_tools":
     case "mcp_status":

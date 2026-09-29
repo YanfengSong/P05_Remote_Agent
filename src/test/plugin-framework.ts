@@ -116,6 +116,17 @@ try {
   check("plugin: Core wrapper permits plugin tool in allowed workspace",
     Boolean(capturedHandler && await capturedHandler()));
 
+  await runtime.start("demo");
+  check("plugin-control: single plugin can start",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "running");
+  await runtime.stop("demo");
+  check("plugin-control: single plugin can stop",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "stopped" &&
+    !runtime.isAllowedForCurrentWorkspace("demo"));
+  await runtime.start("demo");
+  check("plugin-control: stopped plugin can restart",
+    runtime.list().find((plugin) => plugin.id === "demo")?.state === "running");
+
   check("plugin: downstream contribution carries owning plugin id",
     registry.downstreamDefinitions()[0]?.pluginId === "demo");
 
@@ -167,6 +178,24 @@ try {
   throws("plugin: incompatible API version fails closed",
     () => new PluginRegistry([badApi]), "supported API");
 
+  const missingCapability: ApplicationPlugin = {
+    ...demo,
+    manifest: {
+      ...demo.manifest,
+      id: "missingcap",
+      capabilities: []
+    },
+    tools: [{
+      name: "missingcap.echo",
+      handler: () => ({ content: [{ type: "text" as const, text: "bad" }] })
+    }]
+  };
+  throws(
+    "plugin-api-v1: declarative tool without matching capability fails closed",
+    () => new PluginRegistry([missingCapability]),
+    "matching manifest capability"
+  );
+
   const failing: ApplicationPlugin = {
     manifest: {
       id: "failing",
@@ -188,6 +217,17 @@ try {
   const matlabDefs = matlabRegistry.downstreamDefinitions();
   check("plugin: MATLAB contributes downstream through Plugin Registry",
     matlabDefs.length === 1 && matlabDefs[0]?.pluginId === "matlab" && matlabDefs[0]?.id === "matlab");
+  const matlabAsPlugin: ApplicationPlugin = matlabPlugin;
+  check(
+    "plugin-api-v1: MATLAB uses declarative tools instead of legacy registerTools",
+    Array.isArray(matlabAsPlugin.tools) &&
+      matlabAsPlugin.tools.length === 3 &&
+      matlabAsPlugin.registerTools === undefined,
+    JSON.stringify({
+      toolCount: matlabAsPlugin.tools?.length,
+      legacyRegisterTools: typeof matlabAsPlugin.registerTools
+    })
+  );
 
   const toolkitRoot = path.join(FIXTURE, "agentic-toolkits");
   const toolkitBin = path.join(toolkitRoot, "bin");

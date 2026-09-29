@@ -37,6 +37,63 @@ function Import-P05RuntimeKey {
     }
 }
 
+function ConvertTo-P05RuntimeSlots {
+    param([string]$Raw)
+
+    if (-not $Raw -or -not $Raw.Trim()) { return @() }
+
+    $slots = @()
+    $seen = @{}
+    foreach ($part in $Raw.Split(',')) {
+        $slot = $part.Trim().ToUpperInvariant()
+        if (-not $slot) { throw 'P05_RUNTIME_SLOTS contains an empty slot.' }
+        if ($slot -notin @('A','B')) {
+            throw "Invalid runtime slot '$slot'. P05_RUNTIME_SLOTS supports only A and B."
+        }
+        if ($seen.ContainsKey($slot)) {
+            throw "Duplicate runtime slot '$slot' in P05_RUNTIME_SLOTS."
+        }
+        $seen[$slot] = $true
+        $slots += $slot
+    }
+    return $slots
+}
+
+function Test-P05TunnelId {
+    param([string]$Value)
+    return [bool]($Value -and $Value -match '^tunnel_[A-Za-z0-9]+$')
+}
+
+function Get-P05ConfiguredSlots {
+    param([string]$Raw = $env:P05_RUNTIME_SLOTS)
+
+    if ($Raw -and $Raw.Trim()) {
+        return @(ConvertTo-P05RuntimeSlots -Raw $Raw)
+    }
+
+    # Backward-compatible inference for installs created before P05_RUNTIME_SLOTS.
+    $slots = @()
+    if (Test-P05TunnelId -Value $env:P05_TUNNEL_A_ID) { $slots += 'A' }
+    if (Test-P05TunnelId -Value $env:P05_TUNNEL_B_ID) { $slots += 'B' }
+    return $slots
+}
+
+function Test-P05SlotConfigured {
+    param(
+        [ValidateSet('A','B')][string]$Slot,
+        [string]$Raw = $env:P05_RUNTIME_SLOTS
+    )
+    return @((Get-P05ConfiguredSlots -Raw $Raw)) -contains $Slot
+}
+
+function Get-P05SlotProfileName {
+    param([ValidateSet('A','B')][string]$Slot)
+    if ($Slot -eq 'A') {
+        return $(if ($env:P05_RUNTIME_A_PROFILE) { $env:P05_RUNTIME_A_PROFILE } else { 'p05-a' })
+    }
+    return $(if ($env:P05_RUNTIME_B_PROFILE) { $env:P05_RUNTIME_B_PROFILE } else { 'p05-b' })
+}
+
 function Resolve-P05Node {
     param([string]$RepoRoot)
     $local = Join-Path $RepoRoot '.p05\tools\node\node.exe'
@@ -71,11 +128,7 @@ function Get-P05SlotContext {
     $node = Resolve-P05Node -RepoRoot $repo
     $tunnel = Resolve-P05TunnelClient -RepoRoot $repo
     $slotLower = $Slot.ToLowerInvariant()
-    $profileName = if ($Slot -eq 'A') {
-        if ($env:P05_RUNTIME_A_PROFILE) { $env:P05_RUNTIME_A_PROFILE } else { 'p05-a' }
-    } else {
-        if ($env:P05_RUNTIME_B_PROFILE) { $env:P05_RUNTIME_B_PROFILE } else { 'p05-b' }
-    }
+    $profileName = Get-P05SlotProfileName -Slot $Slot
     if ($profileName -notmatch '^[A-Za-z0-9._-]{1,64}$') {
         throw "Invalid runtime profile name: $profileName"
     }

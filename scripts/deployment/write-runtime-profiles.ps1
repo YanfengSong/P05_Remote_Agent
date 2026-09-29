@@ -1,4 +1,5 @@
 param(
+    [string]$RuntimeSlots,
     [string]$TunnelA,
     [string]$TunnelB
 )
@@ -7,12 +8,39 @@ $ErrorActionPreference = 'Stop'
 $repo = Get-P05RepoRoot -ScriptRoot $PSScriptRoot
 Import-P05DotEnv -RepoRoot $repo
 
+$slots = @(Get-P05ConfiguredSlots -Raw $RuntimeSlots)
+if ($slots.Count -eq 0) { throw 'No runtime slots are configured.' }
+
 if (-not $TunnelA) { $TunnelA = $env:P05_TUNNEL_A_ID }
 if (-not $TunnelB) { $TunnelB = $env:P05_TUNNEL_B_ID }
-if (-not $TunnelA -or $TunnelA -notmatch '^tunnel_[A-Za-z0-9]+$') { throw 'Valid P05_TUNNEL_A_ID is required.' }
-if (-not $TunnelB -or $TunnelB -notmatch '^tunnel_[A-Za-z0-9]+$') { throw 'Valid P05_TUNNEL_B_ID is required.' }
+if (($slots -contains 'A') -and -not (Test-P05TunnelId -Value $TunnelA)) {
+    throw 'Valid P05_TUNNEL_A_ID is required for configured Runtime A.'
+}
+if (($slots -contains 'B') -and -not (Test-P05TunnelId -Value $TunnelB)) {
+    throw 'Valid P05_TUNNEL_B_ID is required for configured Runtime B.'
+}
+if (($slots -contains 'A') -and ($slots -contains 'B') -and $TunnelA -eq $TunnelB) {
+    throw 'Tunnel A and Tunnel B must be different.'
+}
+
+$p05 = Join-Path $repo '.p05'
+$profileDir = Join-Path $p05 'tunnel\profiles'
+$healthDir = Join-Path $p05 'tunnel\health'
+New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+New-Item -ItemType Directory -Path $healthDir -Force | Out-Null
 
 foreach ($slot in @('A','B')) {
+    $profileName = Get-P05SlotProfileName -Slot $slot
+    $profilePath = Join-Path $profileDir ($profileName + '.yaml')
+    $healthPath = Join-Path $healthDir ($profileName + '.url')
+
+    if ($slots -notcontains $slot) {
+        Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $healthPath -Force -ErrorAction SilentlyContinue
+        Write-Output "Runtime $slot profile: NOT_CONFIGURED"
+        continue
+    }
+
     $ctx = Get-P05SlotContext -ScriptRoot $PSScriptRoot -Slot $slot
     $tunnelId = if ($slot -eq 'A') { $TunnelA } else { $TunnelB }
     $node = ($ctx.Node -replace '\\','/')

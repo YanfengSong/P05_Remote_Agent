@@ -7,10 +7,16 @@ import { CapabilityCatalog } from "../capability/registry.js";
 import { DownstreamRegistry } from "../downstream/registry.js";
 import { LiveActivityStore, summarizeToolInput } from "../monitor/live-activity.js";
 import { startLocalControlBridge } from "../operator/bridge.js";
-import { bridgeRequest, operatorOverview } from "../operator/runtime-control.js";
+import {
+  bridgeRequest,
+  operatorOverview,
+  runtimeSlotStateDir
+} from "../operator/runtime-control.js";
 import { operatorPage } from "../operator/ui.js";
 import { PluginRegistry } from "../plugin/registry.js";
 import { PluginRuntime } from "../plugin/runtime.js";
+import { ReferenceManager } from "../reference/manager.js";
+import { PLUGIN_API_VERSION, type ApplicationPlugin } from "../plugin/types.js";
 import type { ToolProfileReport } from "../policy/tool-profile.js";
 import { listDirectory } from "../tools/files.js";
 import { WorkspaceManager, parseWorkspaceRegistry } from "../workspace/manager.js";
@@ -28,6 +34,7 @@ const BUSINESS = path.join(FIXTURE, "business");
 const SELECTED = path.join(FIXTURE, "selected");
 const META = path.join(FIXTURE, "bridge.json");
 const PERSISTENT = path.join(FIXTURE, "workspaces.json");
+const OUTSIDE = path.join(path.dirname(FIXTURE), "_p05_operator_outside_workspace");
 
 let checks = 0;
 function check(label: string, condition: boolean, detail = ""): void {
@@ -35,7 +42,8 @@ function check(label: string, condition: boolean, detail = ""): void {
   if (!condition) throw new Error(`FAIL ${label}${detail ? " -> " + detail : ""}`);
 }
 
-const renderedScript = operatorPage("0".repeat(64)).match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+const renderedPage = operatorPage("0".repeat(64));
+const renderedScript = renderedPage.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
 let renderedScriptParses = false;
 try {
   if (renderedScript) {
@@ -46,6 +54,91 @@ try {
   renderedScriptParses = false;
 }
 check("operator: rendered browser script parses", renderedScriptParses);
+
+const operatorServerSource = await fs.readFile(
+  path.join(REPO, "src", "operator", "server.ts"),
+  "utf8"
+);
+const requestRestartOperatorSource = await fs.readFile(
+  path.join(REPO, "scripts", "deployment", "request-restart-operator.ps1"),
+  "utf8"
+);
+const restartOperatorSource = await fs.readFile(
+  path.join(REPO, "scripts", "deployment", "restart-operator.ps1"),
+  "utf8"
+);
+const envExampleSource = await fs.readFile(
+  path.join(REPO, ".env.example"),
+  "utf8"
+);
+check(
+  "operator: server exposes only slot-scoped runtime/workspace mutation routes",
+  !operatorServerSource.includes('url.pathname === "/api/action/connect"') &&
+    !operatorServerSource.includes('url.pathname === "/api/action/disconnect"') &&
+    !operatorServerSource.includes('url.pathname === "/api/action/restart"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/select"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/root"') &&
+    !operatorServerSource.includes('url.pathname === "/api/workspace/register"')
+);
+check(
+  "operator: exposes explicit Console restart endpoint separate from shutdown",
+  operatorServerSource.includes('url.pathname === "/api/operator/restart"') &&
+    operatorServerSource.includes("requestOperatorRestart()") &&
+    operatorServerSource.includes('url.pathname === "/api/operator/shutdown"')
+);
+
+check(
+  "operator: tool approval decisions are exposed only through token-protected Operator API",
+  operatorServerSource.includes("approvalMatch") &&
+    operatorServerSource.includes("decideToolApproval") &&
+    operatorServerSource.includes("listToolApprovals")
+);
+check(
+  "operator: restart request is detached and bounded instead of waiting on a long shell lifecycle",
+  requestRestartOperatorSource.includes("Start-Process") &&
+    requestRestartOperatorSource.includes("restart-operator.ps1") &&
+    requestRestartOperatorSource.includes("WaitSeconds = 20") &&
+    requestRestartOperatorSource.includes("OPERATOR_RESTARTED") &&
+    requestRestartOperatorSource.includes("OPERATOR_RESTART_SCHEDULED")
+);
+check(
+  "operator: restart worker owns stop/start and records request-scoped completion",
+  restartOperatorSource.includes("RequestId") &&
+    restartOperatorSource.includes("operator-restart-status.json") &&
+    restartOperatorSource.includes("Stop-Process") &&
+    restartOperatorSource.includes("run-operator.ps1") &&
+    restartOperatorSource.includes("succeeded")
+);
+check(
+  "operator: default shell timeout leaves transport completion headroom",
+  envExampleSource.includes("REMOTE_AGENT_SHELL_TIMEOUT_MS=90000")
+);
+check(
+  "operator: approval payload uses the canonical ToolApprovalView contract",
+  operatorServerSource.includes("toolApprovalView") &&
+    !operatorServerSource.includes('command: [') &&
+    !operatorServerSource.includes('cwd: "-"')
+);
+check(
+  "operator: approve/deny responses reuse the same ToolApprovalView contract",
+  operatorServerSource.includes("...toolApprovalView(record)") &&
+    !operatorServerSource.includes("id: record.id")
+);
+
+check(
+  "operator: obsolete Runtime A-only workspace main view is removed",
+  !renderedPage.includes("Runtime A Workspace · 主视图") &&
+    renderedPage.includes('<section class="card span12">\n    <h2>Runtime / Host</h2>')
+);
+check(
+  "operator: connector labels are not statically tied to Boonray",
+  !renderedPage.includes("@Boonray-A") &&
+    !renderedPage.includes("@Boonray-B") &&
+    renderedPage.includes('id="topALabel"') &&
+    renderedPage.includes('id="topBLabel"') &&
+    renderedPage.includes('id="slotATitle"') &&
+    renderedPage.includes('id="slotBTitle"')
+);
 
 const domElements: Record<string, any> = {};
 const domElement = (id: string) => domElements[id] ??= {
@@ -58,89 +151,250 @@ const domElement = (id: string) => domElements[id] ??= {
 };
 const renderFixture = {
   timestamp: "2026-09-21T00:00:00.000Z",
+  liveActivity: [
+    {
+      id: "live-a",
+      capability: "fs_read",
+      risk: "read",
+      scope: "workspace",
+      workspaceId: "platform",
+      runtimeSlot: "A",
+      source: "runtime-mcp",
+      transport: "stdio",
+      clientName: "client-a",
+      summary: "Read file",
+      state: "succeeded",
+      phase: "complete",
+      startedAt: "2026-09-21T00:00:02.000Z",
+      durationMs: 12
+    },
+    {
+      id: "live-b",
+      capability: "git_status",
+      risk: "read",
+      scope: "workspace",
+      workspaceId: "business",
+      runtimeSlot: "B",
+      source: "runtime-mcp",
+      transport: "stdio",
+      summary: "Git status",
+      state: "succeeded",
+      phase: "complete",
+      startedAt: "2026-09-21T00:00:01.000Z",
+      durationMs: 8
+    }
+  ],
+  activity: [
+    {
+      id: "audit-a",
+      capability: "fs_read",
+      scope: "workspace",
+      workspaceId: "platform",
+      runtimeSlot: "A",
+      source: "runtime-mcp",
+      transport: "stdio",
+      clientName: "client-a",
+      state: "succeeded",
+      phase: "complete",
+      startedAt: "2026-09-21T00:00:02.000Z",
+      recoveryHint: "none",
+      durationMs: 12
+    },
+    {
+      id: "audit-b",
+      capability: "git_status",
+      scope: "workspace",
+      workspaceId: "business",
+      runtimeSlot: "B",
+      source: "runtime-mcp",
+      transport: "stdio",
+      state: "succeeded",
+      phase: "complete",
+      startedAt: "2026-09-21T00:00:01.000Z",
+      recoveryHint: "none",
+      durationMs: 8
+    }
+  ],
+  recovery: [],
   connection: {
     connected: true,
-    bridge: {
-      online: true,
-      data: {
-        mcp: {
-          profile: "developer",
-          profileSource: "test",
-          exposure: { exposed: ["device_info"], suppressed: [] },
-          capabilities: []
-        },
-        workspace: {
-          current: {
-            id: "platform",
-            label: "Test Workspace",
-            root: "C:\\test",
-            kind: "platform-source",
-            plugins: [],
-            authorization: {
-              structuredCrossWorkspace: "deny",
-              externalPersistentWrite: "approval-required",
-              shellBoundary: "trusted-user"
-            }
-          },
-          all: [
-            { id: "platform", label: "Test Workspace", root: "C:\\test", kind: "platform-source", current: true, plugins: [] },
-            { id: "business", label: "Business Workspace", root: "C:\\business", kind: "git-project", current: false, plugins: [] }
-          ]
-        },
-        device: {
-          deviceId: "test-device",
-          hostname: "test-host",
-          agentVersion: "0.0.0",
-          platform: "win32",
-          release: "test",
-          arch: "x64",
-          startedAt: "2026-09-21T00:00:00.000Z"
-        },
-        plugins: [], downstream: [], activity: [], liveActivity: [], recovery: []
-      }
+    slots: {
+      A: { connected: true, health: { ready: true, live: true }, bridge: { online: true } },
+      B: { connected: true, health: { ready: true, live: true }, bridge: { online: true } }
     },
-    health: { ready: true, live: true, baseUrl: "http://127.0.0.1:1" },
-    runtimeTask: { state: "running" },
-    restartTask: { exists: true, state: "ready" },
-    processes: [{ Role: "MCP Server", ProcessName: "node", Id: 123, StartTime: "2026-09-21T00:00:00.000Z" }]
+    processes: [
+      { Role: "Runtime A MCP", ProcessName: "node", Id: 123, StartTime: "/Date(1789973000623)/", RestartTarget: "A" },
+      { Role: "Tunnel B", ProcessName: "tunnel-client", Id: 124, StartTime: "/Date(1789973001623)/", RestartTarget: "B" },
+      { Role: "Operator Console", ProcessName: "node", Id: 125, StartTime: "/Date(1789973002623)/", RestartTarget: "operator" }
+    ]
   },
   slots: {
     A: {
-      id: "A", connector: "@Boonray-A", connected: true,
+      id: "A", connector: "@Fixture-A", connected: true,
       boundWorkspaceId: "platform", health: { ready: true, live: true }, bridge: { online: true },
-      device: { deviceId: "device-a" },
+      device: {
+        deviceId: "device-a",
+        hostname: "test-host",
+        agentVersion: "0.0.0",
+        platform: "win32",
+        release: "test",
+        arch: "x64",
+        startedAt: "2026-09-21T00:00:00.000Z"
+      },
+      mcp: {
+        profile: "developer-a",
+        profileSource: "env-a",
+        exposure: {
+          exposed: ["device_info"],
+          suppressed: [{ tool: "fs_write", reason: "A suppressed" }]
+        },
+        capabilities: [
+          { name: "device_info", risk: "read", summary: "A device info" },
+          { name: "fs_write", risk: "write", summary: "A file write" }
+        ]
+      },
       workspace: {
         current: { id: "platform", label: "A Workspace", root: "C:\\a", kind: "platform-source" },
         all: [
           { id: "platform", label: "A Workspace", root: "C:\\a", kind: "platform-source", current: true },
           { id: "business", label: "A Business", root: "C:\\a-business", kind: "git-project", current: false }
         ]
-      }
+      },
+      references: [{ id: "ref-a", label: "A Reference", root: "C:\\ref-a" }],
+      git: {
+        available: true,
+        branch: "feat/runtime-a",
+        dirty: true,
+        ahead: 1,
+        behind: 0,
+        counts: { staged: 1, modified: 2, untracked: 3, conflicted: 0 },
+        files: [{ status: " M", path: "a-file.txt" }],
+        diffStat: { unstaged: "a-file.txt | 2 +-", staged: "a-stage.txt | 1 +" },
+        lastCommit: { hash: "aaaa111", author: "A User", subject: "A commit" }
+      },
+      plugins: [
+        { id: "matlab", label: "MATLAB / Simulink", version: "2.2.0", apiVersion: "1", enabled: true, state: "running", activeForWorkspace: true, capabilityNames: [], downstreamIds: ["matlab"] }
+      ],
+      downstream: [{
+        id: "matlab-a",
+        label: "A MATLAB",
+        available: true,
+        enabled: true,
+        configured: true,
+        connected: false,
+        workspaceBinding: "active",
+        boundWorkspaceId: "platform"
+      }],
+      logTail: ["A tunnel line"]
     },
     B: {
-      id: "B", connector: "@Boonray-B", connected: true,
+      id: "B", connector: "@Fixture-B", connected: true,
       boundWorkspaceId: "business", health: { ready: true, live: true }, bridge: { online: true },
-      device: { deviceId: "device-b" },
+      device: {
+        deviceId: "device-b",
+        startedAt: "2026-09-21T00:00:01.000Z"
+      },
+      mcp: {
+        profile: "readonly-b",
+        profileSource: "env-b",
+        exposure: {
+          exposed: ["ping"],
+          suppressed: []
+        },
+        capabilities: [
+          { name: "ping", risk: "read", summary: "B ping" }
+        ]
+      },
       workspace: {
         current: { id: "business", label: "B Workspace", root: "C:\\b", kind: "git-project" },
         all: [
           { id: "platform", label: "B Platform", root: "C:\\b-platform", kind: "platform-source", current: false },
           { id: "business", label: "B Workspace", root: "C:\\b", kind: "git-project", current: true }
         ]
-      }
+      },
+      git: {
+        available: true,
+        branch: "main",
+        dirty: false,
+        ahead: 0,
+        behind: 1,
+        counts: { staged: 0, modified: 0, untracked: 0, conflicted: 0 },
+        files: [],
+        diffStat: { unstaged: "", staged: "" },
+        lastCommit: { hash: "bbbb222", author: "B User", subject: "B commit" }
+      },
+      plugins: [
+        { id: "matlab", label: "MATLAB / Simulink", version: "2.2.0", apiVersion: "1", enabled: true, state: "stopped", activeForWorkspace: false, capabilityNames: [], downstreamIds: ["matlab"] }
+      ],
+      downstream: [{
+        id: "matlab-b",
+        label: "B MATLAB",
+        available: true,
+        enabled: true,
+        configured: true,
+        connected: true,
+        workspaceBinding: "active",
+        boundWorkspaceId: "business"
+      }],
+      logTail: ["B tunnel line"]
     }
   },
-  git: {
-    available: true,
-    branch: "feat/test",
-    dirty: false,
-    ahead: 0,
-    behind: 0,
-    counts: { staged: 0, modified: 0, untracked: 0, conflicted: 0 },
-    files: [],
-    diffStat: { unstaged: "", staged: "" }
-  },
-  logTail: [],
+  git: { A: {}, B: {} },
+  logTail: { A: ["A tunnel line"], B: ["B tunnel line"] },
+  approvals: [
+    {
+      approvalId: "22222222-2222-4222-8222-222222222222",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "runtime_restart",
+      operation: "runtime_restart",
+      inputSummary: "P05 runtime",
+      reason: "Runtime lifecycle change requires confirmation in V2",
+      purpose: "重启 Runtime A。",
+      status: "approved",
+      requestedAt: "2026-09-21T00:00:06.000Z",
+      expiresAt: "2026-09-21T00:15:06.000Z"
+    },
+    {
+      approvalId: "33333333-3333-4333-8333-333333333333",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "shell_run",
+      operation: "older-pending",
+      inputSummary: "older pending",
+      reason: "confirmation required",
+      purpose: "较早的 A 待审批请求。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:04.000Z",
+      expiresAt: "2026-09-21T00:15:04.000Z"
+    },
+    {
+      approvalId: "44444444-4444-4444-8444-444444444444",
+      slot: "A",
+      workspaceId: "platform",
+      capability: "shell_run",
+      operation: "newer-pending",
+      inputSummary: "newer pending",
+      reason: "confirmation required",
+      purpose: "较新的 A 待审批请求。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:05.000Z",
+      expiresAt: "2026-09-21T00:15:05.000Z"
+    },
+    {
+      approvalId: "11111111-1111-4111-8111-111111111111",
+      slot: "B",
+      workspaceId: "business",
+      capability: "git_push",
+      operation: "git_push:origin",
+      inputSummary: "remote=origin",
+      reason: "Git push changes an external remote repository",
+      purpose: "把当前 Git 分支推送到远程仓库“origin”，会产生外部持久化修改。",
+      status: "pending",
+      requestedAt: "2026-09-21T00:00:03.000Z",
+      expiresAt: "2026-09-21T00:15:03.000Z"
+    }
+  ],
   operator: {}
 };
 const browserRequests: Array<{ path: string; method: string; body?: string }> = [];
@@ -157,9 +411,9 @@ const browserContext = vm.createContext({
       status: 200,
       json: async () => requestPath === "/api/status"
         ? renderFixture
-        : requestPath === "/api/workspace/pick"
-          ? { selected: true, path: "C:\\picked" }
-          : {}
+        : requestPath.endsWith("/reference/pick")
+            ? { selected: true, path: "C:\\picked-reference" }
+            : {}
     };
   },
   setInterval: () => 0,
@@ -167,15 +421,83 @@ const browserContext = vm.createContext({
   confirm: () => true,
   console
 });
-new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;").runInContext(browserContext);
+new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;globalThis.__p05RestartOperator=restartOperatorConsole;globalThis.__p05RestartManagedProcess=restartManagedProcess;").runInContext(browserContext);
 (browserContext as any).__p05Render(renderFixture);
 check(
-  "operator: render updates top status cards",
-  domElement("connectionBig").innerHTML.includes("已连接") &&
-  domElement("mcpBig").innerHTML.includes("ONLINE") &&
-  domElement("workspaceBig").textContent === "Test Workspace" &&
-  domElement("gitBig").textContent === "feat/test"
+  "operator: process time never renders Invalid Date",
+  !domElement("processRows").innerHTML.includes("Invalid Date") &&
+    domElement("processRows").innerHTML.includes(">-" + "</span>")
 );
+
+check(
+  "operator: top status cards show isolated Runtime A/B context",
+  domElement("topAState").innerHTML.includes("ONLINE") &&
+  domElement("topAWorkspace").textContent === "A Workspace" &&
+  domElement("topAGit").textContent.includes("feat/runtime-a") &&
+  domElement("topAGit").textContent.includes("有未提交修改") &&
+  domElement("topBState").innerHTML.includes("ONLINE") &&
+  domElement("topBWorkspace").textContent === "B Workspace" &&
+  domElement("topBGit").textContent.includes("main") &&
+  domElement("topBGit").textContent.includes("clean")
+);
+check(
+  "operator: MCP status panels render Runtime A and B independently",
+  domElement("mcpAStatusSummary").innerHTML.includes("developer-a") &&
+    domElement("mcpAProfileSource").textContent === "env-a" &&
+    domElement("mcpADeviceId").textContent === "device-a" &&
+    domElement("mcpBStatusSummary").innerHTML.includes("readonly-b") &&
+    domElement("mcpBProfileSource").textContent === "env-b" &&
+    domElement("mcpBDeviceId").textContent === "device-b"
+);
+check(
+  "operator: Downstream panels do not cross Runtime slots",
+  domElement("downstreamARows").innerHTML.includes("A MATLAB") &&
+    !domElement("downstreamARows").innerHTML.includes("B MATLAB") &&
+    domElement("downstreamBRows").innerHTML.includes("B MATLAB") &&
+    !domElement("downstreamBRows").innerHTML.includes("A MATLAB")
+);
+check(
+  "operator: Tool Surface panels do not cross Runtime slots",
+  domElement("toolAGroups").innerHTML.includes("device_info") &&
+    !domElement("toolAGroups").innerHTML.includes(">ping<") &&
+    domElement("suppressedATools").innerHTML.includes("fs_write") &&
+    domElement("toolBGroups").innerHTML.includes(">ping<") &&
+    !domElement("toolBGroups").innerHTML.includes("device_info"),
+  JSON.stringify({
+    A: domElement("toolAGroups").innerHTML,
+    ASuppressed: domElement("suppressedATools").innerHTML,
+    B: domElement("toolBGroups").innerHTML
+  })
+);
+check(
+  "operator: Tunnel logs are Runtime scoped",
+  domElement("logsA").textContent.includes("A tunnel line") &&
+    !domElement("logsA").textContent.includes("B tunnel line") &&
+    domElement("logsB").textContent.includes("B tunnel line") &&
+    !domElement("logsB").textContent.includes("A tunnel line")
+);
+
+check(
+  "operator: detailed Git panels render Runtime A and B independently",
+  domElement("gitASummary").innerHTML.includes("feat/runtime-a") &&
+  domElement("gitAFiles").innerHTML.includes("a-file.txt") &&
+  domElement("gitADiffStat").textContent.includes("a-file.txt") &&
+  domElement("gitACommit").textContent.includes("aaaa111") &&
+  domElement("gitBSummary").innerHTML.includes("main") &&
+  domElement("gitBFiles").innerHTML.includes("工作区 clean") &&
+  domElement("gitBDiffStat").textContent.includes("UNSTAGED") &&
+  domElement("gitBCommit").textContent.includes("bbbb222")
+);
+
+check(
+  "operator: activity UI identifies Runtime A and B sources",
+  domElement("liveRows").innerHTML.includes(">A</span>") &&
+  domElement("liveRows").innerHTML.includes("client-a") &&
+  domElement("liveRows").innerHTML.includes(">B</span>") &&
+  domElement("auditRows").innerHTML.includes(">A</span>") &&
+  domElement("auditRows").innerHTML.includes(">B</span>")
+);
+
 check(
   "operator: renders isolated runtime slots",
   domElement("slotADeviceId").textContent === "device-a" &&
@@ -184,6 +506,108 @@ check(
   domElement("slotBWorkspace").textContent === "B Workspace" &&
   domElement("slotABoundWorkspace").textContent === "platform" &&
   domElement("slotBBoundWorkspace").textContent === "business"
+);
+check(
+  "operator: renders connector labels from Runtime slot data",
+  domElement("topALabel").textContent === "Runtime A · @Fixture-A" &&
+    domElement("topBLabel").textContent === "Runtime B · @Fixture-B" &&
+    domElement("slotATitle").textContent === "Runtime A · @Fixture-A" &&
+    domElement("slotBTitle").textContent === "Runtime B · @Fixture-B"
+);
+check(
+  "operator: managed P05 processes expose safe restart controls",
+  renderedPage.includes('id="restartOperator"') &&
+    domElement("processRows").innerHTML.includes("重启 A") &&
+    domElement("processRows").innerHTML.includes("重启 B") &&
+    domElement("processRows").innerHTML.includes("重启 Console") &&
+    renderedScript.includes('/api/operator/restart') &&
+    renderedScript.includes('/api/slot/"+target+"/action/restart')
+);
+
+check(
+  "operator: approval queue renders Runtime A/B as separate columns",
+  renderedPage.includes('id="approvalARows"') &&
+    renderedPage.includes('id="approvalBRows"') &&
+    domElement("approvalARows").innerHTML.includes("newer-pending") &&
+    !domElement("approvalARows").innerHTML.includes("git_push:origin") &&
+    domElement("approvalBRows").innerHTML.includes("git_push:origin") &&
+    !domElement("approvalBRows").innerHTML.includes("newer-pending")
+);
+check(
+  "operator: approval columns prioritize pending and sort newest pending first",
+  domElement("approvalARows").innerHTML.indexOf("newer-pending") <
+    domElement("approvalARows").innerHTML.indexOf("older-pending") &&
+    domElement("approvalARows").innerHTML.indexOf("older-pending") <
+      domElement("approvalARows").innerHTML.indexOf("runtime_restart") &&
+    domElement("approvalACount").textContent === "待审批 2" &&
+    domElement("approvalBCount").textContent === "待审批 1"
+);
+check(
+  "operator: pending tool approval renders tool, operation, reason and one-time approval controls",
+  domElement("approvalBRows").innerHTML.includes("git_push") &&
+    domElement("approvalBRows").innerHTML.includes("git_push:origin") &&
+    domElement("approvalBRows").innerHTML.includes("批准一次") &&
+    domElement("approvalBRows").innerHTML.includes("拒绝")
+);
+check(
+  "operator: Tool Approval UI visibly renders canonical approvalId/inputSummary fields",
+  domElement("approvalBRows").innerHTML.includes("审批 ID：") &&
+    domElement("approvalBRows").innerHTML.includes("11111111-1111-4111-8111-111111111111") &&
+    domElement("approvalBRows").innerHTML.includes("remote=origin") &&
+    renderedScript.includes("审批 ID: ") &&
+    renderedScript.includes("x.approvalId===id") &&
+    renderedScript.includes("a.approvalId") &&
+    !renderedScript.includes("a.command")
+);
+
+check(
+  "operator: tool approval explains purpose before call input",
+  domElement("approvalBRows").innerHTML.includes("用途：") &&
+    domElement("approvalBRows").innerHTML.includes("推送到远程仓库") &&
+    domElement("approvalBRows").innerHTML.includes("触发审批：") &&
+    domElement("approvalBRows").innerHTML.includes("调用内容")
+);
+
+check(
+  "operator: Runtime A renders read-only reference roots",
+  domElement("slotAReferenceList").innerHTML.includes("A Reference") &&
+  domElement("slotAReferenceList").innerHTML.includes("C:\\ref-a")
+);
+
+check(
+  "operator: Runtime A lazy downstream is READY and Runtime B connected state is independent",
+  domElement("downstreamARows").innerHTML.includes("READY") &&
+    domElement("downstreamARows").innerHTML.includes("首次调用时自动连接") &&
+    domElement("downstreamBRows").innerHTML.includes("CONNECTED") &&
+    !domElement("downstreamARows").innerHTML.includes(">configured<")
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05ToolApproval(
+  "B",
+  "11111111-1111-4111-8111-111111111111",
+  "approve"
+);
+check(
+  "operator: tool approval uses explicit slot/id/approve endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/approval/B/11111111-1111-4111-8111-111111111111/approve" &&
+    item.method === "POST"
+  )
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05ToolApproval(
+  "B",
+  "11111111-1111-4111-8111-111111111111",
+  "deny"
+);
+check(
+  "operator: tool approval uses the same explicit slot/id/deny endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/approval/B/11111111-1111-4111-8111-111111111111/deny" &&
+    item.method === "POST"
+  )
 );
 
 browserRequests.length = 0;
@@ -200,62 +624,12 @@ check(
 );
 
 browserRequests.length = 0;
-renderFixture.git.branch = "feat/refreshed";
+renderFixture.slots.A.git.branch = "feat/refreshed";
 await domElement("refresh").onclick();
 check(
   "operator: refresh fetches status and rerenders",
   browserRequests.some((item) => item.path === "/api/status" && item.method === "GET") &&
-  domElement("gitBig").textContent === "feat/refreshed"
-);
-
-domElement("workspaceSelect").value = "business";
-domElement("workspaceSelect").onchange();
-(browserContext as any).__p05Render(renderFixture);
-check(
-  "operator: auto refresh preserves pending workspace selection",
-  domElement("workspaceSelect").value === "business"
-);
-
-browserRequests.length = 0;
-domElement("workspaceSelect").value = "business";
-await domElement("switchWorkspace").onclick();
-check(
-  "operator: workspace switch posts selected id and refreshes",
-  browserRequests.some((item) =>
-    item.path === "/api/workspace/select" &&
-    item.method === "POST" &&
-    item.body === JSON.stringify({ id: "business" })
-  ) &&
-  browserRequests.some((item) => item.path === "/api/status" && item.method === "GET")
-);
-
-browserRequests.length = 0;
-await domElement("pickWorkspaceRoot").onclick();
-check(
-  "operator: folder picker fills workspace root input",
-  browserRequests.some((item) => item.path === "/api/workspace/pick" && item.method === "POST") &&
-  domElement("workspaceRootInput").value === "C:\\picked"
-);
-
-browserRequests.length = 0;
-domElement("workspaceRootInput").value = "C:\\selected";
-await domElement("setWorkspaceRoot").onclick();
-check(
-  "operator: set workspace root posts path and refreshes",
-  browserRequests.some((item) =>
-    item.path === "/api/workspace/root" &&
-    item.method === "POST" &&
-    item.body === JSON.stringify({ root: "C:\\selected" })
-  ) &&
-  browserRequests.some((item) => item.path === "/api/status" && item.method === "GET")
-);
-
-browserRequests.length = 0;
-await domElement("registerWorkspace").onclick();
-check(
-  "operator: save workspace posts persistent registration",
-  browserRequests.some((item) => item.path === "/api/workspace/register" && item.method === "POST") &&
-  browserRequests.some((item) => item.path === "/api/status" && item.method === "GET")
+  domElement("topAGit").textContent.includes("feat/refreshed")
 );
 
 browserRequests.length = 0;
@@ -266,11 +640,68 @@ check(
   browserRequests.some((item) => item.path === "/api/status" && item.method === "GET")
 );
 
+browserRequests.length = 0;
+await (browserContext as any).__p05PluginControl("A", "matlab", "stop");
+check(
+  "operator: plugin stop uses Runtime A scoped endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/slot/A/plugin/matlab/action/stop" &&
+    item.method === "POST"
+  ) &&
+  browserRequests.some((item) => item.path === "/api/status" && item.method === "GET")
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05PluginControl("B", "matlab", "start");
+check(
+  "operator: plugin start uses Runtime B scoped endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/slot/B/plugin/matlab/action/start" &&
+    item.method === "POST"
+  )
+);
+
+browserRequests.length = 0;
+await domElement("slotBPickReference").onclick();
+check(
+  "operator: Runtime B reference picker uses slot-scoped endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/slot/B/reference/pick" &&
+    item.method === "POST"
+  ) &&
+  domElement("slotBReferenceInput").value === "C:\\picked-reference"
+);
+
+browserRequests.length = 0;
+domElement("slotBReferenceInput").value = "C:\\reference";
+await domElement("slotBAddReference").onclick();
+check(
+  "operator: Runtime B reference add uses slot-scoped endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/slot/B/reference/root" &&
+    item.method === "POST" &&
+    item.body === JSON.stringify({ root: "C:\\reference" })
+  )
+);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05ReferenceRemove("A", "ref-a");
+check(
+  "operator: reference remove uses Runtime A scoped endpoint",
+  browserRequests.some((item) =>
+    item.path === "/api/slot/A/reference/ref-a/remove" &&
+    item.method === "POST"
+  )
+);
+
 await fs.rm(FIXTURE, { recursive: true, force: true });
 await fs.mkdir(PLATFORM, { recursive: true });
 await fs.mkdir(BUSINESS, { recursive: true });
 await fs.mkdir(SELECTED, { recursive: true });
+await fs.rm(OUTSIDE, { recursive: true, force: true });
+await fs.mkdir(OUTSIDE, { recursive: true });
 await fs.writeFile(path.join(SELECTED, "selected.txt"), "selected\n", "utf8");
+await fs.writeFile(path.join(OUTSIDE, "outside.txt"), "outside\n", "utf8");
 
 const workspaces = parseWorkspaceRegistry(
   JSON.stringify([
@@ -281,7 +712,7 @@ const workspaces = parseWorkspaceRegistry(
   PLATFORM
 );
 savePersistentWorkspaceEntries(PERSISTENT, [
-  { id: "selected", root: SELECTED, kind: "generic", label: "Selected" }
+  { id: "selected", root: OUTSIDE, kind: "generic", label: "Selected" }
 ]);
 const persistedEntries = loadPersistentWorkspaceEntries(PERSISTENT);
 const mergedWorkspaces = mergePersistentWorkspaces(
@@ -292,14 +723,31 @@ const mergedWorkspaces = mergePersistentWorkspaces(
 );
 check(
   "operator: persistent workspace registry survives reload",
-  mergedWorkspaces.some((item) => item.id === "selected" && item.root === SELECTED) &&
+  mergedWorkspaces.some((item) => item.id === "selected" && item.root === OUTSIDE) &&
   mergedWorkspaces.length === 3
 );
 await fs.rm(PERSISTENT, { force: true });
 
 const workspaceManager = new WorkspaceManager(workspaces, "platform");
-const pluginRegistry = new PluginRegistry([]);
+const referenceManager = new ReferenceManager(path.join(FIXTURE, "references.json"));
+let operatorPluginStarts = 0;
+let operatorPluginStops = 0;
+const operatorPlugin: ApplicationPlugin = {
+  manifest: {
+    id: "operator-test",
+    label: "Operator Test Plugin",
+    version: "1.0.0",
+    apiVersion: PLUGIN_API_VERSION,
+    enabled: true,
+    capabilities: [],
+    permissions: { workspace: "active", hostEffects: "none" }
+  },
+  start: () => { operatorPluginStarts += 1; },
+  stop: () => { operatorPluginStops += 1; }
+};
+const pluginRegistry = new PluginRegistry([operatorPlugin]);
 const pluginRuntime = new PluginRuntime(pluginRegistry, workspaceManager);
+await pluginRuntime.startAll();
 const downstreamRegistry = new DownstreamRegistry(
   [],
   () => ({
@@ -326,6 +774,7 @@ const persistedByBridge: string[] = [];
 
 const bridge = await startLocalControlBridge({
   workspaceManager,
+  referenceManager,
   auditStore,
   pluginRuntime,
   downstreamRegistry,
@@ -334,7 +783,6 @@ const bridge = await startLocalControlBridge({
   exposure: () => exposure,
   profile: "developer",
   profileSource: "env",
-  allowedRoots: [FIXTURE],
   persistWorkspace: (workspace) => persistedByBridge.push(workspace.id),
   metadataPath: META,
   port: 0
@@ -373,6 +821,29 @@ try {
   check("operator: local overview includes workspace root", overviewJson.workspace?.current?.root === PLATFORM);
   check("operator: overview lists both workspaces", overviewJson.workspace?.all?.length === 2);
 
+  const pluginStop = await fetch(metadata.url + "/api/plugin/operator-test/action/stop", {
+    method: "POST",
+    headers: authHeaders,
+    body: "{}"
+  });
+  check("operator: bridge plugin stop endpoint succeeds", pluginStop.status === 200, String(pluginStop.status));
+  check(
+    "operator: bridge plugin stop changes runtime state",
+    pluginRuntime.list()[0]?.state === "stopped" && operatorPluginStops === 1,
+    JSON.stringify(pluginRuntime.list())
+  );
+  const pluginStart = await fetch(metadata.url + "/api/plugin/operator-test/action/start", {
+    method: "POST",
+    headers: authHeaders,
+    body: "{}"
+  });
+  check("operator: bridge plugin start endpoint succeeds", pluginStart.status === 200, String(pluginStart.status));
+  check(
+    "operator: bridge plugin start changes runtime state",
+    pluginRuntime.list()[0]?.state === "running" && operatorPluginStarts === 2,
+    JSON.stringify(pluginRuntime.list())
+  );
+
   const switched = await fetch(metadata.url + "/api/workspace/select", {
     method: "POST",
     headers: authHeaders,
@@ -393,6 +864,50 @@ try {
     workspacesJson.workspaces?.some((item) =>
       item.id === "business" && item.current && item.root === BUSINESS
     ) === true
+  );
+
+  const referenceDir = path.join(FIXTURE, "reference-docs");
+  await fs.mkdir(referenceDir, { recursive: true });
+  await fs.writeFile(path.join(referenceDir, "guide.txt"), "guide\n", "utf8");
+
+  const addReference = await fetch(metadata.url + "/api/reference/root", {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify({ root: referenceDir })
+  });
+  check("operator: bridge reference add endpoint succeeds", addReference.status === 200, String(addReference.status));
+  const addedReference = await addReference.json() as { reference?: { id?: string; root?: string } };
+  const addedReferenceId = addedReference.reference?.id ?? "";
+  check(
+    "operator: bridge reference add persists local root",
+    Boolean(addedReferenceId) &&
+    addedReference.reference?.root === referenceDir &&
+    referenceManager.localList().some((item) => item.id === addedReferenceId && item.root === referenceDir)
+  );
+
+  const referencesResult = await fetch(metadata.url + "/api/references", {
+    headers: authHeaders
+  });
+  const referencesJson = await referencesResult.json() as {
+    references?: Array<{ id: string; root: string }>;
+  };
+  check(
+    "operator: bridge reference list includes local root",
+    referencesResult.status === 200 &&
+    referencesJson.references?.some((item) => item.id === addedReferenceId && item.root === referenceDir) === true
+  );
+
+  const removeReference = await fetch(metadata.url + `/api/reference/${addedReferenceId}/remove`, {
+    method: "POST",
+    headers: authHeaders,
+    body: "{}"
+  });
+  check(
+    "operator: bridge reference remove endpoint succeeds without deleting directory",
+    removeReference.status === 200 &&
+    !referenceManager.localList().some((item) => item.id === addedReferenceId) &&
+    await fs.access(referenceDir).then(() => true).catch(() => false),
+    String(removeReference.status)
   );
 
   const setRoot = await fetch(metadata.url + "/api/workspace/root", {
@@ -422,12 +937,21 @@ try {
     !workspaceManager.list().some((item) => item.id === "operator-session") &&
     persistedByBridge.includes("selected")
   );
-  const refusedRoot = await fetch(metadata.url + "/api/workspace/root", {
+  const outsideRoot = await fetch(metadata.url + "/api/workspace/root", {
     method: "POST",
     headers: authHeaders,
-    body: JSON.stringify({ root: path.dirname(FIXTURE) })
+    body: JSON.stringify({ root: OUTSIDE })
   });
-  check("operator: workspace root refuses outside allowed roots", refusedRoot.status === 400, String(refusedRoot.status));
+  check(
+    "operator: local folder selection authorizes a Runtime root outside startup allowed roots",
+    outsideRoot.status === 200 && workspaceManager.currentRoot() === path.resolve(OUTSIDE),
+    String(outsideRoot.status)
+  );
+  const outsideEntries = await listDirectory(".", workspaceManager.currentRoot());
+  check(
+    "operator: dynamically selected Runtime root is immediately usable",
+    outsideEntries.includes("[FILE] outside.txt")
+  );
 
   const shellDetail = summarizeToolInput("shell_run", {
     command: "tool --token=super-secret-value --password hunter2"
@@ -456,6 +980,15 @@ try {
 
   const previousStateDir = process.env.P05_STATE_DIR;
   const previousOperatorRoot = process.env.P05_OPERATOR_ROOT;
+
+  delete process.env.P05_OPERATOR_ROOT;
+  process.env.P05_STATE_DIR = path.join(FIXTURE, "runtime-owned-state");
+  check(
+    "operator: Runtime approval state ignores generic P05_STATE_DIR",
+    runtimeSlotStateDir("B") === path.join(REPO, ".p05", "runtime-b", "state"),
+    runtimeSlotStateDir("B")
+  );
+
   const operatorRoot = path.join(FIXTURE, "operator-root");
   const stateDir = path.join(operatorRoot, "runtime-a", "state");
   process.env.P05_OPERATOR_ROOT = operatorRoot;
@@ -463,6 +996,7 @@ try {
   await fs.mkdir(stateDir, { recursive: true });
   const fallbackBridge = await startLocalControlBridge({
     workspaceManager,
+    referenceManager,
     auditStore,
     pluginRuntime,
     downstreamRegistry,
@@ -471,7 +1005,6 @@ try {
     exposure: () => exposure,
     profile: "developer",
     profileSource: "env",
-    allowedRoots: [FIXTURE],
     port: 0
   });
   try {
@@ -488,29 +1021,35 @@ try {
     );
 
     const statusOverview = await operatorOverview() as any;
-    const guiData = statusOverview?.connection?.bridge?.data;
     check(
-      "operator: status overview satisfies GUI render contract",
+      "operator: status overview satisfies slot-native GUI render contract",
       typeof statusOverview?.timestamp === "string" &&
       typeof statusOverview?.connection?.connected === "boolean" &&
-      statusOverview?.connection?.bridge?.online === true &&
+      typeof statusOverview?.connection?.slots?.A?.bridge?.online === "boolean" &&
+      typeof statusOverview?.connection?.slots?.B?.bridge?.online === "boolean" &&
       Array.isArray(statusOverview?.connection?.processes) &&
-      typeof statusOverview?.git === "object" &&
-      Array.isArray(statusOverview?.logTail) &&
-      typeof guiData?.device?.deviceId === "string" &&
-      typeof guiData?.mcp?.profile === "string" &&
-      typeof guiData?.mcp?.profileSource === "string" &&
-      Array.isArray(guiData?.mcp?.exposure?.exposed) &&
-      Array.isArray(guiData?.mcp?.exposure?.suppressed) &&
-      Array.isArray(guiData?.mcp?.capabilities) &&
-      typeof guiData?.workspace?.current?.id === "string" &&
-      Array.isArray(guiData?.workspace?.all) &&
-      Array.isArray(guiData?.plugins) &&
-      Array.isArray(guiData?.downstream) &&
-      Array.isArray(guiData?.activity) &&
-      Array.isArray(guiData?.liveActivity) &&
-      Array.isArray(guiData?.recovery),
+      typeof statusOverview?.git?.A === "object" &&
+      typeof statusOverview?.git?.B === "object" &&
+      Array.isArray(statusOverview?.logTail?.A) &&
+      Array.isArray(statusOverview?.logTail?.B) &&
+      typeof statusOverview?.slots?.A === "object" &&
+      typeof statusOverview?.slots?.B === "object" &&
+      !("bridge" in statusOverview.connection && "data" in (statusOverview.connection.bridge ?? {})),
       JSON.stringify(statusOverview)
+    );
+
+    const processRows = statusOverview?.connection?.processes ?? [];
+    check(
+      "operator: process start times are normalized as parseable ISO timestamps",
+      processRows.every((item: any) =>
+        !item?.StartTime ||
+        (
+          typeof item.StartTime === "string" &&
+          !item.StartTime.startsWith("/Date(") &&
+          Number.isFinite(Date.parse(item.StartTime))
+        )
+      ),
+      JSON.stringify(processRows)
     );
 
     await fs.writeFile(
@@ -550,6 +1089,7 @@ try {
   await bridge.close();
   await downstreamRegistry.closeAll();
   await fs.rm(FIXTURE, { recursive: true, force: true }).catch(() => undefined);
+  await fs.rm(OUTSIDE, { recursive: true, force: true }).catch(() => undefined);
 }
 
 const metadataGone = await fs.access(META).then(() => false).catch(() => true);

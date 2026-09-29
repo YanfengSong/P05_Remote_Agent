@@ -8,7 +8,6 @@ import type {
   ToolProfile,
   ToolRisk
 } from "../capability/types.js";
-import { TEMP_READONLY_ROOT_ENV, readOwnEnv } from "../env.js";
 
 export const TOOL_PROFILE_NAMES = ["discovery", "readonly", "developer", "full"] as const;
 export type { ToolProfile, ToolRisk, CapabilityDescriptor as ToolSpec };
@@ -64,16 +63,6 @@ export function resolveToolProfile(
   return { profile: lowered as ToolProfile, profileSource: "env" };
 }
 
-function gateReason(spec: CapabilityDescriptor): string | undefined {
-  if (spec.gate === "temp-readonly") {
-    const raw = readOwnEnv(TEMP_READONLY_ROOT_ENV)?.trim();
-    if (!raw) {
-      return `the temporary read-only layer is off (set ${TEMP_READONLY_ROOT_ENV} to enable it)`;
-    }
-  }
-  return undefined;
-}
-
 export function isToolAllowed(
   profile: ToolProfile,
   toolName: string,
@@ -94,9 +83,6 @@ export function toolDecision(
   catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG
 ): ToolDecision {
   const spec = assertToolDeclared(toolName, catalog);
-  const gated = gateReason(spec);
-  if (gated) return { tool: toolName, allowed: false, reason: gated };
-
   if (PROFILE_RANK[profile] < PROFILE_RANK[spec.minProfile]) {
     return {
       tool: toolName,

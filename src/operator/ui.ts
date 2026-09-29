@@ -25,7 +25,9 @@ select,input{width:100%;background:#0b1424;color:var(--text);border:1px solid va
 pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;overflow:auto;max-height:280px;font:11px/1.45 Consolas,monospace}
 .toast{position:fixed;right:18px;bottom:18px;background:#111b2f;border:1px solid var(--line);padding:11px 14px;border-radius:8px;display:none;max-width:520px;z-index:20}
 .detail{color:#c5d1e6;max-width:620px;overflow-wrap:anywhere}.workspaceCard{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:7px;background:#0c1525}.workspaceCard.current{border-color:#6887df}.empty{color:var(--muted);font-size:12px;padding:8px 0}
+.approvalGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.approvalColumn{min-width:0;border:1px solid var(--line);border-radius:9px;padding:10px;background:#0c1525}.approvalColumnHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.approvalColumnHeader strong{font-size:13px}.approvalCount{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;color:var(--muted)}.approvalCount.pending{border-color:#8e6d27;color:var(--warn)}
 @media(max-width:1100px){.span3,.span4{grid-column:span 6}.span5,.span6,.span7,.span8{grid-column:span 12}}
+@media(max-width:900px){.approvalGrid{grid-template-columns:1fr}}
 @media(max-width:680px){.headerline{align-items:flex-start;flex-direction:column}.span3,.span4,.span5,.span6,.span7,.span8,.span12{grid-column:span 12}main{padding:10px}}
 </style>
 </head>
@@ -38,6 +40,7 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     </div>
     <div class="actions">
       <button id="operatorState" class="primary" disabled>Console 已开启</button>
+      <button id="restartOperator" class="warning">重启 Console</button>
       <button id="closeOperator" class="danger">关闭 Console</button>
 
       <button id="refresh">刷新</button>
@@ -47,13 +50,13 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
 </header>
 
 <main><div class="grid">
-  <section class="card span3"><div class="label">整体连接</div><div id="connectionBig" class="big">...</div><div id="connectionDetail" class="small muted"></div></section>
-  <section class="card span3"><div class="label">MCP Server</div><div id="mcpBig" class="big">...</div><div id="mcpDetail" class="small muted"></div></section>
-  <section class="card span3"><div class="label">Workspace</div><div id="workspaceBig" class="big">-</div><div id="workspaceTopDetail" class="small muted"></div></section>
-  <section class="card span3"><div class="label">Git</div><div id="gitBig" class="big">-</div><div id="gitTopDetail" class="small muted"></div></section>
+  <section class="card span3"><div id="topALabel" class="label">Runtime A</div><div id="topAState" class="big">...</div><div id="topAStateDetail" class="small muted"></div></section>
+  <section class="card span3"><div class="label">A Workspace / Git</div><div id="topAWorkspace" class="big">-</div><div id="topAGit" class="small muted"></div></section>
+  <section class="card span3"><div id="topBLabel" class="label">Runtime B</div><div id="topBState" class="big">...</div><div id="topBStateDetail" class="small muted"></div></section>
+  <section class="card span3"><div class="label">B Workspace / Git</div><div id="topBWorkspace" class="big">-</div><div id="topBGit" class="small muted"></div></section>
 
   <section class="card span6">
-    <h2>Runtime A · @Boonray-A</h2>
+    <h2 id="slotATitle">Runtime A</h2>
     <div class="row"><span>状态</span><span id="slotAState">-</span></div>
     <div class="row"><span>Device ID</span><span id="slotADeviceId" class="value mono small">-</span></div>
     <div class="row"><span>当前 Workspace</span><strong id="slotAWorkspace">-</strong></div>
@@ -62,12 +65,16 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div style="display:flex;gap:8px;margin-top:8px"><button id="slotAToggle" class="primary">启动 A</button><button id="slotARestart" class="warning">重启 A</button></div>
     <h3>绑定 Workspace</h3>
     <div style="display:flex;gap:8px"><select id="slotAWorkspaceSelect"></select><button id="slotASwitchWorkspace" class="primary">切换</button></div>
-    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotARootInput" class="mono" placeholder="选择或输入已授权范围内的目录" /><button id="slotAPickWorkspace">选择文件夹</button><button id="slotASetWorkspace" class="primary">设为工作区</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotARootInput" class="mono" placeholder="选择或输入要授权给该 Runtime 的工作目录" /><button id="slotAPickWorkspace">选择文件夹</button><button id="slotASetWorkspace" class="primary">设为工作区</button></div>
     <div style="margin-top:8px"><button id="slotARegisterWorkspace">保存当前 Workspace</button></div>
+    <h3>参考目录（只读）</h3>
+    <div id="slotAReferenceList"></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotAReferenceInput" class="mono" placeholder="选择要授权给 Runtime A 的只读参考目录" /><button id="slotAPickReference">选择文件夹</button><button id="slotAAddReference" class="primary">添加参考目录</button></div>
+    <div class="small muted" style="margin-top:6px">仅允许 reference_read / reference_list_directory；不授予写入、Git、Shell 或 MATLAB 操作权限。</div>
   </section>
 
   <section class="card span6">
-    <h2>Runtime B · @Boonray-B</h2>
+    <h2 id="slotBTitle">Runtime B</h2>
     <div class="row"><span>状态</span><span id="slotBState">-</span></div>
     <div class="row"><span>Device ID</span><span id="slotBDeviceId" class="value mono small">-</span></div>
     <div class="row"><span>当前 Workspace</span><strong id="slotBWorkspace">-</strong></div>
@@ -76,73 +83,103 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div style="display:flex;gap:8px;margin-top:8px"><button id="slotBToggle" class="primary">启动 B</button><button id="slotBRestart" class="warning">重启 B</button></div>
     <h3>绑定 Workspace</h3>
     <div style="display:flex;gap:8px"><select id="slotBWorkspaceSelect"></select><button id="slotBSwitchWorkspace" class="primary">切换</button></div>
-    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotBRootInput" class="mono" placeholder="选择或输入已授权范围内的目录" /><button id="slotBPickWorkspace">选择文件夹</button><button id="slotBSetWorkspace" class="primary">设为工作区</button></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotBRootInput" class="mono" placeholder="选择或输入要授权给该 Runtime 的工作目录" /><button id="slotBPickWorkspace">选择文件夹</button><button id="slotBSetWorkspace" class="primary">设为工作区</button></div>
     <div style="margin-top:8px"><button id="slotBRegisterWorkspace">保存当前 Workspace</button></div>
+    <h3>参考目录（只读）</h3>
+    <div id="slotBReferenceList"></div>
+    <div style="display:flex;gap:8px;margin-top:8px"><input id="slotBReferenceInput" class="mono" placeholder="选择要授权给 Runtime B 的只读参考目录" /><button id="slotBPickReference">选择文件夹</button><button id="slotBAddReference" class="primary">添加参考目录</button></div>
+    <div class="small muted" style="margin-top:6px">仅允许 reference_read / reference_list_directory；不授予写入、Git、Shell 或 MATLAB 操作权限。</div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime A · MCP 当前状态</h2>
+    <div id="mcpAStatusSummary" class="summary"></div>
+    <div class="row"><span>Control Bridge</span><span id="mcpABridgeState">-</span></div>
+    <div class="row"><span>启动时间</span><span id="mcpAStartedAt" class="value small">-</span></div>
+    <div class="row"><span>Profile 来源</span><span id="mcpAProfileSource" class="value">-</span></div>
+    <div class="row"><span>Device ID</span><span id="mcpADeviceId" class="value mono small">-</span></div>
+    <div class="row"><span>错误</span><span id="mcpAStatusError" class="value small">-</span></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · MCP 当前状态</h2>
+    <div id="mcpBStatusSummary" class="summary"></div>
+    <div class="row"><span>Control Bridge</span><span id="mcpBBridgeState">-</span></div>
+    <div class="row"><span>启动时间</span><span id="mcpBStartedAt" class="value small">-</span></div>
+    <div class="row"><span>Profile 来源</span><span id="mcpBProfileSource" class="value">-</span></div>
+    <div class="row"><span>Device ID</span><span id="mcpBDeviceId" class="value mono small">-</span></div>
+    <div class="row"><span>错误</span><span id="mcpBStatusError" class="value small">-</span></div>
   </section>
 
   <section class="card span12">
-    <h2>MCP 当前状态</h2>
-    <div id="mcpStatusSummary" class="summary"></div>
-    <div class="row"><span>Control Bridge</span><span id="mcpBridgeState">-</span></div>
-    <div class="row"><span>MCP 进程</span><span id="mcpProcessState" class="value">-</span></div>
-    <div class="row"><span>启动时间</span><span id="mcpStartedAt" class="value small">-</span></div>
-    <div class="row"><span>Profile 来源</span><span id="mcpProfileSource" class="value">-</span></div>
-    <div class="row"><span>Device ID</span><span id="mcpDeviceId" class="value mono small">-</span></div>
-    <div class="row"><span>状态刷新</span><span id="mcpRefreshedAt" class="value small">-</span></div>
-    <div class="row"><span>错误</span><span id="mcpStatusError" class="value small">-</span></div>
+    <h2>工具审批队列</h2>
+    <div class="small muted" style="margin-bottom:8px">当工具调用被统一权限策略判定为 CONFIRM 时出现。批准只对同一 Runtime + Workspace + Tool + Operation + 输入生效一次，15 分钟过期。</div>
+    <div id="approvalRows" class="approvalGrid">
+      <div class="approvalColumn">
+        <div class="approvalColumnHeader"><strong>Runtime A</strong><span id="approvalACount" class="approvalCount">待审批 0</span></div>
+        <div id="approvalARows"></div>
+      </div>
+      <div class="approvalColumn">
+        <div class="approvalColumnHeader"><strong>Runtime B</strong><span id="approvalBCount" class="approvalCount">待审批 0</span></div>
+        <div id="approvalBRows"></div>
+      </div>
+    </div>
   </section>
 
-  <section class="card span6">
-    <h2>Workspace</h2>
-    <div class="row"><span>当前</span><strong id="workspaceName">-</strong></div>
-    <div class="row"><span>路径</span><span id="workspaceRoot" class="value mono small">-</span></div>
-    <div class="row"><span>类型</span><span id="workspaceKind">-</span></div>
-    <div class="row"><span>插件</span><span id="workspacePlugins" class="value">-</span></div>
-    <div class="row"><span>授权</span><span id="workspaceAuth" class="value small">-</span></div>
-    <h3>切换 Workspace</h3>
-    <div style="display:flex;gap:8px"><select id="workspaceSelect"></select><button id="switchWorkspace" class="primary">切换</button></div>
-    <div id="workspaceList"></div>
-    <h3>设置 MCP 工作目录</h3>
-    <div style="display:flex;gap:8px"><input id="workspaceRootInput" class="mono" placeholder="输入已授权范围内的绝对目录路径" /><button id="pickWorkspaceRoot">选择文件夹</button><button id="setWorkspaceRoot" class="primary">设为工作区</button></div>
-    <div class="small muted" style="margin-top:6px">仅本次 Runtime 会话生效；不会扩大 REMOTE_AGENT_ALLOWED_ROOTS。</div>
-    <div style="margin-top:10px"><button id="registerWorkspace">保存当前 Workspace</button></div>
-    <div class="small muted" style="margin-top:6px">把当前 Operator 临时工作区注册为持久 Workspace；Runtime 重启后仍会保留。</div>
-  </section>
-
-  <section class="card span6">
+  <section class="card span12">
     <h2>Runtime / Host</h2>
     <div id="runtimeRows"></div>
     <h3>设备</h3><div id="deviceRows"></div>
-    <h3>P05 相关进程</h3><div id="processRows" class="scroll"></div>
+    <h3>P05 相关进程</h3>
+    <div class="small muted" style="margin-bottom:6px">受控重启：Tunnel / MCP 属于对应 Runtime Slot，点击任一相关进程的重启按钮都会重启该 Slot 整体，避免半残进程。</div>
+    <div id="processRows" class="scroll"></div>
   </section>
 
   <section class="card span12">
     <h2>实时行为 Live Activity</h2>
     <div class="small muted" style="margin-bottom:8px">只保留内存中的脱敏详情；命令/路径可见，但敏感参数与正文不会持久化。</div>
     <div class="scroll"><table class="table">
-      <thead><tr><th>时间</th><th>风险</th><th>能力</th><th>正在做什么</th><th>状态</th><th>范围</th><th>耗时</th></tr></thead>
+      <thead><tr><th>时间</th><th>来源</th><th>风险</th><th>能力</th><th>正在做什么</th><th>状态</th><th>范围</th><th>耗时</th></tr></thead>
       <tbody id="liveRows"></tbody>
     </table></div>
   </section>
 
-  <section class="card span7">
-    <h2>Git 工作区</h2>
-    <div id="gitSummary" class="summary"></div>
-    <div id="gitCommit" class="small muted"></div>
+  <section class="card span6">
+    <h2>Runtime A Git 工作区</h2>
+    <div id="gitASummary" class="summary"></div>
+    <div id="gitACommit" class="small muted"></div>
     <h3>文件变化</h3>
-    <div class="scroll"><table class="table"><thead><tr><th>状态</th><th>文件</th></tr></thead><tbody id="gitFiles"></tbody></table></div>
-    <h3>Diff Stat</h3><pre id="gitDiffStat">-</pre>
+    <div class="scroll"><table class="table"><thead><tr><th>状态</th><th>文件</th></tr></thead><tbody id="gitAFiles"></tbody></table></div>
+    <h3>Diff Stat</h3><pre id="gitADiffStat">-</pre>
   </section>
 
-  <section class="card span5">
-    <h2>Plugins / Downstream MCP</h2>
+  <section class="card span6">
+    <h2>Runtime B Git 工作区</h2>
+    <div id="gitBSummary" class="summary"></div>
+    <div id="gitBCommit" class="small muted"></div>
+    <h3>文件变化</h3>
+    <div class="scroll"><table class="table"><thead><tr><th>状态</th><th>文件</th></tr></thead><tbody id="gitBFiles"></tbody></table></div>
+    <h3>Diff Stat</h3><pre id="gitBDiffStat">-</pre>
+  </section>
+
+  <section class="card span12">
+    <h2>Plugins</h2>
     <div id="pluginRows"></div>
-    <div id="downstreamRows"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime A · Downstream MCP</h2>
+    <div id="downstreamARows"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · Downstream MCP</h2>
+    <div id="downstreamBRows"></div>
   </section>
 
   <section class="card span8">
     <h2>持久 Audit</h2>
-    <div class="scroll"><table class="table"><thead><tr><th>时间</th><th>能力</th><th>状态</th><th>Workspace</th><th>耗时</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+    <div class="scroll"><table class="table"><thead><tr><th>时间</th><th>来源</th><th>能力</th><th>状态</th><th>Workspace</th><th>耗时</th></tr></thead><tbody id="auditRows"></tbody></table></div>
   </section>
 
   <section class="card span4">
@@ -150,27 +187,51 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div id="recoveryRows" class="scroll"></div>
   </section>
 
-  <section class="card span12">
-    <h2>MCP Tool Surface</h2>
-    <div id="toolGroups"></div>
-    <h3>未暴露 / Suppressed</h3><div id="suppressedTools"></div>
+  <section class="card span6">
+    <h2>Runtime A · MCP Tool Surface</h2>
+    <div id="toolAGroups"></div>
+    <h3>未暴露 / Suppressed</h3><div id="suppressedATools"></div>
   </section>
 
-  <section class="card span12">
-    <h2>Tunnel 最近日志</h2><pre id="logs">-</pre>
+  <section class="card span6">
+    <h2>Runtime B · MCP Tool Surface</h2>
+    <div id="toolBGroups"></div>
+    <h3>未暴露 / Suppressed</h3><div id="suppressedBTools"></div>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime A · Tunnel 最近日志</h2><pre id="logsA">-</pre>
+  </section>
+
+  <section class="card span6">
+    <h2>Runtime B · Tunnel 最近日志</h2><pre id="logsB">-</pre>
   </section>
 </div></main>
 <div id="toast" class="toast"></div>
 
 <script>
 const TOKEN=__CSRF_TOKEN__;
-let latest=null,busy=false,workspaceSelectionDirty=false,slotSelectionDirty={A:false,B:false};
+let latest=null,busy=false,slotSelectionDirty={A:false,B:false};
 const $=id=>document.getElementById(id);
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
-function time(v){if(!v)return"-";try{return new Date(v).toLocaleTimeString()}catch{return String(v)}}
-function dateTime(v){if(!v)return"-";try{return new Date(v).toLocaleString()}catch{return String(v)}}
+function asDate(v){if(!v)return null;const d=new Date(v);return Number.isNaN(d.getTime())?null:d}
+function time(v){const d=asDate(v);return d?d.toLocaleTimeString():"-"}
+function dateTime(v){const d=asDate(v);return d?d.toLocaleString():"-"}
 function dot(ok,warn){return '<span class="dot '+(ok?'good':warn?'warn':'bad')+'"></span>'}
 function riskPill(r){return '<span class="pill '+esc(r)+'">'+esc(String(r||"").toUpperCase())+'</span>'}
+function sourceLabel(e){
+  const slot=e?.runtimeSlot==="A"||e?.runtimeSlot==="B"?e.runtimeSlot:"";
+  let actor="";
+  if(e?.source==="http-reviewer")actor=e.clientName||e.principal||"HTTP Reviewer";
+  else if(e?.source==="operator")actor="Operator";
+  else if(e?.source==="internal")actor="Internal";
+  else actor=e?.clientName||"MCP";
+  return {slot,actor,detail:[e?.source,e?.transport,e?.clientVersion].filter(Boolean).join(" · ")};
+}
+function sourceBadge(e){
+  const x=sourceLabel(e);
+  return '<span title="'+esc(x.detail)+'">'+(x.slot?'<span class="pill">'+esc(x.slot)+'</span> ':'')+'<span class="small">'+esc(x.actor)+'</span></span>';
+}
 function toast(msg,bad){const e=$("toast");e.textContent=msg;e.style.display="block";e.className="toast "+(bad?"badText":"");setTimeout(()=>e.style.display="none",3500)}
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{"x-p05-operator-token":TOKEN,"content-type":"application/json",...(opts.headers||{})},cache:"no-store"});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||("HTTP "+r.status));return d}
 function slotIsRunning(slot){
@@ -178,12 +239,8 @@ function slotIsRunning(slot){
   return !!data?.connected||!!data?.health?.ready||!!data?.health?.live;
 }
 function buttons(){
-  const pending=latest?.operator?.action?.state==="waiting",bridgeOnline=!!latest?.connection?.bridge?.online,currentWorkspaceId=latest?.connection?.bridge?.data?.workspace?.current?.id||"";
+  $("restartOperator").disabled=busy;
   $("closeOperator").disabled=busy;
-  $("switchWorkspace").disabled=busy||pending||!bridgeOnline;
-  $("pickWorkspaceRoot").disabled=busy||pending;
-  $("setWorkspaceRoot").disabled=busy||pending||!bridgeOnline;
-  $("registerWorkspace").disabled=busy||pending||!bridgeOnline||currentWorkspaceId!=="operator-session";
   for(const slot of ["A","B"]){
     const data=latest?.slots?.[slot]||{},online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=slotIsRunning(slot);
     const toggle=$("slot"+slot+"Toggle");
@@ -195,75 +252,243 @@ function buttons(){
     $("slot"+slot+"PickWorkspace").disabled=busy;
     $("slot"+slot+"SetWorkspace").disabled=busy||!online;
     $("slot"+slot+"RegisterWorkspace").disabled=busy||!online||currentId!=="operator-session";
+    $("slot"+slot+"PickReference").disabled=busy;
+    $("slot"+slot+"AddReference").disabled=busy||!online;
+  }
+  if(document.querySelectorAll){
+    document.querySelectorAll("[data-plugin-action]").forEach(btn=>{btn.disabled=busy||btn.dataset.locked==="true"});
+    document.querySelectorAll("[data-reference-action]").forEach(btn=>{btn.disabled=busy});
+    document.querySelectorAll("[data-approval-action]").forEach(btn=>{btn.disabled=busy});
+    document.querySelectorAll("[data-process-action]").forEach(btn=>{btn.disabled=busy});
   }
 }
 async function action(name){if(busy)return;busy=true;buttons();try{await api("/api/action/"+name,{method:"POST",body:"{}"});await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}}
+async function restartOperatorConsole(){
+  if(busy||!confirm("确认重启 Operator Console？Runtime A/B 不会被重启。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/operator/restart",{method:"POST",body:"{}"});
+    toast("Operator Console 重启已调度，页面会短暂断开后自动恢复。");
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+async function restartManagedProcess(target){
+  if(target==="operator")return restartOperatorConsole();
+  if(target!=="A"&&target!=="B")return;
+  if(busy||!confirm("确认重启 Runtime "+target+"？该 Slot 的 Tunnel 与 MCP 会一起重启。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/slot/"+target+"/action/restart",{method:"POST",body:"{}"});
+    toast("Runtime "+target+" 已重启");
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+function pluginForSlot(slot,id){return (latest?.slots?.[slot]?.plugins||[]).find(p=>p.id===id)}
+function pluginSlotHtml(slot,id){
+  const runtime=latest?.slots?.[slot]||{},p=pluginForSlot(slot,id);
+  if(!runtime?.bridge?.online)return '<div class="small muted">'+slot+' · Runtime offline</div>';
+  if(!p)return '<div class="small muted">'+slot+' · not installed</div>';
+  const state=p.state||"unknown",running=state==="running",actionName=running?"stop":"start",locked=!p.enabled;
+  const label=locked?"Disabled":running?"停止 "+slot:"启动 "+slot;
+  const cls=running?"danger":"primary";
+  return '<div style="display:flex;align-items:center;justify-content:flex-end;gap:7px;margin:3px 0"><span class="small">'+slot+' · '+dot(running,state==="ready")+esc(state)+(p.activeForWorkspace?' <span class="pill">active</span>':'')+'</span><button class="'+cls+'" data-plugin-action="true" data-locked="'+(locked?"true":"false")+'" '+(locked?'disabled':'')+' onclick="pluginControl(\\''+slot+'\\',\\''+esc(id)+'\\',\\''+actionName+'\\')">'+esc(label)+'</button></div>';
+}
+async function pluginControl(slot,id,actionName){
+  if(busy)return;
+  busy=true;buttons();
+  try{
+    await api("/api/slot/"+slot+"/plugin/"+encodeURIComponent(id)+"/action/"+actionName,{method:"POST",body:"{}"});
+    toast("Plugin "+id+" · Runtime "+slot+" "+(actionName==="stop"?"已停止":"已启动"));
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+async function referenceRemove(slot,id){
+  if(busy)return;
+  if(!confirm("确认移除 Runtime "+slot+" 的只读参考目录授权？磁盘目录不会被删除。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/slot/"+slot+"/reference/"+encodeURIComponent(id)+"/remove",{method:"POST",body:"{}"});
+    toast("Runtime "+slot+" 已移除参考目录 "+id);
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+function toolApprovalFromButton(button){
+  return toolApproval(button.dataset.slot,button.dataset.id,button.dataset.decision);
+}
+async function toolApproval(slot,id,actionName){
+  if(busy)return;
+  const item=(latest?.approvals||[]).find(x=>x.slot===slot&&x.approvalId===id);
+  if(!item)return toast("审批请求已不存在或已过期",true);
+  const verb=actionName==="approve"?"批准":"拒绝";
+  const message=verb+"这一次工具调用？\\n\\n审批 ID: "+(item.approvalId||id)+"\\n用途："+(item.purpose||"-")+"\\n触发审批："+(item.reason||"-")+"\\n\\nRuntime: "+slot+"\\nWorkspace: "+(item.workspaceId||"-")+"\\nTool: "+(item.capability||"-")+"\\nOperation: "+(item.operation||"-")+"\\n\\n调用内容：\\n"+(item.inputSummary||"(无额外输入)");
+  if(!confirm(message))return;
+  busy=true;buttons();
+  try{
+    await api("/api/approval/"+slot+"/"+encodeURIComponent(id)+"/"+actionName,{method:"POST",body:"{}"});
+    toast("工具请求已"+verb+"。"+(actionName==="approve"?"支持自动恢复的客户端会继续执行；否则仅重试一次完全相同的调用。":""));
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
 function renderAction(op){const a=op?.action,e=$("actionBanner");if(!a){e.style.display="none";return}e.style.display="block";const map={connect:"连接",disconnect:"断开",restart:"重启"};let cls="warnText",txt=(map[a.action]||a.action)+"：";if(a.state==="waiting"){txt+="进行中…";cls="warnText"}else if(a.state==="succeeded"){txt+=a.message||"完成";cls="goodText"}else{txt+=a.error||"失败";cls="badText"}e.className=cls;e.textContent=txt+"  "+dateTime(a.requestedAt)}
 function metric(label,value,cls){return '<div class="metric"><span class="label">'+esc(label)+'</span><strong class="'+(cls||"")+'">'+esc(value)+'</strong></div>'}
 function renderSlot(slot,data){
   data=data||{};
   const online=!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=data?.workspace?.all||[],device=data?.device||{};
+  $("slot"+slot+"Title").textContent="Runtime "+slot+" · "+(data.connector||"@Runtime-"+slot);
   const stateText=data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
   $("slot"+slot+"State").innerHTML=dot(!!data.connected,!!health.live)+esc(stateText);
   $("slot"+slot+"DeviceId").textContent=device.deviceId||"-";
   $("slot"+slot+"Workspace").textContent=current.label||current.id||"-";
   $("slot"+slot+"BoundWorkspace").textContent=data.boundWorkspaceId||"-";
   $("slot"+slot+"WorkspaceRoot").textContent=current.root||"-";
+  const references=data.references||[];
+  $("slot"+slot+"ReferenceList").innerHTML=references.length?references.map(r=>'<div class="row"><span><strong>'+esc(r.label||r.id)+'</strong><div class="small muted mono">'+esc(r.root||"")+'</div></span><button class="danger" data-reference-action="true" onclick="referenceRemove(\\''+slot+'\\',\\''+esc(r.id)+'\\')">移除</button></div>').join(""):'<div class="empty">暂无参考目录</div>';
   const select=$("slot"+slot+"WorkspaceSelect"),pending=slotSelectionDirty[slot]?select.value:"";
   select.innerHTML=workspaces.map(x=>'<option value="'+esc(x.id)+'" '+(x.current?'selected':'')+'>'+esc((x.label||x.id)+"  ["+(x.kind||"-")+"]")+'</option>').join("");
   if(slotSelectionDirty[slot]&&workspaces.some(x=>x.id===pending)){select.value=pending}else if(slotSelectionDirty[slot]){slotSelectionDirty[slot]=false}
 }
 function render(d){
-latest=d;const c=d.connection||{},bridge=c.bridge||{},b=(bridge.online&&bridge.data)||null,h=c.health||{},m=b?.mcp||{},ex=m.exposure||{},cur=b?.workspace?.current||{},workspaces=b?.workspace?.all||[],git=d.git||{},device=b?.device||{};
-$("connectionBig").innerHTML=dot(!!c.connected,false)+(c.connected?"已连接":"未连接");$("connectionDetail").textContent=c.connected?"Tunnel + MCP 都在线":(h.ready?"Tunnel 已就绪，MCP 控制桥离线":"Runtime/Tunnel 未就绪");
-$("mcpBig").innerHTML=dot(!!bridge.online,false)+(bridge.online?"ONLINE":"OFFLINE");$("mcpDetail").textContent=bridge.online?((m.profile||"-")+" · "+(ex.exposed?.length??0)+" tools"):(bridge.error||"local bridge unavailable");
-$("workspaceBig").textContent=cur.label||cur.id||"-";$("workspaceTopDetail").textContent=cur.root||"MCP 离线";
-$("gitBig").textContent=git.available?(git.branch||"detached"):"-";$("gitTopDetail").textContent=git.available?(git.dirty?"有未提交修改":"clean"):"Git unavailable";
-renderSlot("A",d.slots?.A);renderSlot("B",d.slots?.B);
+latest=d;const c=d.connection||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{},device=slotA.device||slotB.device||{};
+function topRuntime(slot,label){
+  const running=!!slot?.connected,ready=!!slot?.health?.ready,live=!!slot?.health?.live;
+  $(label+"Label").textContent="Runtime "+(label==="topA"?"A":"B")+" · "+(slot?.connector||"-");
+  const state=running?"ONLINE":ready?"READY":live?"LIVE":"OFFLINE";
+  $(label+"State").innerHTML=dot(running,ready||live)+esc(state);
+  $(label+"StateDetail").textContent=(slot?.connector||"-")+" · "+(slot?.bridge?.online?"bridge online":"bridge offline");
+  const ws=slot?.workspace?.current||{},g=slot?.git||{};
+  $(label+"Workspace").textContent=ws.label||ws.id||"-";
+  $(label+"Git").textContent=g.available
+    ? ((g.branch||"detached")+" · "+(g.dirty?"有未提交修改":"clean"))
+    : "Git unavailable";
+}
+topRuntime(slotA,"topA");
+topRuntime(slotB,"topB");
+renderSlot("A",slotA);renderSlot("B",slotB);
 
-const mcpProcess=(c.processes||[]).find(p=>p.Role==="MCP Server");
-$("mcpStatusSummary").innerHTML=metric("BRIDGE",bridge.online?"ONLINE":"OFFLINE",bridge.online?"goodText":"badText")+metric("READY",h.ready?"READY":h.live?"LIVE":"OFFLINE",h.ready?"goodText":h.live?"warnText":"badText")+metric("PROFILE",m.profile||"-","")+metric("EXPOSED",ex.exposed?.length??0,"")+metric("SUPPRESSED",ex.suppressed?.length??0,(ex.suppressed?.length??0)?"warnText":"");
-$("mcpBridgeState").innerHTML=dot(!!bridge.online,false)+esc(bridge.online?"ONLINE":"OFFLINE");
-$("mcpProcessState").innerHTML=mcpProcess?(dot(true,false)+esc("RUNNING · PID "+mcpProcess.Id)):(dot(false,false)+"OFFLINE");
-$("mcpStartedAt").textContent=dateTime(device.startedAt||b?.startedAt);
-$("mcpProfileSource").textContent=m.profileSource||"-";
-$("mcpDeviceId").textContent=device.deviceId||"-";
-$("mcpRefreshedAt").textContent=dateTime(d.timestamp);
-$("mcpStatusError").textContent=bridge.error||h.error||"-";
-$("mcpStatusError").className="value small "+((bridge.error||h.error)?"badText":"muted");
+function renderMcpPanel(prefix,slot){
+  const bridge=slot?.bridge||{},health=slot?.health||{},m=slot?.mcp||{},ex=m.exposure||{},device=slot?.device||{};
+  $(prefix+"StatusSummary").innerHTML=
+    metric("BRIDGE",bridge.online?"ONLINE":"OFFLINE",bridge.online?"goodText":"badText")+
+    metric("READY",health.ready?"READY":health.live?"LIVE":"OFFLINE",health.ready?"goodText":health.live?"warnText":"badText")+
+    metric("PROFILE",m.profile||"-","")+
+    metric("EXPOSED",ex.exposed?.length??0,"")+
+    metric("SUPPRESSED",ex.suppressed?.length??0,(ex.suppressed?.length??0)?"warnText":"");
+  $(prefix+"BridgeState").innerHTML=dot(!!bridge.online,false)+esc(bridge.online?"ONLINE":"OFFLINE");
+  $(prefix+"StartedAt").textContent=dateTime(device.startedAt);
+  $(prefix+"ProfileSource").textContent=m.profileSource||"-";
+  $(prefix+"DeviceId").textContent=device.deviceId||"-";
+  const err=bridge.error||health.error||"";
+  $(prefix+"StatusError").textContent=err||"-";
+  $(prefix+"StatusError").className="value small "+(err?"badText":"muted");
+}
+renderMcpPanel("mcpA",slotA);
+renderMcpPanel("mcpB",slotB);
 
-$("workspaceName").textContent=cur.label||cur.id||"-";$("workspaceRoot").textContent=cur.root||"-";$("workspaceKind").textContent=cur.kind||"-";
-$("workspacePlugins").innerHTML=(cur.plugins||[]).length?(cur.plugins||[]).map(x=>'<span class="pill">'+esc(x)+'</span>').join(""):'<span class="muted">默认允许已启用插件</span>';
-const auth=cur.authorization||{};$("workspaceAuth").textContent=auth.structuredCrossWorkspace?("cross="+auth.structuredCrossWorkspace+" · external="+auth.externalPersistentWrite+" · shell="+auth.shellBoundary):"-";
-const workspaceSelect=$("workspaceSelect"),pendingWorkspaceId=workspaceSelectionDirty?workspaceSelect.value:"";workspaceSelect.innerHTML=workspaces.map(x=>'<option value="'+esc(x.id)+'" '+(x.current?'selected':'')+'>'+esc((x.label||x.id)+"  ["+x.kind+"]")+'</option>').join("");if(workspaceSelectionDirty&&workspaces.some(x=>x.id===pendingWorkspaceId)){workspaceSelect.value=pendingWorkspaceId}else if(workspaceSelectionDirty){workspaceSelectionDirty=false}
-$("workspaceList").innerHTML=workspaces.map(x=>'<div class="workspaceCard '+(x.current?'current':'')+'"><strong>'+esc(x.label||x.id)+'</strong> '+(x.current?'<span class="pill">CURRENT</span>':'')+'<div class="small muted mono">'+esc(x.root||"")+'</div><div class="small muted">'+esc(x.kind)+' · '+((x.plugins||[]).length?esc(x.plugins.join(", ")):"default plugins")+'</div></div>').join("")||'<div class="empty">MCP 离线</div>';
-const slotA=d.slots?.A||{},slotB=d.slots?.B||{};
 $("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,!!slotA.health?.ready)+esc(slotA.connected?"ONLINE":slotA.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,!!slotB.health?.ready)+esc(slotB.connected?"ONLINE":slotB.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
-$("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div><div class="row"><span>MCP started</span><span class="small">'+esc(dateTime(device.startedAt))+'</span></div>';
-const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>'<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span class="small">'+esc(dateTime(p.StartTime))+'</span></div>').join(""):'<div class="empty">未检测到 P05 相关进程</div>';
+$("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div>';
+const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>{
+  const target=p.RestartTarget;
+  const restart=target
+    ? '<button class="warning" data-process-action="true" onclick="restartManagedProcess(\\''+esc(target)+'\\')">'+esc(target==="operator"?"重启 Console":"重启 "+target)+'</button>'
+    : "";
+  return '<div class="row"><span><strong>'+esc(p.Role||p.ProcessName)+'</strong><div class="small muted">'+esc(p.ProcessName)+' · PID '+esc(p.Id)+'</div></span><span style="display:flex;align-items:center;gap:8px"><span class="small">'+esc(dateTime(p.StartTime))+'</span>'+restart+'</span></div>';
+}).join(""):'<div class="empty">未检测到 P05 相关进程</div>';
 
-const live=b?.liveActivity||[];$("liveRows").innerHTML=live.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td>'+riskPill(e.risk)+'</td><td><strong>'+esc(e.capability)+'</strong></td><td class="detail">'+esc(e.detail||e.summary||"-")+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+(e.phase&&e.state==="running"?' · '+esc(e.phase):'')+'</td><td>'+esc(e.scope||"-")+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="7" class="muted">暂无实时行为</td></tr>';
+const approvals=d.approvals||[];
+function approvalOrder(a,b){
+  const aPending=a.status==="pending"?0:1,bPending=b.status==="pending"?0:1;
+  if(aPending!==bPending)return aPending-bPending;
+  const aTime=Date.parse(a.requestedAt||"")||0,bTime=Date.parse(b.requestedAt||"")||0;
+  return bTime-aTime;
+}
+function approvalCard(a){
+  const pending=a.status==="pending";
+  const stateClass=a.status==="approved"?"goodText":a.status==="denied"?"badText":"warnText";
+  const actions=pending
+    ? '<span><button class="primary" data-approval-action="true" data-slot="'+esc(a.slot)+'" data-id="'+esc(a.approvalId)+'" data-decision="approve" onclick="toolApprovalFromButton(this)">批准一次</button> <button class="danger" data-approval-action="true" data-slot="'+esc(a.slot)+'" data-id="'+esc(a.approvalId)+'" data-decision="deny" onclick="toolApprovalFromButton(this)">拒绝</button></span>'
+    : '<span class="'+stateClass+'">'+esc(String(a.status||"").toUpperCase())+'</span>';
+  return '<div class="workspaceCard"><div class="row"><span><strong>Runtime '+esc(a.slot)+' · '+esc(a.workspaceId||"-")+'</strong><div class="small mono"><strong>审批 ID：</strong>'+esc(a.approvalId||"-")+'</div><div class="small mono"><strong>Tool：</strong>'+esc(a.capability||"-")+' · '+esc(a.operation||"-")+'</div><div class="small"><strong>用途：</strong>'+esc(a.purpose||"无法可靠解释，请谨慎判断。")+'</div><div class="small muted"><strong>触发审批：</strong>'+esc(a.reason||"-")+'</div></span>'+actions+'</div><div class="small muted" style="margin-top:7px">调用内容</div><pre>'+esc(a.inputSummary||"(无额外输入)")+'</pre><div class="small muted">请求 '+esc(dateTime(a.requestedAt))+' · 过期 '+esc(dateTime(a.expiresAt))+'</div></div>';
+}
+function renderApprovalColumn(slot){
+  const items=approvals.filter(a=>a.slot===slot).sort(approvalOrder);
+  const pendingCount=items.filter(a=>a.status==="pending").length;
+  const count=$("approval"+slot+"Count");
+  count.textContent="待审批 "+pendingCount;
+  count.className="approvalCount"+(pendingCount?" pending":"");
+  $("approval"+slot+"Rows").innerHTML=items.length
+    ? items.map(approvalCard).join("")
+    : '<div class="empty">当前没有审批记录</div>';
+}
+renderApprovalColumn("A");
+renderApprovalColumn("B");
 
-if(git.available){
-  const ct=git.counts||{};$("gitSummary").innerHTML=metric("BRANCH",git.branch||"-","")+metric("AHEAD",git.ahead||0,git.ahead?"warnText":"")+metric("BEHIND",git.behind||0,git.behind?"warnText":"")+metric("STAGED",ct.staged||0,ct.staged?"warnText":"")+metric("MODIFIED",ct.modified||0,ct.modified?"warnText":"")+metric("UNTRACKED",ct.untracked||0,ct.untracked?"warnText":"")+metric("CONFLICT",ct.conflicted||0,ct.conflicted?"badText":"");
-  const lc=git.lastCommit;$("gitCommit").textContent=lc?("最近 commit "+lc.hash+" · "+lc.author+" · "+lc.subject):"";
-  $("gitFiles").innerHTML=(git.files||[]).map(f=>'<tr><td class="mono">'+esc(f.status)+'</td><td class="mono">'+esc(f.path)+'</td></tr>').join("")||'<tr><td colspan="2" class="goodText">工作区 clean</td></tr>';
-  const ds=git.diffStat||{};$("gitDiffStat").textContent=["UNSTAGED",ds.unstaged||"(none)","","STAGED",ds.staged||"(none)"].join("\\n");
-}else{$("gitSummary").innerHTML='<div class="empty">Git unavailable</div>';$("gitCommit").textContent="";$("gitFiles").innerHTML='<tr><td colspan="2" class="muted">-</td></tr>';$("gitDiffStat").textContent="-";}
+const live=d.liveActivity||[];$("liveRows").innerHTML=live.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+riskPill(e.risk)+'</td><td><strong>'+esc(e.capability)+'</strong></td><td class="detail">'+esc(e.detail||e.summary||"-")+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+(e.phase&&e.state==="running"?' · '+esc(e.phase):'')+'</td><td>'+esc(e.scope||"-")+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="8" class="muted">暂无实时行为</td></tr>';
 
-const pl=b?.plugins||[];$("pluginRows").innerHTML='<h3>Plugins</h3>'+(pl.length?pl.map(p=>'<div class="row"><span><strong>'+esc(p.label||p.id)+'</strong><div class="small muted">'+esc(p.id)+' · '+esc(p.version||"")+'</div></span><span>'+dot(p.state==="running",p.state==="ready")+esc(p.state)+(p.activeForWorkspace?' <span class="pill">active</span>':'')+'</span></div>').join(""):'<div class="empty">无插件状态</div>');
-const ds=b?.downstream||[];$("downstreamRows").innerHTML='<h3>Downstream MCP</h3>'+(ds.length?ds.map(x=>'<div class="row"><span><strong>'+esc(x.label||x.id)+'</strong><div class="small muted">'+esc(x.workspaceBinding||"")+(x.boundWorkspaceId?' · '+esc(x.boundWorkspaceId):'')+'</div></span><span>'+dot(!!x.connected,!!x.configured)+esc(x.connected?"connected":x.configured?"configured":"off")+'</span></div>').join(""):'<div class="empty">无 Downstream MCP</div>');
+function renderGitPanel(prefix,g){
+  if(g?.available){
+    const ct=g.counts||{};
+    $(prefix+"Summary").innerHTML=
+      metric("BRANCH",g.branch||"-","")+
+      metric("AHEAD",g.ahead||0,g.ahead?"warnText":"")+
+      metric("BEHIND",g.behind||0,g.behind?"warnText":"")+
+      metric("STAGED",ct.staged||0,ct.staged?"warnText":"")+
+      metric("MODIFIED",ct.modified||0,ct.modified?"warnText":"")+
+      metric("UNTRACKED",ct.untracked||0,ct.untracked?"warnText":"")+
+      metric("CONFLICT",ct.conflicted||0,ct.conflicted?"badText":"");
+    const lc=g.lastCommit;
+    $(prefix+"Commit").textContent=lc?("最近 commit "+lc.hash+" · "+lc.author+" · "+lc.subject):"";
+    $(prefix+"Files").innerHTML=(g.files||[]).map(f=>'<tr><td class="mono">'+esc(f.status)+'</td><td class="mono">'+esc(f.path)+'</td></tr>').join("")||'<tr><td colspan="2" class="goodText">工作区 clean</td></tr>';
+    const ds=g.diffStat||{};
+    $(prefix+"DiffStat").textContent=["UNSTAGED",ds.unstaged||"(none)","","STAGED",ds.staged||"(none)"].join("\\n");
+  }else{
+    $(prefix+"Summary").innerHTML='<div class="empty">Git unavailable</div>';
+    $(prefix+"Commit").textContent="";
+    $(prefix+"Files").innerHTML='<tr><td colspan="2" class="muted">-</td></tr>';
+    $(prefix+"DiffStat").textContent="-";
+  }
+}
+renderGitPanel("gitA",slotA.git||{});
+renderGitPanel("gitB",slotB.git||{});
 
-const audit=b?.activity||[];$("auditRows").innerHTML=audit.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td>'+esc(e.capability)+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+'</td><td>'+esc(e.workspaceId)+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="5" class="muted">暂无 Audit</td></tr>';
-const rec=b?.recovery||[];$("recoveryRows").innerHTML=rec.length?rec.map(e=>'<div class="row"><span><strong>'+esc(e.capability)+'</strong><div class="small muted">'+esc(time(e.startedAt))+' · '+esc(e.errorCategory||"failed")+'</div></span><span class="pill">'+esc(e.recoveryHint)+'</span></div>').join(""):'<div class="goodText small">当前没有待处理 Recovery</div>';
+const slotPluginLists={A:d.slots?.A?.plugins||[],B:d.slots?.B?.plugins||[]},pluginMap=new Map();
+for(const slot of ["A","B"]){for(const p of slotPluginLists[slot]){if(!pluginMap.has(p.id))pluginMap.set(p.id,p)}}
+const pl=[...pluginMap.values()];
+$("pluginRows").innerHTML='<h3>Plugins</h3>'+(pl.length?pl.map(p=>'<div class="row"><span><strong>'+esc(p.label||p.id)+'</strong><div class="small muted">'+esc(p.id)+' · '+esc(p.version||"")+'</div></span><span class="value">'+pluginSlotHtml("A",p.id)+pluginSlotHtml("B",p.id)+'</span></div>').join(""):'<div class="empty">无插件状态</div>');
+function downstreamUiState(x){
+  if(x?.enabled===false)return {label:"DISABLED",good:false,warn:false,hint:"已禁用"};
+  if(!x?.available||!x?.configured)return {label:"UNAVAILABLE",good:false,warn:false,hint:x?.lastError||"未配置或当前不可用"};
+  if(x?.connected)return {label:"CONNECTED",good:true,warn:false,hint:"当前已有活跃连接"};
+  return {label:"READY",good:false,warn:true,hint:"Lazy connect · 首次调用时自动连接"};
+}
+function renderDownstream(prefix,slot){
+  const ds=slot?.downstream||[];
+  $(prefix+"Rows").innerHTML='<div class="small muted" style="margin-bottom:6px">READY 表示配置可用但尚未建立活跃连接；首次调用会自动连接。</div>'+
+    (ds.length?ds.map(x=>{const st=downstreamUiState(x);return '<div class="row"><span><strong>'+esc(x.label||x.id)+'</strong><div class="small muted">'+esc(x.workspaceBinding||"")+(x.boundWorkspaceId?' · '+esc(x.boundWorkspaceId):'')+'</div><div class="small muted">'+esc(st.hint)+'</div></span><span>'+dot(st.good,st.warn)+esc(st.label)+'</span></div>'}).join(""):'<div class="empty">无 Downstream MCP</div>');
+}
+renderDownstream("downstreamA",slotA);
+renderDownstream("downstreamB",slotB);
 
-const caps=m.capabilities||[],exposed=new Set(ex.exposed||[]),groups={read:[],write:[],execute:[]};caps.forEach(x=>{if(exposed.has(x.name)){(groups[x.risk]||groups.read).push(x)}});
-$("toolGroups").innerHTML=["read","write","execute"].map(r=>'<h3>'+r.toUpperCase()+' ('+groups[r].length+')</h3>'+groups[r].map(x=>'<span class="pill '+r+'" title="'+esc(x.summary)+'">'+esc(x.name)+'</span>').join("")).join("");
-$("suppressedTools").innerHTML=(ex.suppressed||[]).map(x=>'<div class="row"><span class="mono">'+esc(x.tool)+'</span><span class="small muted">'+esc(x.reason)+'</span></div>').join("")||'<span class="goodText small">当前没有 suppressed tools</span>';
-$("logs").textContent=(d.logTail||[]).join("\\n")||"暂无日志";
+const audit=d.activity||[];$("auditRows").innerHTML=audit.map(e=>'<tr><td class="nowrap">'+esc(time(e.startedAt))+'</td><td class="nowrap">'+sourceBadge(e)+'</td><td>'+esc(e.capability)+'</td><td class="'+(e.state==="failed"?"badText":e.state==="succeeded"?"goodText":"warnText")+'">'+esc(e.state)+'</td><td>'+esc(e.workspaceId)+'</td><td>'+esc(e.durationMs!=null?e.durationMs+" ms":"-")+'</td></tr>').join("")||'<tr><td colspan="6" class="muted">暂无 Audit</td></tr>';
+const rec=d.recovery||[];$("recoveryRows").innerHTML=rec.length?rec.map(e=>'<div class="row"><span><strong>'+esc(e.capability)+'</strong><div class="small muted">'+sourceBadge(e)+' · '+esc(time(e.startedAt))+' · '+esc(e.errorCategory||"failed")+'</div></span><span class="pill">'+esc(e.recoveryHint)+'</span></div>').join(""):'<div class="goodText small">当前没有待处理 Recovery</div>';
+
+function renderToolSurface(slotKey,slot){
+  const m=slot?.mcp||{},ex=m.exposure||{},caps=m.capabilities||[],exposed=new Set(ex.exposed||[]),groups={read:[],write:[],execute:[]};
+  caps.forEach(x=>{if(exposed.has(x.name)){(groups[x.risk]||groups.read).push(x)}});
+  $("tool"+slotKey+"Groups").innerHTML=["read","write","execute"].map(r=>'<h3>'+r.toUpperCase()+' ('+groups[r].length+')</h3>'+groups[r].map(x=>'<span class="pill '+r+'" title="'+esc(x.summary)+'">'+esc(x.name)+'</span>').join("")).join("");
+  $("suppressed"+slotKey+"Tools").innerHTML=(ex.suppressed||[]).map(x=>'<div class="row"><span class="mono">'+esc(x.tool)+'</span><span class="small muted">'+esc(x.reason)+'</span></div>').join("")||'<span class="goodText small">当前没有 suppressed tools</span>';
+}
+renderToolSurface("A",slotA);
+renderToolSurface("B",slotB);
+$("logsA").textContent=(slotA.logTail||[]).join("\\n")||"暂无日志";
+$("logsB").textContent=(slotB.logTail||[]).join("\\n")||"暂无日志";
 renderAction(d.operator);buttons();
 }
 async function refresh(){try{render(await api("/api/status"))}catch(e){toast("状态刷新失败: "+e.message,true)}}
+$("restartOperator").onclick=restartOperatorConsole;
 $("closeOperator").onclick=async()=>{
   if(busy||!confirm("确认关闭 Operator Console？Runtime A/B 不会被自动关闭。"))return;
   busy=true;buttons();
@@ -273,11 +498,6 @@ $("closeOperator").onclick=async()=>{
   }catch(e){busy=false;toast(e.message,true);buttons()}
 };
 $("refresh").onclick=refresh;
-$("workspaceSelect").onchange=()=>{workspaceSelectionDirty=true};
-$("switchWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const id=$("workspaceSelect").value;await api("/api/workspace/select",{method:"POST",body:JSON.stringify({id:id})});workspaceSelectionDirty=false;toast("Workspace 已切换为 "+id);await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
-$("pickWorkspaceRoot").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/workspace/pick",{method:"POST",body:"{}"});if(result.selected&&result.path){$("workspaceRootInput").value=result.path;toast("已选择目录，点击“设为工作区”后生效")}else{toast("已取消选择")}}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
-$("setWorkspaceRoot").onclick=async()=>{if(busy)return;const root=$("workspaceRootInput").value.trim();if(!root){toast("请输入绝对目录路径",true);return}busy=true;buttons();try{await api("/api/workspace/root",{method:"POST",body:JSON.stringify({root:root})});workspaceSelectionDirty=false;toast("MCP 工作目录已切换");$("workspaceRootInput").value="";await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
-$("registerWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/workspace/register",{method:"POST",body:"{}"});workspaceSelectionDirty=false;toast("Workspace 已保存："+(result.workspace?.label||result.workspace?.id||""));await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
 function bindSlot(slot){
   const runSlotAction=async(actionName)=>{if(busy)return;busy=true;buttons();try{await api("/api/slot/"+slot+"/action/"+actionName,{method:"POST",body:"{}"});toast("Runtime "+slot+" "+({connect:"已连接",disconnect:"已断开",restart:"已重启"}[actionName]||actionName));await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
   $("slot"+slot+"Toggle").onclick=async()=>{
@@ -291,6 +511,8 @@ function bindSlot(slot){
   $("slot"+slot+"PickWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/slot/"+slot+"/workspace/pick",{method:"POST",body:"{}"});if(result.selected&&result.path){$("slot"+slot+"RootInput").value=result.path;toast("Runtime "+slot+" 已选择目录")}else{toast("已取消选择")}}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
   $("slot"+slot+"SetWorkspace").onclick=async()=>{if(busy)return;const root=$("slot"+slot+"RootInput").value.trim();if(!root){toast("请输入绝对目录路径",true);return}busy=true;buttons();try{await api("/api/slot/"+slot+"/workspace/root",{method:"POST",body:JSON.stringify({root:root})});slotSelectionDirty[slot]=false;$("slot"+slot+"RootInput").value="";toast("Runtime "+slot+" 工作区已切换");await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
   $("slot"+slot+"RegisterWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/slot/"+slot+"/workspace/register",{method:"POST",body:"{}"});slotSelectionDirty[slot]=false;toast("Runtime "+slot+" Workspace 已保存："+(result.workspace?.label||result.workspace?.id||""));await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
+  $("slot"+slot+"PickReference").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/slot/"+slot+"/reference/pick",{method:"POST",body:"{}"});if(result.selected&&result.path){$("slot"+slot+"ReferenceInput").value=result.path;toast("Runtime "+slot+" 已选择只读参考目录")}else{toast("已取消选择")}}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
+  $("slot"+slot+"AddReference").onclick=async()=>{if(busy)return;const root=$("slot"+slot+"ReferenceInput").value.trim();if(!root){toast("请选择参考目录",true);return}busy=true;buttons();try{const result=await api("/api/slot/"+slot+"/reference/root",{method:"POST",body:JSON.stringify({root:root})});$("slot"+slot+"ReferenceInput").value="";toast("Runtime "+slot+" 已添加只读参考目录："+(result.reference?.label||result.reference?.id||""));await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
 }
 bindSlot("A");bindSlot("B");
 refresh();setInterval(refresh,2000);

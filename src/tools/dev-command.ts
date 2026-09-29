@@ -11,7 +11,6 @@ export const DEVELOPER_ACTIONS = [
   "build",
   "test_policy",
   "test_exposure",
-  "test_temp_readonly",
   "test_foundation",
   "test_git_mutations",
   "test_plugin_framework",
@@ -52,7 +51,6 @@ async function runNodeScript(
       // Developer self-tests must not inherit optional exposure gates from the live Agent.
       env: {
         ...process.env,
-        P05_TEMP_READONLY_ROOT: "",
         REMOTE_AGENT_DEFAULT_CWD: ""
       },
       timeout: 300_000,
@@ -87,8 +85,6 @@ async function runSingle(action: Exclude<DeveloperAction, "verify">, platformRoo
       return runNodeScript("test_policy", "dist/test/policy-profiles.js", [], platformRoot);
     case "test_exposure":
       return runNodeScript("test_exposure", "dist/test/profile-exposure.js", [], platformRoot);
-    case "test_temp_readonly":
-      return runNodeScript("test_temp_readonly", "dist/test/temp-readonly.js", [], platformRoot);
     case "test_foundation":
       return runNodeScript("test_foundation", "dist/test/foundation.js", [], platformRoot);
     case "test_git_mutations":
@@ -121,7 +117,6 @@ export async function runDeveloperAction(requestedAction: string, platformRoot: 
     "smoke_downstream",
     "test_policy",
     "test_exposure",
-    "test_temp_readonly",
     "test_foundation",
     "test_git_mutations",
     "test_plugin_framework",

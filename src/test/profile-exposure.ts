@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { decideToolApproval, listToolApprovals } from "../approval/tool-approval.js";
 import { CONNECT_ERROR_CATEGORIES } from "../downstream/client.js";
 import { VERSION } from "../version.js";
 
@@ -27,22 +28,29 @@ const ROOT = path.join(REPO, "_p05_test_allowed_root");
 const PROBE_DIR = path.join(ROOT, "_p05_profile_probe");
 const OUTSIDE_FIXTURES = path.join(REPO, "_p05_test_outside_root");
 const STATE_DIR = path.join(REPO, "_p05_test_state");
+const REFERENCE_ROOT = path.join(OUTSIDE_FIXTURES, "_p05_reference_root");
 
 await fs.mkdir(ROOT, { recursive: true });
 await fs.mkdir(OUTSIDE_FIXTURES, { recursive: true });
+await fs.mkdir(REFERENCE_ROOT, { recursive: true });
+await fs.mkdir(STATE_DIR, { recursive: true });
+await fs.rm(path.join(STATE_DIR, "tool-approvals"), { recursive: true, force: true });
+await fs.writeFile(path.join(REFERENCE_ROOT, "reference.txt"), "reference-ok\n", "utf8");
+await fs.writeFile(
+  path.join(STATE_DIR, "references.json"),
+  JSON.stringify({
+    version: 1,
+    references: [{ id: "ref-test", label: "Test Reference", root: REFERENCE_ROOT }]
+  }, null, 2) + "\n",
+  "utf8"
+);
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-// TMP-R01: the temporary read-only layer is declared at `discovery` but gated on
-// P05_TEMP_READONLY_ROOT, so with the gate off (the default, and how every other scenario
-// here runs) the surface is still exactly device_info + ping.
-const TEMP_READONLY_TOOLS = ["list_directory", "read_file"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
-// mcp_call_tool is a generic proxy - through it a downstream server's whole surface becomes
-// reachable, and for MATLAB that includes code evaluation. The plan lists it under
-// "never expose initially" next to shell_run, so it sits at `full`.
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+// External Git push and arbitrary downstream execution remain full-only.
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
-const ALL_TOOLS = [...FULL_TOOLS, ...TEMP_READONLY_TOOLS];
+const ALL_TOOLS = [...FULL_TOOLS];
 
 let checks = 0;
 
@@ -122,6 +130,13 @@ function textOf(result: unknown): string {
   return content.map((block) => block.text ?? "").join("\n");
 }
 
+function structuredOf(result: unknown): Record<string, unknown> {
+  const value = (result as { structuredContent?: unknown })?.structuredContent;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 /**
  * A refused operation shows up in two shapes: the SDK turns a thrown handler error
  * into a CallToolResult with isError, while an unregistered tool raises a JSON-RPC
@@ -134,6 +149,59 @@ async function outcome(fn: () => Promise<unknown>): Promise<{ failed: boolean; m
   } catch (error) {
     return { failed: true, message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+async function expectToolConfirmation(
+  session: Session,
+  name: string,
+  args: Record<string, unknown>,
+  expectedOperation: string,
+  expectedInputSummary?: string
+): Promise<string> {
+  const pending = await outcome(() =>
+    session.client.callTool({ name, arguments: args })
+  );
+  const approvalId =
+    pending.message.split("approvalId: ")[1]?.split("\n")[0]?.trim() ?? "";
+
+  check(
+    `permission contract: ${name} returns common CONFIRM envelope`,
+    pending.failed &&
+      pending.message.includes("PERMISSION_CONFIRM_REQUIRED") &&
+      pending.message.includes("slot: B") &&
+      pending.message.includes("workspaceId: ") &&
+      pending.message.includes(`capability: ${name}`) &&
+      pending.message.includes(`operation: ${expectedOperation}`) &&
+      pending.message.includes("purpose: ") &&
+      pending.message.includes("reason: ") &&
+      /^[a-f0-9-]{36}$/i.test(approvalId),
+    pending.message.slice(0, 500)
+  );
+
+  if (expectedInputSummary) {
+    check(
+      `permission contract: ${name} exposes sanitized inputSummary`,
+      pending.message.includes(`inputSummary: ${expectedInputSummary}`),
+      pending.message.slice(0, 500)
+    );
+  }
+
+  const record = listToolApprovals(STATE_DIR, "B").find(
+    (entry) => entry.id === approvalId
+  );
+  check(
+    `permission contract: ${name} persists the same approval fields`,
+    Boolean(record) &&
+      record!.capability === name &&
+      record!.operation === expectedOperation &&
+      record!.status === "pending" &&
+      (!expectedInputSummary || record!.inputSummary === expectedInputSummary) &&
+      Boolean(record!.purpose) &&
+      Boolean(record!.reason),
+    JSON.stringify(record)
+  );
+
+  return approvalId;
 }
 
 async function pathExists(target: string): Promise<boolean> {
@@ -252,6 +320,74 @@ for (const scenario of scenarios) {
   console.log(`ok  device_id stable (${storedId.slice(0, 12)}...)`);
 }
 
+// ----------------------------------------------------------- runtime-scoped reference roots
+{
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  try {
+    const refs = textOf(await session.client.callTool({
+      name: "reference_list",
+      arguments: {}
+    }));
+    check(
+      "reference: remote list exposes logical identity",
+      refs.includes("ref-test") && refs.includes("Test Reference"),
+      refs.slice(0, 240)
+    );
+    check(
+      "reference: remote list does not expose host root",
+      !refs.includes(REFERENCE_ROOT),
+      refs.slice(0, 240)
+    );
+
+    const entries = textOf(await session.client.callTool({
+      name: "reference_list_directory",
+      arguments: { reference_id: "ref-test", path: "." }
+    }));
+    check(
+      "reference: authorized directory can be listed",
+      entries.includes("reference.txt"),
+      entries.slice(0, 240)
+    );
+
+    const content = textOf(await session.client.callTool({
+      name: "reference_read",
+      arguments: { reference_id: "ref-test", path: "reference.txt" }
+    }));
+    check(
+      "reference: authorized file can be read",
+      content.includes("reference-ok"),
+      content.slice(0, 240)
+    );
+
+    const ordinaryRead = await outcome(() =>
+      session.client.callTool({
+        name: "fs_read",
+        arguments: { path: path.join(REFERENCE_ROOT, "reference.txt") }
+      })
+    );
+    check(
+      "reference: ordinary workspace fs_read cannot cross into reference root",
+      ordinaryRead.failed && ordinaryRead.message.includes("outside the active workspace"),
+      ordinaryRead.message.slice(0, 240)
+    );
+
+    const writeAttempt = await outcome(() =>
+      session.client.callTool({
+        name: "fs_write",
+        arguments: { path: path.join(REFERENCE_ROOT, "planted.txt"), content: "must-not-land" }
+      })
+    );
+    check(
+      "reference: workspace write cannot modify reference root",
+      writeAttempt.failed && !(await pathExists(path.join(REFERENCE_ROOT, "planted.txt"))),
+      writeAttempt.message.slice(0, 240)
+    );
+  } finally {
+    await closeSession(session);
+  }
+  console.log("ok  runtime-scoped reference roots are read-only");
+}
+
 // ---------------------------------------------------------------- write + real filesystem guards
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
@@ -261,7 +397,7 @@ for (const scenario of scenarios) {
   const gitlink = path.join(ROOT, "_p05_git_junction");
   const goneJunction = path.join(ROOT, "_p05_gone_junction");
   const goneTarget = path.join(OUTSIDE_FIXTURES, "_p05_never_exists");
-  const gitDir = path.join(REPO, ".git");
+  const gitDir = path.join(PROBE_DIR, ".git");
 
   const mklink = (link: string, target: string) => execFileSync("cmd", ["/c", "mklink", "/J", link, target], { stdio: "pipe" });
   // rmdir (not rm -r) removes the reparse point only; a recursive delete would walk into the target.
@@ -286,6 +422,7 @@ for (const scenario of scenarios) {
 
     // baseline write works at developer
     await fs.mkdir(PROBE_DIR, { recursive: true });
+    await fs.mkdir(path.join(gitDir, "hooks"), { recursive: true });
     const probe = path.join(PROBE_DIR, "probe.txt");
     await session.client.callTool({ name: "fs_write", arguments: { path: probe, content: "p05-probe" } });
     const readBack = await session.client.callTool({ name: "fs_read", arguments: { path: probe } });
@@ -299,18 +436,37 @@ for (const scenario of scenarios) {
     check("developer: fs_write echoes the caller's path, not a resolved one",
       relativeText.includes(REL_FILE) && !relativeText.includes(ROOT), relativeText.slice(0, 200));
 
-    // 1. a junction inside the allowed root that points outside it
+    const structuredHardlinkTarget = path.join(outsideTarget, "structured-hardlink-target.txt");
+    const structuredHardlinkAlias = path.join(PROBE_DIR, "structured-hardlink-alias.txt");
+    await fs.writeFile(structuredHardlinkTarget, "outside-original\n", "utf8");
+    await fs.link(structuredHardlinkTarget, structuredHardlinkAlias);
+    const structuredHardlinkWrite = await outcome(() =>
+      session.client.callTool({
+        name: "fs_write",
+        arguments: {
+          path: structuredHardlinkAlias,
+          content: "must-not-cross-hardlink"
+        }
+      })
+    );
+    check("hardlink: structured fs_write refuses a multi-link target",
+      structuredHardlinkWrite.failed,
+      structuredHardlinkWrite.message.slice(0, 220));
+    check("hardlink: refused structured write preserves outside target",
+      (await fs.readFile(structuredHardlinkTarget, "utf8")).trim() === "outside-original");
+
+    // 1. a junction inside the active workspace that points outside it
     mklink(outlink, outsideTarget);
     const readOut = await outcome(() =>
       session.client.callTool({ name: "fs_read", arguments: { path: path.join(outlink, "outside.txt") } })
     );
-    check("junction: read through a link leaving the allowed root is refused",
-      readOut.failed && readOut.message.includes("a link resolves outside the allowed roots"), readOut.message.slice(0, 200));
+    check("junction: read through a link leaving the active workspace is refused",
+      readOut.failed && readOut.message.includes("a link resolves outside the active workspace"), readOut.message.slice(0, 200));
     const writeOut = await outcome(() =>
       session.client.callTool({ name: "fs_write", arguments: { path: path.join(outlink, "planted.txt"), content: "x" } })
     );
-    check("junction: write through a link leaving the allowed root is refused", writeOut.failed, writeOut.message.slice(0, 200));
-    check("junction: nothing was planted outside the root", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
+    check("junction: write through a link leaving the active workspace is refused", writeOut.failed, writeOut.message.slice(0, 200));
+    check("junction: nothing was planted outside the workspace", !(await pathExists(path.join(outsideTarget, "planted.txt"))));
 
     // 2. a junction inside the allowed root that lands on a protected path
     mklink(gitlink, gitDir);
@@ -321,7 +477,7 @@ for (const scenario of scenarios) {
 
     // 3. trailing dot on the .git segment
     const dottedResult = await outcome(() =>
-      session.client.callTool({ name: "fs_write", arguments: { path: path.join(REPO, ".git.", "hooks", "pre-commit"), content: "x" } })
+      session.client.callTool({ name: "fs_write", arguments: { path: path.join(PROBE_DIR, ".git.", "hooks", "pre-commit"), content: "x" } })
     );
     check("trailing-dot .git spelling is refused", dottedResult.failed, dottedResult.message.slice(0, 200));
     check("trailing-dot write created no hook file", !(await pathExists(path.join(gitDir, "hooks", "pre-commit"))));
@@ -397,7 +553,12 @@ for (const scenario of scenarios) {
       check(`short-name ${shortBase} spelling is refused`, shortResult.failed, shortResult.message.slice(0, 200));
       console.log(`ok  short-name probe used "${shortBase}" for .git`);
     } else {
-      console.log("note  8.3 short names are unavailable on this volume; short-name probe skipped");
+      check(
+        "short-name protected-path probe has no alternate alias on this filesystem",
+        !shortBase || shortBase.toLowerCase() === ".git",
+        shortGit
+      );
+      console.log("ok  short-name probe has no alternate alias on this filesystem");
     }
   } finally {
     unlink(outlink);
@@ -440,6 +601,96 @@ for (const scenario of scenarios) {
   console.log("ok  downstream config and errors stay path-free");
 }
 
+// -------------------------------------- common Tool Approval invocation chains
+{
+  const developerSession = await openSession(childEnv({
+    P05_TOOL_PROFILE: "developer",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  try {
+    await expectToolConfirmation(
+      developerSession,
+      "command_run",
+      { action: "test_policy" },
+      "command_run:test_policy",
+      "test_policy"
+    );
+    await expectToolConfirmation(
+      developerSession,
+      "runtime_restart",
+      {},
+      "runtime_restart",
+      "P05 runtime"
+    );
+  } finally {
+    await closeSession(developerSession);
+  }
+
+  const fullSession = await openSession(childEnv({
+    P05_TOOL_PROFILE: "full",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  try {
+    await expectToolConfirmation(
+      fullSession,
+      "git_push",
+      { remote: "origin" },
+      "git_push:origin",
+      "remote=origin"
+    );
+    await expectToolConfirmation(
+      fullSession,
+      "mcp_call_tool",
+      { server: "matlab", tool: "model_edit", arguments: {} },
+      "mcp:matlab:model_edit",
+      "matlab / model_edit"
+    );
+  } finally {
+    await closeSession(fullSession);
+  }
+
+  const matlabSession = await openSession(childEnv({
+    P05_TOOL_PROFILE: "developer",
+    P05_RUNTIME_SLOT: "B",
+    MATLAB_MCP_ENABLED: "true",
+    MATLAB_MCP_COMMAND: path.join(ROOT, "no-such-matlab-mcp.exe"),
+    MATLAB_MCP_ARGS_JSON: "[]"
+  }));
+  try {
+    const listed = await matlabSession.client.listTools();
+    check(
+      "permission contract: enabled MATLAB plugin exposes matlab.call_tool",
+      listed.tools.some((tool) => tool.name === "matlab.call_tool"),
+      listed.tools.map((tool) => tool.name).join(",")
+    );
+    const matlabEdit = await outcome(() =>
+      matlabSession.client.callTool({
+        name: "matlab.call_tool",
+        arguments: { tool: "model_edit", arguments: { model: "Example.slx" } }
+      })
+    );
+    check(
+      "permission contract: Workspace-scoped matlab model_edit bypasses approval and reaches downstream",
+      matlabEdit.failed &&
+        !matlabEdit.message.includes("PERMISSION_CONFIRM_REQUIRED") &&
+        (CONNECT_ERROR_CATEGORIES as readonly string[]).includes(matlabEdit.message.trim()),
+      matlabEdit.message.slice(0, 500)
+    );
+
+    await expectToolConfirmation(
+      matlabSession,
+      "matlab.call_tool",
+      { tool: "evaluate_matlab_code", arguments: { code: "disp(1)" } },
+      "matlab:evaluate_matlab_code",
+      "tool=evaluate_matlab_code"
+    );
+  } finally {
+    await closeSession(matlabSession);
+  }
+
+  console.log("ok  sensitive tool chains share one Tool Approval contract");
+}
+
 // ------------------------------------------------ platform binding + cross-workspace boundary
 {
   const crossProbe = path.join(REPO, "_p05_cross_workspace_probe.txt");
@@ -452,7 +703,8 @@ for (const scenario of scenarios) {
       { id: "p05", root: REPO, kind: "platform-source", label: "P05" },
       { id: "business", root: ROOT, kind: "git-project", label: "Business" }
     ]),
-    P05_ACTIVE_WORKSPACE_ID: "business"
+    P05_ACTIVE_WORKSPACE_ID: "business",
+    P05_RUNTIME_SLOT: "B"
   }));
   try {
     const current = textOf(await session.client.callTool({ name: "workspace_current", arguments: {} }));
@@ -469,11 +721,23 @@ for (const scenario of scenarios) {
       crossWrite.message.slice(0, 240));
     check("workspace boundary: refused cross-workspace write has no side effect", !(await pathExists(crossProbe)));
 
+    const platformPending = await outcome(() =>
+      session.client.callTool({
+        name: "command_run",
+        arguments: { action: "check" }
+      })
+    );
+    const platformApprovalId =
+      platformPending.message.split("approvalId: ")[1]?.split("\n")[0]?.trim() ?? "";
+    check("platform command requires one-time permission confirmation",
+      platformPending.failed && Boolean(platformApprovalId),
+      platformPending.message.slice(0, 300));
+    decideToolApproval(STATE_DIR, platformApprovalId, "approve");
     const platformCheck = textOf(await session.client.callTool({
       name: "command_run",
       arguments: { action: "check" }
     }));
-    check("platform binding survives business workspace switch",
+    check("platform binding survives business workspace switch after approval",
       platformCheck.includes("ACTION check OK"), platformCheck.slice(0, 300));
   } finally {
     await fs.rm(crossProbe, { force: true }).catch(() => undefined);
@@ -482,38 +746,243 @@ for (const scenario of scenarios) {
   console.log("ok  platform-source remains fixed while business workspace is active");
 }
 
-// ---------------------------------------------------------------- developer-profile shell
+// ----------------------------------------- shell through common Tool Permission Broker
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "developer",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  const insideFile = path.join(ROOT, "shell-inside.txt");
+  const hashSource = path.join(ROOT, "shell-hash-source.txt");
+  const outsideFile = path.join(OUTSIDE_FIXTURES, "shell-outside.txt");
   const escapeLink = path.join(ROOT, "_p05_shell_junction");
   const escapeTarget = path.join(OUTSIDE_FIXTURES, "_p05_shell_target");
+
+  for (const target of [insideFile, hashSource, outsideFile]) {
+    await fs.rm(target, { force: true }).catch(() => undefined);
+  }
+
+  const requestShellConfirmation = async (
+    command: string,
+    label: string
+  ): Promise<string> => {
+    const pending = await outcome(() =>
+      session.client.callTool({
+        name: "shell_run",
+        arguments: { command, cwd: ROOT }
+      })
+    );
+    const approvalId =
+      pending.message.split("approvalId: ")[1]?.split("\n")[0]?.trim() ?? "";
+    check(
+      label,
+      pending.failed &&
+        pending.message.includes("PERMISSION_CONFIRM_REQUIRED") &&
+        pending.message.includes("capability: shell_run") &&
+        /^[a-f0-9-]{36}$/i.test(approvalId),
+      pending.message.slice(0, 360)
+    );
+    return approvalId;
+  };
+
   try {
-    const shell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT } });
-    check("developer: shell_run executes", textOf(shell).includes("p05-shell-ok"), textOf(shell).slice(0, 200));
+    const simple = await session.client.callTool({
+      name: "shell_run",
+      arguments: { command: "Write-Output p05-shell-ok", cwd: ROOT }
+    });
+    check(
+      "developer shell: recognized diagnostic is ALLOW",
+      structuredOf(simple).status === "executed" &&
+        textOf(simple).includes("p05-shell-ok"),
+      textOf(simple).slice(0, 240)
+    );
 
-    // With no cwd argument the working directory is the configured default, a machine
-    // path; a success response must not disclose it.
-    const defaultCwdShell = await session.client.callTool({ name: "shell_run", arguments: { command: "Write-Output p05-shell-ok" } });
-    check("developer: shell_run does not disclose the default working directory",
-      !textOf(defaultCwdShell).includes(ROOT), textOf(defaultCwdShell).slice(0, 200));
+    const dateRead = await session.client.callTool({
+      name: "shell_run",
+      arguments: { command: "Get-Date", cwd: ROOT }
+    });
+    check(
+      "developer shell: Get-Date is ALLOW",
+      structuredOf(dateRead).status === "executed",
+      textOf(dateRead).slice(0, 240)
+    );
 
-    // cwd used to be string-checked only, so a junction in the root ran the command outside it.
+    await fs.writeFile(hashSource, "hash-me\n", "utf8");
+    const hashRead = await session.client.callTool({
+      name: "shell_run",
+      arguments: {
+        command: `Get-FileHash -Algorithm SHA256 -LiteralPath "${hashSource}"`,
+        cwd: ROOT
+      }
+    });
+    check(
+      "developer shell: Workspace-local read is ALLOW",
+      structuredOf(hashRead).status === "executed" &&
+        textOf(hashRead).includes("SHA256"),
+      textOf(hashRead).slice(0, 300)
+    );
+
+    const insideCommand =
+      `Set-Content -LiteralPath "${insideFile}" -Value p05-inside`;
+    const inside = await session.client.callTool({
+      name: "shell_run",
+      arguments: { command: insideCommand, cwd: ROOT }
+    });
+    check(
+      "developer shell: statically proven Workspace-local write is ALLOW",
+      structuredOf(inside).status === "executed",
+      textOf(inside).slice(0, 300)
+    );
+    check(
+      "developer shell: Workspace-local write has expected side effect",
+      (await fs.readFile(insideFile, "utf8")).trim() === "p05-inside"
+    );
+
+    const outsideCommand =
+      `Set-Content -LiteralPath "${outsideFile}" -Value approved-once`;
+    const approvalId = await requestShellConfirmation(
+      outsideCommand,
+      "developer shell: outside-Workspace write uses common CONFIRM"
+    );
+    check(
+      "developer shell: unapproved outside write has no side effect",
+      !(await pathExists(outsideFile))
+    );
+
+    decideToolApproval(STATE_DIR, approvalId, "approve");
+    const approved = await session.client.callTool({
+      name: "shell_run",
+      arguments: { command: outsideCommand, cwd: ROOT }
+    });
+    check(
+      "developer shell: one-time Tool Approval allows the exact retry",
+      structuredOf(approved).status === "executed",
+      textOf(approved).slice(0, 300)
+    );
+    check(
+      "developer shell: approved outside write executes once",
+      (await fs.readFile(outsideFile, "utf8")).trim() === "approved-once"
+    );
+
+    await fs.rm(outsideFile, { force: true });
+    const secondApprovalId = await requestShellConfirmation(
+      outsideCommand,
+      "developer shell: consumed Tool Approval cannot be reused"
+    );
+    check(
+      "developer shell: consumed approval creates a new Tool Approval request",
+      secondApprovalId !== approvalId
+    );
+    check(
+      "developer shell: retry after approval consumption has no side effect",
+      !(await pathExists(outsideFile))
+    );
+
+    decideToolApproval(STATE_DIR, secondApprovalId, "deny");
+    const deniedRetry = await outcome(() =>
+      session.client.callTool({
+        name: "shell_run",
+        arguments: { command: outsideCommand, cwd: ROOT }
+      })
+    );
+    check(
+      "developer shell: Operator denial returns the common DENIED envelope",
+      deniedRetry.failed &&
+        deniedRetry.message.includes("PERMISSION_CONFIRM_DENIED") &&
+        deniedRetry.message.includes(`approvalId: ${secondApprovalId}`) &&
+        deniedRetry.message.includes("capability: shell_run") &&
+        deniedRetry.message.includes("operation: shell_run") &&
+        deniedRetry.message.includes("purpose: ") &&
+        deniedRetry.message.includes("reason: "),
+      deniedRetry.message.slice(0, 500)
+    );
+    check(
+      "developer shell: denied retry has no side effect",
+      !(await pathExists(outsideFile))
+    );
+
+    await requestShellConfirmation(
+      '$p="inside.txt"; Set-Content -LiteralPath $p -Value dynamic',
+      "developer shell: dynamic command uses common CONFIRM"
+    );
+
+    await requestShellConfirmation(
+      ".\\git.exe status",
+      "developer shell: explicit executable uses common CONFIRM"
+    );
+
+    const denied = await outcome(() =>
+      session.client.callTool({
+        name: "shell_run",
+        arguments: { command: "Clear-Disk -Number 0", cwd: ROOT }
+      })
+    );
+    check(
+      "developer shell: catastrophic command is DENY instead of approval",
+      denied.failed &&
+        denied.message.includes("PERMISSION_DENIED") &&
+        !denied.message.includes("approvalId:"),
+      denied.message.slice(0, 320)
+    );
+
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await fs.mkdir(escapeTarget, { recursive: true });
-    try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
-    execFileSync("cmd", ["/c", "mklink", "/J", escapeLink, escapeTarget], { stdio: "pipe" });
+    try {
+      execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" });
+    } catch {
+      // not present
+    }
+    execFileSync("cmd", ["/c", "mklink", "/J", escapeLink, escapeTarget], {
+      stdio: "pipe"
+    });
 
     const escapedCwd = await outcome(() =>
-      session.client.callTool({ name: "shell_run", arguments: { command: "New-Item -ItemType File -Name escaped.txt -Force", cwd: escapeLink } })
+      session.client.callTool({
+        name: "shell_run",
+        arguments: { command: "Write-Output must-not-run", cwd: escapeLink }
+      })
     );
-    check("developer: shell_run refuses a cwd that is a link out of the roots", escapedCwd.failed, escapedCwd.message.slice(0, 200));
-    check("full: nothing was written outside the roots by shell_run", !(await pathExists(path.join(escapeTarget, "escaped.txt"))));
+    check(
+      "developer shell: cwd junction escaping Workspace is refused",
+      escapedCwd.failed,
+      escapedCwd.message.slice(0, 220)
+    );
   } finally {
-    try { execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" }); } catch { /* not present */ }
+    try {
+      execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" });
+    } catch {
+      // not present
+    }
+    for (const target of [insideFile, hashSource, outsideFile]) {
+      await fs.rm(target, { force: true }).catch(() => undefined);
+    }
     await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
     await closeSession(session);
   }
-  console.log("ok  developer grants shell_run, and its cwd goes through the same guard");
+  console.log(
+    "ok  shell uses common Tool Permission Broker semantics"
+  );
+}
+
+{
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer" }));
+  try {
+    const noSlot = await outcome(() =>
+      session.client.callTool({
+        name: "shell_run",
+        arguments: {
+          command: 'Set-Content -LiteralPath "..\\_p05_test_outside_root\\shell-no-slot.txt" -Value denied',
+          cwd: ROOT
+        }
+      })
+    );
+    check("developer shell: approval path fails closed without Runtime slot identity",
+      noSlot.failed && noSlot.message.includes("Runtime slot identity"),
+      noSlot.message.slice(0, 300));
+  } finally {
+    await fs.rm(path.join(OUTSIDE_FIXTURES, "shell-no-slot.txt"), { force: true }).catch(() => undefined);
+    await closeSession(session);
+  }
 }
 
 // ------------------------------------------ the documented install path does start

@@ -20,11 +20,10 @@ import {
   toolProfileReport
 } from "../policy/tool-profile.js";
 import { runtimeRestartInvocation } from "../tools/runtime.js";
+import { DEFAULT_CAPABILITY_CATALOG } from "../capability/registry.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
-delete process.env.P05_TEMP_READONLY_ROOT;
 delete process.env.REMOTE_AGENT_DEFAULT_CWD;
-delete process.env.P05_OPERATOR_RESTART_TASK;
 
 let checks = 0;
 
@@ -57,10 +56,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
-// mcp_call_tool is deliberately NOT here: it is a generic proxy, and the plan lists it
-// under "never expose initially" next to shell_run. It sits at `full`.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "workspace_switch", "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat"];
+// shell_run is developer-visible but every call passes the common Tool Permission Broker.
+// Generic downstream execution and external Git push remain full-only.
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
@@ -117,10 +116,11 @@ check("DoD: discovery is exactly device_info + ping",
 check("matrix: the generic downstream proxy sits at full", specFor("mcp_call_tool")?.minProfile === "full");
 check("matrix: developer cannot reach the generic downstream proxy", !isToolAllowed("developer", "mcp_call_tool"));
 check("matrix: full can reach the generic downstream proxy", isToolAllowed("full", "mcp_call_tool"));
-check("matrix: developer can reach shell_run", isToolAllowed("developer", "shell_run"));
+check("matrix: shell_run sits at developer", specFor("shell_run")?.minProfile === "developer");
+check("matrix: developer can reach gated shell_run", isToolAllowed("developer", "shell_run"));
 check("matrix: readonly cannot reach shell_run", !isToolAllowed("readonly", "shell_run"));
 check("matrix: readonly can inspect workspaces", isToolAllowed("readonly", "workspace_list") && isToolAllowed("readonly", "workspace_current"));
-check("matrix: workspace switch sits at developer", isToolAllowed("developer", "workspace_switch") && !isToolAllowed("readonly", "workspace_switch"));
+check("matrix: remote workspace switch is not a capability", specFor("workspace_switch") === undefined);
 check("matrix: activity is readonly", isToolAllowed("readonly", "activity_recent"));
 check("matrix: git mutation profiles", isToolAllowed("developer", "git_add") && isToolAllowed("developer", "git_commit") && isToolAllowed("developer", "git_branch") && !isToolAllowed("developer", "git_push") && isToolAllowed("full", "git_push"));
 
@@ -134,10 +134,10 @@ for (let i = 1; i < TOOL_PROFILE_NAMES.length; i += 1) {
   }
 }
 
-check("decision: a suppressed tool explains the required profile",
-  toolDecision("discovery", "shell_run").reason.includes('"developer"'),
-  toolDecision("discovery", "shell_run").reason);
-check("decision: an allowed tool says so", toolDecision("developer", "shell_run").allowed);
+check("decision: readonly shell suppression explains developer requirement",
+  toolDecision("readonly", "shell_run").reason.includes('"developer"'),
+  toolDecision("readonly", "shell_run").reason);
+check("decision: developer allows the gated shell tool", toolDecision("developer", "shell_run").allowed);
 throws("decision: an undeclared tool is refused", () => isToolAllowed("full", "rm_rf_everything"), "not declared");
 check("spec: lookup finds a declared tool", specFor("shell_run")?.minProfile === "developer");
 check("spec: lookup returns undefined for an unknown tool", specFor("nope") === undefined);
@@ -162,6 +162,22 @@ check("spec: lookup returns undefined for an unknown tool", specFor("nope") === 
     b.args.includes("-Slot") && b.args.includes("B"),
     b.args.join(" ")
   );
+  check(
+    "runtime-restart: does not invoke Task Scheduler or RestartBroker",
+    !/schtasks|RestartBroker/i.test(a.args.join(" ")) &&
+      !/schtasks|RestartBroker/i.test(b.args.join(" ")),
+    [a.args.join(" "), b.args.join(" ")].join(" | ")
+  );
+  const testDir = path.dirname(fileURLToPath(import.meta.url));
+  const testRepo = path.resolve(testDir, "..", "..");
+  const hostTaskInstaller = await readFile(
+    path.join(testRepo, "scripts", "deployment", "install-host-tasks.ps1"),
+    "utf8"
+  );
+  check(
+    "deployment: host task installer does not provision RestartBroker",
+    !/P05-RestartBroker|P05_OPERATOR_RESTART_TASK|restartTask|restartName/.test(hostTaskInstaller)
+  );
   throws(
     "runtime-restart: invalid slot is refused",
     () => runtimeRestartInvocation("C"),
@@ -172,6 +188,254 @@ check("spec: lookup returns undefined for an unknown tool", specFor("nope") === 
 // ---------------------------------------------------------------- dangerous commands
 process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const { assertAllowedPath, assertPathShape, assertSafeCommand, protectionReason } = await import("../security.js");
+const { permissionDecision } = await import("../policy/permission.js");
+
+// ---------------------------------------------------------------- V2 common permission policy
+{
+  const workspaceRoot = path.resolve(".");
+  const allowRead = await permissionDecision(
+    "fs_read",
+    { path: "README.md" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: structured read defaults ALLOW", allowRead.mode === "allow");
+
+  const allowWrite = await permissionDecision(
+    "fs_write",
+    { path: "README.md", content: "x" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: structured Workspace write defaults ALLOW", allowWrite.mode === "allow");
+
+  const commandRun = await permissionDecision(
+    "command_run",
+    { action: "check" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: mutable repository validation defaults CONFIRM", commandRun.mode === "confirm");
+
+  const restart = await permissionDecision(
+    "runtime_restart",
+    {},
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: Runtime lifecycle defaults CONFIRM", restart.mode === "confirm");
+
+  const push = await permissionDecision(
+    "git_push",
+    { remote: "origin" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: external Git push defaults CONFIRM", push.mode === "confirm");
+
+  const genericMcp = await permissionDecision(
+    "mcp_call_tool",
+    { server: "matlab", tool: "model_edit" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: generic downstream MCP execution defaults CONFIRM", genericMcp.mode === "confirm");
+
+  const matlabRead = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "model_read", arguments: { model: "Example.slx", scope: "root", depth: "0" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: known MATLAB read tool defaults ALLOW", matlabRead.mode === "allow");
+
+  const matlabEdit = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "model_edit", arguments: { model: "Example.slx" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "permission: structured MATLAB model mutation defaults ALLOW",
+    matlabEdit.mode === "allow"
+  );
+
+  const matlabCode = await permissionDecision(
+    "matlab.call_tool",
+    { tool: "evaluate_matlab_code", arguments: { code: "disp(1)" } },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary MATLAB code defaults CONFIRM", matlabCode.mode === "confirm");
+
+  const matlabTest = await permissionDecision(
+    "matlab.call_tool",
+    {
+      tool: "model_test",
+      arguments: {
+        model: "Example.slx",
+        gherkin_file: "tests/example.feature"
+      }
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: MATLAB behavioral test still defaults CONFIRM", matlabTest.mode === "confirm");
+
+  const safeShell = await permissionDecision(
+    "shell_run",
+    { command: "Get-Date", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: known shell diagnostic defaults ALLOW", safeShell.mode === "allow");
+
+  const unknownShell = await permissionDecision(
+    "shell_run",
+    { command: "python script.py", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary shell execution defaults CONFIRM", unknownShell.mode === "confirm");
+
+  const sshAptUpdate = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo apt-get update\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote apt update still CONFIRM", sshAptUpdate.mode === "confirm");
+
+  const sshFullUpgrade = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo apt-get full-upgrade -y\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote full-upgrade still CONFIRM", sshFullUpgrade.mode === "confirm");
+
+  const sshService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo systemctl enable --now chrony\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: direct remote service mutation still CONFIRM", sshService.mode === "confirm");
+
+  const sshInteractive = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: interactive SSH remains CONFIRM", sshInteractive.mode === "confirm");
+
+  const sshForward = await permissionDecision(
+    "shell_run",
+    { command: "ssh -L 9000:localhost:9000 h1 inventory", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH forwarding remains CONFIRM", sshForward.mode === "confirm");
+
+  const sshGateInventory = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 inventory", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate inventory verb defaults ALLOW", sshGateInventory.mode === "allow");
+
+  const sshGateService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 service-status chrony", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate service-status verb defaults ALLOW", sshGateService.mode === "allow");
+
+  const sshGateToolkitInstall = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 install-nvidia-toolkit 1.20.1-1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed SSH gate toolkit install defaults ALLOW", sshGateToolkitInstall.mode === "allow");
+
+  const sshGateToolkitWrongVersion = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 install-nvidia-toolkit 1.20.0-1", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: unsupported SSH gate toolkit version stays CONFIRM", sshGateToolkitWrongVersion.mode === "confirm");
+
+  const sshGateK3sStart = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-start", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed async K3s start requires one CONFIRM", sshGateK3sStart.mode === "confirm");
+
+  const sshGateK3sStatus = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-status", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: fixed K3s status defaults ALLOW", sshGateK3sStatus.mode === "allow");
+
+  const sshGateK3sExtraArg = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 k3s-phase1-start extra", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: K3s gate extra arguments stay CONFIRM", sshGateK3sExtraArg.mode === "confirm");
+
+  const sshGateUnknownService = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 service-status docker", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH gate unknown service still CONFIRM", sshGateUnknownService.mode === "confirm");
+
+  const sshGateExtraArg = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 evidence extra", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH gate extra arguments still CONFIRM", sshGateExtraArg.mode === "confirm");
+
+  const sshScript = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo bash /tmp/bootstrap.sh\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: arbitrary remote sudo script still CONFIRM", sshScript.mode === "confirm");
+
+  const sshDisk = await permissionDecision(
+    "shell_run",
+    { command: "ssh h1 \"sudo dd if=/dev/zero of=/dev/sda\"", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: remote disk write still CONFIRM", sshDisk.mode === "confirm");
+
+  const destructiveShell = await permissionDecision(
+    "shell_run",
+    { command: "Clear-Disk -Number 0", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: catastrophic shell operation is DENY", destructiveShell.mode === "deny");
+}
+
+
 
 for (const command of ["format C:", "diskpart", "shutdown /r", "reg add HKLM\\Software", "Remove-Item -Recurse -Force C:\\Data", "rm -rf /"]) {
   throws(`command: "${command}" is denied`, () => assertSafeCommand(command), "blocked by safety policy");

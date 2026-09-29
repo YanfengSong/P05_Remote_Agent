@@ -23,7 +23,6 @@ function inheritedEnv(): Record<string, string> {
   env.REMOTE_AGENT_ALLOWED_ROOTS = REPO;
   env.REMOTE_AGENT_DEFAULT_CWD = REPO;
   env.P05_TOOL_PROFILE = "full";
-  env.P05_TEMP_READONLY_ROOT = REPO;
   env.MATLAB_MCP_ENABLED = "false";
   return env;
 }
@@ -50,10 +49,43 @@ try {
   const expected = CAPABILITIES.map((capability) => capability.name).sort();
 
   check(
-    "output-schema: full+temporary surface covers every Core capability",
+    "output-schema: full surface covers every Core capability",
     names.join(",") === expected.join(","),
     `expected ${expected.length}, got ${names.length}`
   );
+
+  for (const tool of listed.tools) {
+    const capability = CAPABILITIES.find((entry) => entry.name === tool.name);
+    if (!capability) {
+      throw new Error(`FAIL annotations: undeclared Core tool ${tool.name}`);
+    }
+
+    const annotations = tool.annotations;
+    const readOnly = capability.risk === "read";
+    const openWorld =
+      capability.scope === "downstream" || capability.scope === "external";
+
+    check(
+      `annotations: ${tool.name} readOnlyHint follows capability risk`,
+      annotations?.readOnlyHint === readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} destructiveHint follows capability risk`,
+      annotations?.destructiveHint === !readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} idempotentHint follows capability risk`,
+      annotations?.idempotentHint === readOnly,
+      JSON.stringify({ capability, annotations })
+    );
+    check(
+      `annotations: ${tool.name} openWorldHint follows capability scope`,
+      annotations?.openWorldHint === openWorld,
+      JSON.stringify({ capability, annotations })
+    );
+  }
 
   for (const tool of listed.tools) {
     const schema = tool.outputSchema as { type?: unknown; properties?: unknown } | undefined;
@@ -65,6 +97,8 @@ try {
     );
   }
 
+  // Runtime-confirmed tools are covered by permission tests. These samples validate
+  // structuredContent only for calls that are expected to execute without confirmation.
   const samples: Array<[string, Record<string, unknown>]> = [
     ["device_info", {}],
     ["ping", {}],
@@ -77,11 +111,8 @@ try {
     ["fs_read", { path: "README.md" }],
     ["git_status", {}],
     ["git_diff_stat", {}],
-    ["command_run", { action: "check" }],
     ["shell_run", { command: "Write-Output p05-structured-output" }],
-    ["mcp_status", {}],
-    ["list_directory", { path: REPO }],
-    ["read_file", { path: path.join(REPO, "README.md") }]
+    ["mcp_status", {}]
   ];
 
   for (const [name, args] of samples) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AuditStore } from "../audit/store.js";
 import type {
+  AuditAttribution,
   AuditEvent,
   ExecutionPhase,
   RecoveryHint
@@ -12,10 +13,16 @@ import {
 import type { LiveActivityStore } from "../monitor/live-activity.js";
 import { classifyError, type ErrorCategory } from "./errors.js";
 
+export type ExecutionAuthorizationContext = {
+  approvalId?: string;
+  operation?: string;
+};
+
 export type ExecutionPlan<T> = {
   authorize?: () => void | Promise<void>;
   execute: () => Promise<T>;
   verify?: (result: T) => void | Promise<void>;
+  authorizationContext?: () => ExecutionAuthorizationContext | undefined;
 };
 
 function recoveryHint(category: ErrorCategory): RecoveryHint {
@@ -38,23 +45,27 @@ export class ExecutionRuntime {
   readonly #workspaceId: () => string;
   readonly #catalog: CapabilityCatalog;
   readonly #liveActivity?: LiveActivityStore;
+  readonly #attribution?: AuditAttribution;
 
   constructor(
     audit: AuditStore,
     workspaceId: () => string,
     catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG,
-    liveActivity?: LiveActivityStore
+    liveActivity?: LiveActivityStore,
+    attribution?: AuditAttribution
   ) {
     this.#audit = audit;
     this.#workspaceId = workspaceId;
     this.#catalog = catalog;
     this.#liveActivity = liveActivity;
+    this.#attribution = attribution ? { ...attribution } : undefined;
   }
 
   async run<T>(
     capability: string,
     operationOrPlan: (() => Promise<T>) | ExecutionPlan<T>,
-    liveDetail?: string
+    liveDetail?: string,
+    attribution?: Partial<AuditAttribution>
   ): Promise<T> {
     const descriptor = this.#catalog.descriptor(capability);
     const plan: ExecutionPlan<T> = typeof operationOrPlan === "function"
@@ -65,16 +76,51 @@ export class ExecutionRuntime {
     const started = Date.now();
     let phase: ExecutionPhase = "prepare";
     const workspaceId = this.#workspaceId();
+    const effectiveAttribution = {
+      ...(this.#attribution ?? {}),
+      ...(attribution ?? {})
+    };
 
     const base: AuditEvent = {
       id,
       capability,
       scope: descriptor.scope,
       workspaceId,
+      ...(effectiveAttribution.source
+        ? { source: effectiveAttribution.source }
+        : {}),
+      ...(effectiveAttribution.transport
+        ? { transport: effectiveAttribution.transport }
+        : {}),
+      ...(effectiveAttribution.runtimeSlot
+        ? { runtimeSlot: effectiveAttribution.runtimeSlot }
+        : {}),
+      ...(effectiveAttribution.principal
+        ? { principal: effectiveAttribution.principal }
+        : {}),
+      ...(effectiveAttribution.clientName
+        ? { clientName: effectiveAttribution.clientName }
+        : {}),
+      ...(effectiveAttribution.clientVersion
+        ? { clientVersion: effectiveAttribution.clientVersion }
+        : {}),
       state: "running",
       phase,
       startedAt: new Date(started).toISOString(),
       recoveryHint: "inspect"
+    };
+
+    const authorizationFields = (): Pick<
+      AuditEvent,
+      "approvalId" | "authorizationOperation"
+    > => {
+      const context = plan.authorizationContext?.();
+      return {
+        ...(context?.approvalId ? { approvalId: context.approvalId } : {}),
+        ...(context?.operation
+          ? { authorizationOperation: context.operation }
+          : {})
+      };
     };
 
     const liveBase = {
@@ -83,6 +129,24 @@ export class ExecutionRuntime {
       risk: descriptor.risk,
       scope: descriptor.scope,
       workspaceId,
+      ...(effectiveAttribution.source
+        ? { source: effectiveAttribution.source }
+        : {}),
+      ...(effectiveAttribution.transport
+        ? { transport: effectiveAttribution.transport }
+        : {}),
+      ...(effectiveAttribution.runtimeSlot
+        ? { runtimeSlot: effectiveAttribution.runtimeSlot }
+        : {}),
+      ...(effectiveAttribution.principal
+        ? { principal: effectiveAttribution.principal }
+        : {}),
+      ...(effectiveAttribution.clientName
+        ? { clientName: effectiveAttribution.clientName }
+        : {}),
+      ...(effectiveAttribution.clientVersion
+        ? { clientVersion: effectiveAttribution.clientVersion }
+        : {}),
       summary: descriptor.summary,
       ...(liveDetail ? { detail: liveDetail } : {}),
       startedAt: base.startedAt
@@ -90,7 +154,12 @@ export class ExecutionRuntime {
 
     const mark = (nextPhase: ExecutionPhase): void => {
       phase = nextPhase;
-      this.#audit.upsert({ ...base, phase, state: "running" });
+      this.#audit.upsert({
+        ...base,
+        ...authorizationFields(),
+        phase,
+        state: "running"
+      });
       this.#liveActivity?.upsert({
         ...liveBase,
         state: "running",
@@ -119,6 +188,7 @@ export class ExecutionRuntime {
       const finishedAt = new Date(finished).toISOString();
       this.#audit.upsert({
         ...base,
+        ...authorizationFields(),
         phase: "complete",
         state: "succeeded",
         finishedAt,
@@ -139,6 +209,7 @@ export class ExecutionRuntime {
       const category = classifyError(error);
       this.#audit.upsert({
         ...base,
+        ...authorizationFields(),
         phase,
         state: "failed",
         finishedAt,

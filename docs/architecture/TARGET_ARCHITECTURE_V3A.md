@@ -475,9 +475,9 @@ Only after Phase E SHOULD V3 implementation proceed to Verified Assets / Meta-Ca
 V3-A is complete only when all of the following are true:
 
 1. Every Foundation V2 regression remains green.
-2. Interactive Workspace switching behaves exactly as before for interactive structured tools.
-3. A captured Agent/Session execution cannot be retargeted by later `workspace_switch`.
-4. Two concurrent Agent Sessions can bind different registered Workspaces safely.
+2. Local Operator Workspace rebinding remains explicit, Runtime-scoped, and human-controlled.
+3. A captured Agent/Session execution cannot be retargeted by a remote model call; remote MCP has no Workspace rebind capability.
+4. Two concurrent Agent Sessions can bind different operator-authorized Workspaces safely.
 5. Two writing Agent Sessions on one Git Workspace receive different mutable work roots.
 6. Process Session code has no direct dependency on PowerShell-specific spawn/kill implementation.
 7. LocalPowerShellDriver can be replaced by another Process Driver without changing Agent Runtime contracts.

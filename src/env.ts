@@ -8,9 +8,6 @@
  * after its imports and would otherwise fail on import order.
  */
 
-/** The temporary read-only layer's opt-in variable (TMP-R01, see docs/adr/ADR-0006). */
-export const TEMP_READONLY_ROOT_ENV = "P05_TEMP_READONLY_ROOT";
-
 /**
  * Read an environment variable as an own property only.
  *

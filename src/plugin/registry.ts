@@ -47,6 +47,26 @@ export class PluginRegistry {
       seen.add(capability.name);
     }
 
+    const toolNames = new Set<string>();
+    for (const tool of plugin.tools ?? []) {
+      if (!tool.name.startsWith(manifest.id + ".")) {
+        throw new Error(
+          `Plugin "${manifest.id}" tool "${tool.name}" must use the "${manifest.id}." prefix.`
+        );
+      }
+      if (!seen.has(tool.name)) {
+        throw new Error(
+          `Plugin "${manifest.id}" tool "${tool.name}" must have a matching manifest capability.`
+        );
+      }
+      if (toolNames.has(tool.name)) {
+        throw new Error(
+          `Plugin "${manifest.id}" declares duplicate tool "${tool.name}".`
+        );
+      }
+      toolNames.add(tool.name);
+    }
+
     this.#plugins.set(manifest.id, plugin);
   }
 

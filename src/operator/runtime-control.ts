@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { p05StateDir } from "../state.js";
+import { defaultP05StateDir, p05StateDir } from "../state.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,7 +35,7 @@ function slotProfileName(slot: RuntimeSlotId): string {
 
 function operatorRoot(): string {
   const override = process.env.P05_OPERATOR_ROOT?.trim();
-  return override ? path.resolve(override) : p05StateDir();
+  return override ? path.resolve(override) : defaultP05StateDir();
 }
 
 function makeRuntimeSlot(slot: RuntimeSlotId, connector: string): RuntimeSlotConfig {
@@ -51,10 +52,18 @@ function makeRuntimeSlot(slot: RuntimeSlotId, connector: string): RuntimeSlotCon
   };
 }
 
-function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
+function slotConnector(slot: RuntimeSlotId): string {
   return slot === "A"
-    ? makeRuntimeSlot("A", "@Boonray-A")
-    : makeRuntimeSlot("B", "@Boonray-B");
+    ? process.env.P05_RUNTIME_A_CONNECTOR?.trim() || "@Runtime-A"
+    : process.env.P05_RUNTIME_B_CONNECTOR?.trim() || "@Runtime-B";
+}
+
+function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
+  return makeRuntimeSlot(slot, slotConnector(slot));
+}
+
+export function runtimeSlotStateDir(slot: RuntimeSlotId): string {
+  return runtimeSlotConfig(slot).stateDir;
 }
 
 const ACTIVE_WORKSPACE_BINDING_FILE = "active-workspace.txt";
@@ -157,6 +166,8 @@ async function taskStatus(taskName: string) {
 }
 
 async function processStatus() {
+  const repoRootWindows = process.cwd().replace(/'/g, "''");
+  const repoRootForward = repoRootWindows.replace(/\\/g, "/");
   try {
     const rows = await powershellJson<
       Array<{
@@ -174,28 +185,46 @@ async function processStatus() {
       }
     >(
       `$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |` +
-      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
-      `Select-Object ProcessId,Name,CreationDate,ExecutablePath,CommandLine;` +
+      `Where-Object { ($_.Name -eq 'tunnel-client.exe' -and ($_.CommandLine -like '*--profile ${runtimeSlotConfig("A").profileName}*' -or $_.CommandLine -like '*--profile ${runtimeSlotConfig("B").profileName}*')) -or ($_.Name -eq 'node.exe' -and ($_.CommandLine -like '*launch-runtime.mjs*' -or $_.CommandLine -like '*${repoRootWindows}\\dist\\index.js*' -or $_.CommandLine -like '*${repoRootForward}/dist/index.js*' -or $_.CommandLine -like '*dist*operator*server.js*')) } |` +
+      `Select-Object ProcessId,Name,@{Name='CreationDate';Expression={if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null}}},ExecutablePath,CommandLine;` +
       `@($p)|ConvertTo-Json -Compress`
     );
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
     return list.map((row) => {
       const command = row.CommandLine ?? "";
+      const slot =
+        row.Name === "tunnel-client.exe"
+          ? command.includes("--profile " + runtimeSlotConfig("A").profileName) ||
+            command.includes('--profile "' + runtimeSlotConfig("A").profileName + '"')
+            ? "A"
+            : command.includes("--profile " + runtimeSlotConfig("B").profileName) ||
+                command.includes('--profile "' + runtimeSlotConfig("B").profileName + '"')
+              ? "B"
+              : undefined
+          : /launch-runtime\.mjs"?\s+A(?:\s|$)/i.test(command)
+            ? "A"
+            : /launch-runtime\.mjs"?\s+B(?:\s|$)/i.test(command)
+              ? "B"
+              : undefined;
+      const operator = /dist[\\/]operator[\\/]server\.js/i.test(command);
       const role =
         row.Name === "tunnel-client.exe"
-          ? "Tunnel"
-          : /dist[\\/]operator[\\/]server\.js/i.test(command)
+          ? `Tunnel${slot ? " " + slot : ""}`
+          : operator
             ? "Operator Console"
-            : /dist[\\/]index\.js/i.test(command)
-              ? "MCP Server"
-              : "P05 Node";
+            : slot
+              ? `Runtime ${slot} MCP`
+              : /dist[\\/]index\.js/i.test(command)
+                ? "MCP Server"
+                : "P05 Node";
       return {
         Id: row.ProcessId,
         ProcessName: row.Name.replace(/\.exe$/i, ""),
         StartTime: row.CreationDate,
         Path: row.ExecutablePath,
         CommandLine: command,
-        Role: role
+        Role: role,
+        ...(operator ? { RestartTarget: "operator" as const } : slot ? { RestartTarget: slot } : {})
       };
     });
   } catch {
@@ -538,6 +567,15 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
       ? bridge.data as Record<string, unknown>
       : undefined;
 
+  const currentRoot =
+    bridgeData?.workspace &&
+    typeof bridgeData.workspace === "object" &&
+    (bridgeData.workspace as { current?: { root?: unknown } }).current &&
+    typeof (bridgeData.workspace as { current?: { root?: unknown } }).current?.root === "string"
+      ? (bridgeData.workspace as { current: { root: string } }).current.root
+      : undefined;
+  const git = await gitStatus(currentRoot);
+
   return {
     id: config.id,
     connector: config.connector,
@@ -558,7 +596,19 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
     device:
       bridgeData?.device && typeof bridgeData.device === "object"
         ? bridgeData.device
-        : undefined
+        : undefined,
+    mcp:
+      bridgeData?.mcp && typeof bridgeData.mcp === "object"
+        ? bridgeData.mcp
+        : undefined,
+    references: Array.isArray(bridgeData?.references) ? bridgeData.references : [],
+    plugins: Array.isArray(bridgeData?.plugins) ? bridgeData.plugins : [],
+    downstream: Array.isArray(bridgeData?.downstream) ? bridgeData.downstream : [],
+    git,
+    activity: Array.isArray(bridgeData?.activity) ? bridgeData.activity : [],
+    liveActivity: Array.isArray(bridgeData?.liveActivity) ? bridgeData.liveActivity : [],
+    recovery: Array.isArray(bridgeData?.recovery) ? bridgeData.recovery : [],
+    logTail: logTail(25, config.tunnelLog)
   };
 }
 
@@ -570,55 +620,86 @@ export async function runtimeSlotsOverview() {
   return { A, B };
 }
 
+function attributedSlotEvents(
+  events: unknown,
+  slot: RuntimeSlotId
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(events)) return [];
+  return events
+    .filter((event): event is Record<string, unknown> =>
+      Boolean(event) && typeof event === "object" && !Array.isArray(event)
+    )
+    .map((event) => ({
+      ...event,
+      runtimeSlot:
+        event.runtimeSlot === "A" || event.runtimeSlot === "B"
+          ? event.runtimeSlot
+          : slot,
+      source:
+        typeof event.source === "string" && event.source
+          ? event.source
+          : "runtime-mcp"
+    }));
+}
+
+function mergeSlotEvents(
+  slots: {
+    A: { [key: string]: unknown };
+    B: { [key: string]: unknown };
+  },
+  field: "activity" | "liveActivity" | "recovery",
+  limit: number
+): Array<Record<string, unknown>> {
+  return [
+    ...attributedSlotEvents(slots.A[field], "A"),
+    ...attributedSlotEvents(slots.B[field], "B")
+  ]
+    .sort((a, b) =>
+      String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? ""))
+    )
+    .slice(0, limit);
+}
+
 export async function operatorOverview() {
-  const [processes, health, bridge, slots] = await Promise.all([
+  const [processes, slots] = await Promise.all([
     processStatus(),
-    healthStatus(),
-    bridgeOverview(),
     runtimeSlotsOverview()
   ]);
 
-  const bridgeData =
-    bridge.online && bridge.data && typeof bridge.data === "object"
-      ? bridge.data as Record<string, unknown>
-      : undefined;
-
-  const workspace =
-    bridgeData?.workspace &&
-    typeof bridgeData.workspace === "object"
-      ? (bridgeData.workspace as {
-          current?: { root?: string };
-        }).current
-      : undefined;
-
-  const git = await gitStatus(workspace?.root);
+  const activity = mergeSlotEvents(slots, "activity", 100);
+  const liveActivity = mergeSlotEvents(slots, "liveActivity", 120);
+  const recovery = mergeSlotEvents(slots, "recovery", 60);
 
   return {
     timestamp: new Date().toISOString(),
+    activity,
+    liveActivity,
+    recovery,
     connection: {
-      connected: Boolean(health.ready && bridge.online),
-      runtimeTask: {
-        exists: false,
-        name: "manual-slot-a",
-        state: "manual"
-      },
-      restartTask: {
-        exists: false,
-        name: "manual-restart",
-        state: "manual"
-      },
-      health,
-      bridge: {
-        online: bridge.online,
-        ...(bridge.online
-          ? { data: bridge.data }
-          : { error: bridge.error })
+      connected: Boolean(slots.A.connected || slots.B.connected),
+      slots: {
+        A: {
+          connected: slots.A.connected,
+          health: slots.A.health,
+          bridge: slots.A.bridge
+        },
+        B: {
+          connected: slots.B.connected,
+          health: slots.B.health,
+          bridge: slots.B.bridge
+        }
       },
       processes
     },
-    git,
+    git: {
+      A: slots.A.git,
+      B: slots.B.git
+    },
     slots,
-    logTail: logTail(25)
+    logTail: {
+      A: slots.A.logTail,
+      B: slots.B.logTail
+    }
   };
 }
 
@@ -699,18 +780,6 @@ async function runSlotControlScript(
   );
 }
 
-export async function connectRuntime() {
-  return connectRuntimeSlot("A");
-}
-
-export async function restartRuntime() {
-  return restartRuntimeSlot("A");
-}
-
-export async function disconnectRuntime() {
-  return disconnectRuntimeSlot("A");
-}
-
 export async function connectRuntimeSlot(slot: RuntimeSlotId) {
   await runSlotControlScript("run-runtime-slot.ps1", slot);
   return {
@@ -738,6 +807,46 @@ export async function restartRuntimeSlot(slot: RuntimeSlotId) {
     action: "restart",
     slot,
     message: `Runtime ${slot} restarted.`
+  };
+}
+
+export function requestOperatorRestart() {
+  const requestId = randomUUID();
+  const script = path.resolve(
+    process.cwd(),
+    "scripts",
+    "deployment",
+    "restart-operator.ps1"
+  );
+  const child = spawn(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-RequestId",
+      requestId,
+      "-DelayMilliseconds",
+      "1500"
+    ],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+  child.unref();
+  return {
+    ok: true,
+    action: "restart",
+    target: "operator",
+    requestId,
+    message: "Operator Console restart scheduled."
   };
 }
 

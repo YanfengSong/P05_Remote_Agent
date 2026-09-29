@@ -2,6 +2,10 @@
 
 Status: Foundation V2 implemented; Architecture V3 packaging model defined
 Date: 2026-09-21
+Related implementation:
+- PLUGIN_API_V1_TECHNICAL_DESIGN.md
+- PLUGIN_DEVELOPMENT_STANDARD.md
+
 Related target:
 - TARGET_ARCHITECTURE_V3.md
 - CONTEXT-COMPONENT-RUNTIME.md
@@ -313,12 +317,12 @@ Policy/Approval/State-integrity trust-root code does not use ordinary Component 
 
 ## 15. MATLAB reference package
 
-Foundation V2 currently uses:
+Current P05 uses:
 
 - `src/plugins/matlab/plugin.ts`
 - `src/plugins/matlab/skills.ts`
 
-The current working V2 adapter:
+The current MATLAB plugin is migrated to Plugin API v1 and:
 - discovers the local MathWorks Agentic Toolkit by default;
 - resolves the MathWorks-managed MATLAB MCP executable;
 - adds the Simulink tools extension when present;
@@ -340,7 +344,7 @@ Target V3 should migrate the package's runtime responsibilities into Components 
 - Capability contribution ownership;
 - failure isolation.
 
-This is migration, not a requirement to rewrite the current working V2 Plugin immediately.
+The migration is complete for the current v0.1 Plugin API surface: MATLAB uses declarative tools, Public Plugin API downstream declarations, PluginContext Workspace access, and no legacy `registerTools()` hook. Typed config and first-class Skill/Asset contribution remain future API work.
 
 ## 16. Required invariants
 

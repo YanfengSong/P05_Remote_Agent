@@ -1,53 +1,72 @@
 # ADR-0007 — External Restart Broker
 
-Status: Accepted
+Status: Retired / Superseded
 Date: 2026-09-20
+Retired: 2026-09-22
 
 ## Context
 
-P05 needs to rebuild and restart itself to close the autonomous development loop. A first implementation spawned
-PowerShell from the running Agent and invoked the existing restart script. The MCP call returned successfully, but
-the runtime did not actually restart: the helper remained coupled to the process tree it was trying to replace.
+P05 originally needed a restart mechanism that could survive termination of the
+runtime process tree. Early experiments either remained coupled to the process
+being replaced or required administrator authority to create a Scheduled Task
+at call time.
 
-A second implementation tried to create a one-shot Scheduled Task at call time. Windows task creation required
-administrator authority, which the normal P05 runtime intentionally does not have.
+## Historical decision
 
-## Decision
+The V1/V2 transition used a pre-provisioned Windows Scheduled Task named
+`P05-RestartBroker`.
 
-Use a pre-provisioned Windows Scheduled Task named P05-RestartBroker.
+The remotely reachable runtime could only request the fixed task:
 
-The task is installed out-of-band by an administrator with a fixed action that invokes the approved P05 restart
-script. The remotely reachable runtime can only execute:
+    schtasks.exe /Run /TN P05-RestartBroker
 
-schtasks.exe /Run /TN P05-RestartBroker
+The MCP `runtime_restart` tool remained zero-argument and could not choose an
+arbitrary task, command, path, credential or elevation flag.
 
-The MCP tool runtime_restart has an empty input schema. It accepts no command, path, task name, credentials,
-arguments or elevation switches.
+## Why this ADR is retired
 
-## Consequences
+The current V2 runtime no longer invokes the Scheduled Task broker.
 
-Positive:
-- restart execution survives termination of the current P05/tunnel process tree;
-- ordinary P05 runtime remains non-admin;
-- the self-modifying workspace cannot parameterize the host-level action;
-- restart authority is separated from source-code authority;
-- the development loop can continue after build without human restart assistance.
+`runtime_restart` now resolves the current Runtime slot from
+`P05_RUNTIME_SLOT` and invokes the fixed repo-local request script:
 
-Cost:
-- one administrator provisioning step is required per host;
-- broker configuration lives outside the normal Agent runtime and must be maintained separately;
-- changing the broker action is a host-policy change and requires explicit human authorization.
+    scripts/deployment/request-restart-runtime-slot.ps1 -Slot A|B
 
-## Verification
+That script launches a delayed detached call to:
 
-End-to-end acceptance on 2026-09-20:
-- runtime_restart returned RESTART_SCHEDULED;
-- device startedAt changed from 2026-09-20T07:01:02.776Z to 2026-09-20T07:01:40.398Z;
-- the device reconnected and ping returned ok=true;
-- post-restart command_run(check) passed;
-- post-restart policy suite passed 179 checks.
+    scripts/deployment/restart-runtime-slot.ps1 -Slot A|B
 
-Regression requirements:
-- runtime_restart remains zero-argument at MCP level;
-- internal invocation remains exactly schtasks.exe /Run /TN P05-RestartBroker;
-- no task creation/elevation/credential argument is reachable from the MCP call.
+The restart remains slot-scoped and the MCP tool still accepts no caller-supplied
+command/path/task parameters.
+
+Normal Bootstrap and Runtime operation require no RestartBroker task.
+
+## Migration / cleanup
+
+- `scripts/deployment/install-host-tasks.ps1` no longer creates
+  `P05-RestartBroker`.
+- The standalone `scripts/install-restart-broker.ps1` installer has been
+  removed.
+- `scripts/deployment/uninstall-host-tasks.ps1` still removes the historical
+  `P05-RestartBroker` name (and an old configured
+  `P05_OPERATOR_RESTART_TASK`) as upgrade cleanup only.
+- Historical handoff/research documents may still mention RestartBroker as part
+  of the earlier implementation and should be read as historical context.
+
+## Current security boundary
+
+Repo-local restart is a fixed lifecycle operation, not a general host command
+broker. It does not authorize arbitrary host/system mutation.
+
+Broader host effects such as services, firewall, registry, system packages or
+privileged configuration remain outside the ordinary structured developer
+surface and still require an explicit approval/broker/OS-level control as
+appropriate.
+
+## Regression requirements
+
+- `runtime_restart` remains zero-argument at MCP level.
+- Runtime slot is constrained to `A` or `B`.
+- Invocation remains the fixed repo-local
+  `request-restart-runtime-slot.ps1` path.
+- Current deployment must not install or depend on `P05-RestartBroker`.

@@ -69,7 +69,14 @@ export function mergePersistentWorkspaces(
     ...configured.map(plain),
     ...persistent.map(plain)
   ]);
-  return parseWorkspaceRegistry(raw, allowedRoots, defaultRoot);
+  // Persistent entries live under the Runtime-specific P05_STATE_DIR and are
+  // created only after a local Operator workspace selection. Treat those roots
+  // as previously approved for this Runtime when rebuilding its registry.
+  const runtimeApprovedRoots = [
+    ...allowedRoots,
+    ...persistent.map((entry) => entry.root)
+  ];
+  return parseWorkspaceRegistry(raw, runtimeApprovedRoots, defaultRoot);
 }
 
 export function toPersistentWorkspaceEntry(

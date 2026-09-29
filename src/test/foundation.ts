@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AuditStore } from "../audit/store.js";
-import { capabilityDescriptor, capabilityRegistry } from "../capability/registry.js";
+import { decideToolApproval } from "../approval/tool-approval.js";
+import { capabilityDescriptor, capabilityRegistry, DEFAULT_CAPABILITY_CATALOG } from "../capability/registry.js";
 import { ExecutionRuntime } from "../runtime/execution.js";
 import { AuthorizationError } from "../runtime/errors.js";
 import { resolveDownstreamTarget } from "../downstream/types.js";
+import { ToolPermissionBroker } from "../policy/permission-broker.js";
 import { readTextFile, writeTextFile } from "../tools/files.js";
 import { gitStatus } from "../tools/git.js";
 import { runPowerShell } from "../tools/shell.js";
@@ -22,6 +24,8 @@ const REGISTRY_ALLOWED = path.join(FIXTURE, "registry-allowed");
 const REGISTRY_OUTSIDE = path.join(FIXTURE, "registry-outside");
 const REGISTRY_JUNCTION = path.join(REGISTRY_ALLOWED, "escape-link");
 const EXPLICIT_STATE = path.join(FIXTURE, "explicit-state");
+const APPROVAL_STATE = path.join(FIXTURE, "approval-state");
+const DYNAMIC_OUTSIDE = path.join(path.dirname(FIXTURE), "_p05_foundation_dynamic_workspace");
 
 let checks = 0;
 function check(label: string, condition: boolean, detail = ""): void {
@@ -55,6 +59,8 @@ await fs.mkdir(WS_A, { recursive: true });
 await fs.mkdir(WS_B, { recursive: true });
 await fs.mkdir(REGISTRY_ALLOWED, { recursive: true });
 await fs.mkdir(REGISTRY_OUTSIDE, { recursive: true });
+await fs.rm(DYNAMIC_OUTSIDE, { recursive: true, force: true });
+await fs.mkdir(DYNAMIC_OUTSIDE, { recursive: true });
 
 try {
   check("state: default directory is anchored to the P05 repository", defaultP05StateDir() === path.join(REPO, ".p05"), defaultP05StateDir());
@@ -70,6 +76,109 @@ try {
   const manager = new WorkspaceManager(parsed, "a");
   check("workspace: initial id selected", manager.current().id === "a");
   check("workspace: list does not expose root", !JSON.stringify(manager.list()).includes(REPO));
+
+  const approvalBroker = new ToolPermissionBroker({
+    stateDir: APPROVAL_STATE,
+    runtimeSlot: "B",
+    workspaceManager: manager,
+    capabilityCatalog: DEFAULT_CAPABILITY_CATALOG
+  });
+  const approvalFirst = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 90000 }
+  );
+  check(
+    "approval: arbitrary shell first requests confirmation",
+    approvalFirst.state === "approval_required"
+  );
+  if (approvalFirst.state !== "approval_required") {
+    throw new Error("FAIL approval: expected initial approval request");
+  }
+
+  const approvalPendingRepeat = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 600000 }
+  );
+  check(
+    "approval: repeated pending shell request reuses approval id",
+    approvalPendingRepeat.state === "approval_required" &&
+      approvalPendingRepeat.approvalId === approvalFirst.approvalId
+  );
+
+  decideToolApproval(APPROVAL_STATE, approvalFirst.approvalId, "approve");
+
+  const approvalRetry = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 600000 }
+  );
+  check(
+    "approval: shell retry ignores transport timeout in fingerprint",
+    approvalRetry.state === "allowed" &&
+      approvalRetry.approvalId === approvalFirst.approvalId
+  );
+
+  const approvalBeforeExecute = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 30000 }
+  );
+  check(
+    "approval: authorization alone does not consume approval",
+    approvalBeforeExecute.state === "allowed" &&
+      approvalBeforeExecute.approvalId === approvalFirst.approvalId
+  );
+
+  approvalBroker.consumeApproval(approvalFirst.approvalId);
+  const approvalAfterExecuteStart = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: manager.currentRoot(), timeoutMs: 30000 }
+  );
+  check(
+    "approval: consumed approval is single-use after execution begins",
+    approvalAfterExecuteStart.state === "approval_required" &&
+      approvalAfterExecuteStart.approvalId !== approvalFirst.approvalId
+  );
+
+  const preflightCwd = path.join(manager.currentRoot(), "approval-preflight");
+  await fs.mkdir(preflightCwd, { recursive: true });
+  const preflightRequest = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: preflightCwd, timeoutMs: 90000 }
+  );
+  check(
+    "approval: preflight fixture requests confirmation",
+    preflightRequest.state === "approval_required"
+  );
+  if (preflightRequest.state !== "approval_required") {
+    throw new Error("FAIL approval: expected preflight approval request");
+  }
+  decideToolApproval(APPROVAL_STATE, preflightRequest.approvalId, "approve");
+
+  await fs.rm(preflightCwd, { recursive: true, force: true });
+  let preflightFailed = false;
+  try {
+    await approvalBroker.preflight(
+      "shell_run",
+      { command: "python script.py", cwd: preflightCwd, timeoutMs: 90000 }
+    );
+  } catch {
+    preflightFailed = true;
+  }
+  check(
+    "approval: local shell preflight can fail before consumption",
+    preflightFailed
+  );
+
+  await fs.mkdir(preflightCwd, { recursive: true });
+  const preflightRetry = await approvalBroker.authorize(
+    "shell_run",
+    { command: "python script.py", cwd: preflightCwd, timeoutMs: 600000 }
+  );
+  check(
+    "approval: preflight failure preserves approved request for retry",
+    preflightRetry.state === "allowed" &&
+      preflightRetry.approvalId === preflightRequest.approvalId
+  );
+  approvalBroker.consumeApproval(preflightRequest.approvalId);
 
   await writeTextFile("marker.txt", "A", manager.currentRoot());
   check("workspace: relative file write/read uses active root",
@@ -108,6 +217,23 @@ try {
     manager.currentRoot()
   );
   check("workspace: shell follows switch", shellB.stdout.includes("workspace-b"), shellB.stdout);
+
+  const dynamicView = manager.setSessionRoot(DYNAMIC_OUTSIDE);
+  check(
+    "workspace: local Operator selection can replace Runtime root outside startup allowed roots",
+    dynamicView.id === "operator-session" && manager.currentRoot() === path.resolve(DYNAMIC_OUTSIDE)
+  );
+  await writeTextFile("dynamic.txt", "dynamic", manager.currentRoot());
+  check(
+    "workspace: tools follow dynamically authorized Runtime root",
+    (await readTextFile("dynamic.txt", manager.currentRoot())) === "dynamic"
+  );
+  await rejects(
+    "workspace: dynamic Runtime root still refuses access outside selected workspace",
+    () => readTextFile(path.join(WS_A, "marker.txt"), manager.currentRoot()),
+    "outside the active workspace"
+  );
+  manager.switch("b");
 
   throws("workspace: unknown id refused", () => manager.switch("missing"), "not registered");
   throws("workspace: exactly one platform-source required", () =>
@@ -159,22 +285,45 @@ try {
   check("capability: names are unique", new Set(registry.map((entry) => entry.name)).size === registry.length);
   check("capability: shell is workspace scoped", capabilityDescriptor("shell_run").scope === "workspace");
   check("capability: restart is host scoped", capabilityDescriptor("runtime_restart").scope === "host");
-  check("capability: workspace switch is platform scoped", capabilityDescriptor("workspace_switch").scope === "platform");
+  check("capability: remote workspace switch is absent",
+    !capabilityRegistry().some((entry) => entry.name === "workspace_switch"));
 
   const audit = new AuditStore(20);
-  const runtime = new ExecutionRuntime(audit, () => manager.current().id);
-  await runtime.run("workspace_current", async () => "ok");
+  const runtime = new ExecutionRuntime(
+    audit,
+    () => manager.current().id,
+    undefined,
+    undefined,
+    {
+      source: "runtime-mcp",
+      transport: "stdio",
+      runtimeSlot: "B"
+    }
+  );
+  await runtime.run(
+    "workspace_current",
+    async () => "ok",
+    undefined,
+    {
+      clientName: "foundation-client",
+      clientVersion: "1.2.3"
+    }
+  );
   try {
-    await runtime.run("workspace_switch", async () => {
+    await runtime.run("fs_write", async () => {
       throw new Error("synthetic failure");
     });
   } catch {
     // expected
   }
   try {
-    await runtime.run("workspace_switch", {
+    await runtime.run("fs_write", {
       authorize: () => { throw new AuthorizationError("synthetic policy denial"); },
-      execute: async () => "unreachable"
+      execute: async () => "unreachable",
+      authorizationContext: () => ({
+        approvalId: "approval-test",
+        operation: "synthetic-write"
+      })
     });
   } catch {
     // expected
@@ -192,13 +341,19 @@ try {
   check("runtime: success record exists",
     recent.some((event) => event.capability === "workspace_current" && event.state === "succeeded"));
   check("runtime: failure record exists",
-    recent.some((event) => event.capability === "workspace_switch" && event.state === "failed"));
+    recent.some((event) => event.capability === "fs_write" && event.state === "failed"));
   check("runtime: policy errors classified",
     recent.some((event) =>
-      event.capability === "workspace_switch" &&
+      event.capability === "fs_write" &&
       event.errorCategory === "policy" &&
       event.phase === "authorize" &&
       event.recoveryHint === "human"));
+  check("audit: approval correlation survives authorization failure",
+    recent.some((event) =>
+      event.capability === "fs_write" &&
+      event.errorCategory === "policy" &&
+      event.approvalId === "approval-test" &&
+      event.authorizationOperation === "synthetic-write"));
   check("runtime: timeout errors classified",
     recent.some((event) =>
       event.capability === "workspace_current" &&
@@ -207,10 +362,24 @@ try {
       event.recoveryHint === "retry"));
   check("runtime: generic tool errors classified",
     recent.some((event) =>
-      event.capability === "workspace_switch" &&
+      event.capability === "fs_write" &&
       event.errorCategory === "tool" &&
       event.phase === "execute"));
   check("audit: records carry workspace id", recent.every((event) => event.workspaceId === "b"));
+  const attributed = recent.find((event) => event.capability === "workspace_current" && event.state === "succeeded");
+  check(
+    "audit: records carry invocation source and runtime slot",
+    attributed?.source === "runtime-mcp" &&
+      attributed?.transport === "stdio" &&
+      attributed?.runtimeSlot === "B",
+    JSON.stringify(attributed)
+  );
+  check(
+    "audit: per-call MCP client identity is recorded",
+    attributed?.clientName === "foundation-client" &&
+      attributed?.clientVersion === "1.2.3",
+    JSON.stringify(attributed)
+  );
   check("audit: one final record per execution id",
     new Set(recent.map((event) => event.id)).size === recent.length,
     JSON.stringify(recent));
@@ -243,4 +412,5 @@ try {
   console.log(`FOUNDATION_OK (${checks} checks)`);
 } finally {
   await fs.rm(FIXTURE, { recursive: true, force: true }).catch(() => undefined);
+  await fs.rm(DYNAMIC_OUTSIDE, { recursive: true, force: true }).catch(() => undefined);
 }

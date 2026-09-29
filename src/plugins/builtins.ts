@@ -1,13 +1,9 @@
 import type { ApplicationPlugin } from "../plugin/types.js";
-import { matlabPlugin } from "./matlab/plugin.js";
+import { LOCAL_PLUGINS } from "./catalog.js";
 
 /**
- * Explicitly compiled-in plugins only.
+ * Backward-compatible assembly name for the current P05 boot path.
  *
- * P05 intentionally does not scan directories or import arbitrary paths as executable
- * plugins. Adding a new built-in plugin is a reviewed source change until a signed or
- * otherwise authenticated external plugin distribution model exists.
+ * Plugin-specific imports live in ./catalog.ts, not in P05 Core.
  */
-export const BUILTIN_PLUGINS: readonly ApplicationPlugin[] = [
-  matlabPlugin
-];
+export const BUILTIN_PLUGINS: readonly ApplicationPlugin[] = LOCAL_PLUGINS;

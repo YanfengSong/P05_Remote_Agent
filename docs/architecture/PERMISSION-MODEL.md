@@ -1,6 +1,6 @@
 # P05 Permission and Self-Development Model
 
-Updated: 2026-09-20
+Updated: 2026-09-23
 Foundation: V2
 
 ## Core rule
@@ -13,8 +13,8 @@ Foundation: V2
 
 - discovery: identity/health;
 - readonly: Workspace/control inspection and bounded read operations;
-- developer: Workspace mutation, local Git mutation, platform validation, trusted shell, restart request and downstream discovery;
-- full: external Git push and generic downstream execution.
+- developer: Workspace mutation, local Git mutation, permission-gated platform validation/restart, downstream discovery and brokered `shell_run`;
+- full: developer + external Git push and generic downstream execution.
 
 Unknown profiles fail closed and suppressed tools are not advertised.
 
@@ -60,28 +60,39 @@ It does not retain raw command text, file content or raw arguments.
 
 An execution left running across restart is marked interrupted.
 
-### 7. External host broker
+### 7. Runtime lifecycle and host authority
 
-Host-level actions should use narrow externally provisioned brokers.
+`runtime_restart` is a narrow Runtime lifecycle operation. It resolves the
+current Runtime slot and invokes the fixed repo-local
+`scripts/deployment/request-restart-runtime-slot.ps1` path, which schedules a
+delayed detached restart of that slot only.
 
-Current example:
+It is not a generic host command broker and it accepts no caller-supplied
+command, path, task name, credential or elevation parameter.
 
-    schtasks.exe /Run /TN P05-RestartBroker
+The historical `P05-RestartBroker` Scheduled Task is retired and is not
+required by the normal Runtime path.
 
-The Agent cannot choose another task or rewrite the broker through the structured developer surface.
+Broader host/system mutation (services, firewall, registry, system packages,
+privileged configuration) remains outside ordinary structured developer
+authority and continues to require explicit approval, an external broker, or a
+stronger OS execution boundary as appropriate.
 
 ## Operation classes
 
-| Class | Examples | Normal authority |
+Foundation V2 separates profile exposure from call-time permission. The Tool Profile determines whether a capability may be exposed at all; the common Tool Permission Broker then returns ALLOW / CONFIRM / DENY for the concrete call.
+
+| Class | Examples | V2 call-time policy |
 |---|---|---|
-| Observe | fs_read, fs_list, git_status, activity_recent | readonly |
-| Workspace mutate | fs_write, apply_patch, git_add, git_commit, git_branch | developer |
-| Platform execute | command_run(check/build/verify) | developer, fixed platform-source |
-| Trusted terminal | shell_run | developer; cwd-confined only, not sandboxed |
-| Host lifecycle | runtime_restart | developer + external broker |
-| External remote mutate | git_push | full |
-| Generic downstream execute | mcp_call_tool | full |
-| Host/system mutate | services, firewall, registry, system packages | approval/broker |
+| Observe | fs_read, fs_list, git_status, activity_recent | ALLOW |
+| Workspace mutate | fs_write, apply_patch, git_add, git_commit, git_branch | ALLOW through existing structured Workspace guard |
+| Platform execute | command_run(check/build/verify) | CONFIRM |
+| Shell | shell_run | small Workspace-safe allowlist; otherwise CONFIRM; catastrophic patterns DENY |
+| Runtime lifecycle | runtime_restart | CONFIRM |
+| External remote mutate | git_push | CONFIRM when exposed by full profile |
+| Generic downstream execute | mcp_call_tool | CONFIRM when exposed by full profile |
+| MATLAB/Simulink downstream | matlab.call_tool | known read-only subtools ALLOW; mutation/code execution CONFIRM |
+| Host/system mutate | services, firewall, registry, system packages | DENY or explicit broker; not ordinary V2 developer authority |
 
 ## Git rules
 
@@ -107,26 +118,19 @@ The Agent cannot choose another task or rewrite the broker through the structure
 - no force;
 - no arbitrary refspec.
 
-## Shell exception
+## Common Tool Permission boundary
 
-`shell_run` is intentionally broader than structured tools.
+All normal Core and Plugin tool registrations pass through the V2 common Tool Permission Broker defined by ADR-0020.
 
-P05 enforces the starting cwd against the active Workspace. It does **not** claim that PowerShell itself is confined there.
+The Broker evaluates the concrete call as ALLOW / CONFIRM / DENY after Tool Profile exposure has already succeeded. CONFIRM creates a Runtime-private Local Operator request bound to Runtime slot, active Workspace, capability, operation and exact canonicalized arguments. Approval expires after 15 minutes and is consumed before one execution.
 
-Therefore the operating requirement:
+`shell_run` is one consumer of this common Broker. Its policy adapter intentionally remains small: recognized Workspace-safe reads and a small set of explicit Workspace-local file operations may auto-run; complex, arbitrary or external execution requires CONFIRM; catastrophic disk/root destructive patterns are DENY. Shell parsing is not treated as a general sandbox.
 
-> Persistent modification outside the authorized Workspace requires explicit user approval.
+`command_run`, `runtime_restart`, `git_push`, generic `mcp_call_tool`, and mutating/arbitrary-code MATLAB downstream tools are confirmation-gated in V2. Known MATLAB/Simulink read-only subtools are allowed directly.
 
-is a behavior/approval contract, not an OS sandbox.
+Structured Workspace tools keep their existing path guards. The Permission Broker does not replace Workspace/Reference authorization.
 
-If that rule must become technically unavoidable, use:
-- restricted account;
-- container/dev container;
-- VM;
-- dedicated worker;
-- external execution broker.
-
-Do not attempt to simulate a sandbox with a larger command blacklist.
+OS-level Sandbox, immutable runner and unified hard execution boundary remain V3 requirements.
 
 ## Plugin permissions
 
@@ -156,8 +160,10 @@ Remote push remains a separate elevated action.
 
 ## Related decisions
 
-- ADR-0007: External Restart Broker
-- ADR-0008: Developer Shell Trust Model
+- ADR-0007: External Restart Broker (Retired / Superseded by repo-local slot restart)
+- ADR-0008: Developer Shell Trust Model (retired)
+- ADR-0019: Workspace-Aware Shell Approval Gate (superseded by common V2 Broker; Shell safety requirements retained)
+- ADR-0020: V2 Common Tool Permission Broker
 - ADR-0009: Foundation V1
 - ADR-0010: Foundation V2
 - ADR-0011: Core / Plugin Framework Boundary

@@ -1,13 +1,15 @@
 ﻿# Project Status
 
-Updated: 2026-09-20
+Updated: 2026-09-23
 
 ## Baseline
 
 Version: **0.3.1**
-Branch: **main**
 Repository: **YanfengSong/P05_Remote_Agent**
-Milestone: **Foundation V2 operational**
+Release integration target: **develop -> main**
+Review-fix staging branch: **plugins**
+Main merge: **pending external-review closure**
+Milestone: **Foundation V2 operational / final integration review closure**
 
 P05 is now a multi-Workspace remote engineering Agent platform rather than a tool collection tied to the P05 source directory.
 
@@ -53,6 +55,13 @@ Descriptors carry:
 - optional gate.
 
 Application-plugin capabilities are declared in their plugin manifest and merged into the session catalog.
+
+V2 call-time permission is now centralized through the common Tool Permission Broker (ADR-0020):
+- `ALLOW` — execute immediately;
+- `CONFIRM` — Local Operator one-time approval;
+- `DENY` — refuse the operation.
+
+The Broker is a permission-subsystem refactor only; Runtime A/B, Workspace, Reference, Plugin and Downstream architectures are unchanged.
 
 ### Registration
 
@@ -105,13 +114,14 @@ All current Core MCP tools advertise object-root `outputSchema` and return match
 Legacy text content is retained for compatibility.
 
 Regression:
-- `OUTPUT_SCHEMA_OK (71 checks)`;
-- full + temporary tool surface is checked for output schemas;
+- `OUTPUT_SCHEMA_OK (177 checks)`;
+- the current exposed Core tool surface is checked for output schemas;
+- every Core tool's MCP `ToolAnnotations` is verified against Capability Catalog risk/scope metadata at the real `tools/list` protocol boundary;
 - representative tools are called and verified to return structured objects.
 
 ### Operator Console
 
-V2 local Operator Console is implemented on the `feat/v2-operator-console` branch.
+V2 local Operator Console is integrated into the current Foundation V2 baseline.
 
 Implemented:
 - independent loopback GUI process on `127.0.0.1:56301`;
@@ -119,18 +129,18 @@ Implemented:
 - GUI survives P05 MCP/Tunnel restart;
 - local token-protected control bridge from MCP runtime to GUI;
 - live Workspace selection;
-- Runtime/Tunnel/MCP/process status;
-- structured Git visibility;
-- Plugin/downstream visibility;
+- Runtime A/B-independent Runtime, Workspace, MCP and Tunnel status;
+- Runtime A/B-independent structured Git visibility;
+- Runtime A/B-independent Plugin/downstream visibility;
 - persistent Audit/Recovery;
 - memory-only sanitized Live Activity;
 - MCP capability/exposure visibility;
 - one-click local launcher.
 
 Current automated regression:
-- `OPERATOR_CONSOLE_OK (16 checks)`.
+- `OPERATOR_CONSOLE_OK (68 checks)`.
 
-Current V2+Operator validation baseline: **602 minimum explicit checks**; hosts with the NTFS 8.3 short-name probe execute **603**. Build/typecheck and downstream smoke are additional gates.
+Latest external-review-closure validation on this host executes **850 explicit assertions** across policy, exposure, HTTP Reviewer, Foundation, Git mutation, Operator, output-schema and plugin suites. Build/typecheck and downstream smoke are additional gates.
 
 ### Plugins / Downstream
 
@@ -162,20 +172,17 @@ Workspace switching changes active-bound downstream context and triggers reconne
 
 ### developer
 - all readonly capabilities
-- workspace_switch
 - fs_write / apply_patch
 - git_add / git_commit / git_branch
 - command_run
 - runtime_restart
 - mcp_status / mcp_list_tools
-- shell_run
+- shell_run (common Tool Permission Broker; small allowlist, CONFIRM for complex/arbitrary execution, DENY for catastrophic patterns)
 
 ### full
 - all developer capabilities
 - git_push
 - mcp_call_tool
-
-Temporary read-only migration tools remain gated by `P05_TEMP_READONLY_ROOT`.
 
 ## Git mutation
 
@@ -191,37 +198,45 @@ Implemented and tested:
 
 No structured force push or arbitrary refspec is exposed.
 
-## Shell boundary
+## Permission / Shell boundary
 
-`shell_run` follows the trusted-terminal model.
+ADR-0020 replaces the Shell-specific approval subsystem with one common Tool Permission Broker.
 
-Technical boundary:
-- initial cwd must be inside active Workspace.
+Current V2 behavior:
+- structured read and Workspace-local structured mutation remain low-friction `ALLOW` paths;
+- `command_run`, `runtime_restart`, `git_push`, generic downstream execution, and mutating/arbitrary-code MATLAB tools are `CONFIRM`;
+- known MATLAB/Simulink read-only subtools are `ALLOW`;
+- `shell_run` uses a small Workspace-safe allowlist, `CONFIRM` for complex/arbitrary execution, and `DENY` for catastrophic disk/root destructive patterns;
+- approval is bound to exact Runtime + Workspace + Tool + Operation + canonicalized arguments;
+- approval expires after 15 minutes and is consumed before one execution.
 
-Not a technical boundary:
-- the PowerShell command itself can use Windows-user authority outside that Workspace.
-
-Operating rule:
-- persistent outside-Workspace changes require explicit user approval unless an external broker pre-authorizes them.
-
-Hard technical shell confinement requires OS isolation.
+The Runtime cannot approve its own request. Shell uses the same common permission envelope and Tool Approval store as the other sensitive capabilities; it no longer owns a separate approval contract.
 
 ## Validation
 
-Latest full verification:
+Latest full verification after the current permission refactor:
 
     ACTION verify                 PASS
-    ACTION check                  PASS
+    Runtime B audit state         succeeded
+    Runtime B verify duration     ~67.8 s
+
+Latest targeted permission regression:
+
     ACTION build                  PASS
-    DOWNSTREAM_SMOKE_OK           PASS
-    POLICY_PROFILES_OK            240 checks
-    PROFILE_EXPOSURE_OK           161-162 checks
-    TEMP_READONLY_OK              49 checks
-    FOUNDATION_OK                 35 checks
-    GIT_MUTATIONS_OK              13 checks
-    PLUGIN_FRAMEWORK_OK           17 checks
-    OUTPUT_SCHEMA_OK              71 checks
-    OPERATOR_CONSOLE_OK           16 checks
+    POLICY_PROFILES_OK            264 checks
+    PROFILE_EXPOSURE_OK           195 checks
+    OPERATOR_CONSOLE_OK           68 checks
+    OUTPUT_SCHEMA_OK              176 checks
+    PLUGIN_FRAMEWORK_OK           35 checks
+
+Live Tool Approval acceptance:
+
+    Runtime B                    PASS
+    Runtime A                    PASS
+
+Both live Runtime checks verified: CONFIRM before execution -> Local Operator
+one-time approval -> exact retry executes -> approval consumed before execution ->
+subsequent identical call creates a new approval request.
 
 Key V2 acceptance verified:
 - cross-Workspace absolute structured write refused;
@@ -242,11 +257,9 @@ Key V2 acceptance verified:
 
 ## Remaining foundation boundary
 
-The major residual security boundary is arbitrary shell.
+V2 now has a common Tool Permission Broker, but it is not an OS sandbox.
 
-P05 intentionally does not pretend a command blacklist can sandbox PowerShell.
-
-A future Approval/Execution Broker or OS-isolated worker can add hard containment without changing the Foundation V2 contracts.
+The remaining hard-containment gaps are arbitrary-code isolation, a unified hard execution boundary, and trusted/immutable build-test-restart runners. These are V3 requirements. P05 intentionally does not expand the V2 Shell parser or Permission Broker into a substitute for those mechanisms.
 
 ## Architecture V3 research baseline
 
@@ -268,11 +281,17 @@ The research-backed target adds:
 V3-A remains one possible early implementation slice and MUST conform to the complete V3 contracts rather than define
 or narrow them.
 
-## Working tree
+## Integration / working tree
 
-Foundation V1, Git mutation and Foundation V2 work are still part of the current uncommitted working tree.
+The previously validated feature integration is already represented in `develop`;
+`main` has not yet been updated.
 
-`main` was already ahead of `origin/main` before this sequence. Review commit history before push.
+Current external-review closure fixes are being staged on `plugins` and must be
+re-integrated into `develop` after all blocking findings are closed and the full
+verification suite passes again.
+
+Do not infer release readiness from the checked-out branch name alone. The release
+gate is the verified `develop -> main` integration state.
 ## Plugin architecture references
 
 - `docs/architecture/PLUGIN-FRAMEWORK.md`
