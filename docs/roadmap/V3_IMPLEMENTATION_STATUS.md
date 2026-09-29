@@ -1,3 +1,10 @@
+> **2026-09-29 验证门禁补强**
+>
+> - verify:v3 现定义为统一本机源代码门禁：类型检查、单次构建、V2 完整兼容回归、V3 默认全套测试以及 T01–T70 追踪矩阵完整性检查。
+> - v3-component-host、v3-isolation（默认 fail-closed inventory，不自动运行 WSL POC）和 v3-terminal 已纳入统一门禁。
+> - 2026-09-29 本轮补强后的完整 verify:v3 已通过；统一门禁通过不等于完整 V3，PARTIAL/NOT_RUN 仍须按技术方案 §34 单独关闭。
+> - T01–T70 的当前证据与缺口记录在 V3_ACCEPTANCE_TRACEABILITY.md。
+>
 # V3 实施记录
 
 > **2026-09-29 最新核对（优先于下方历史更新）**
