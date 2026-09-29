@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { windowsPowerShellEnv } from "../host/windows-powershell-env.js";
 import { preflightShellExecution } from "../shell/preflight.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,6 +31,7 @@ export async function runPowerShell(
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
       {
         cwd: safeCwd,
+        env: windowsPowerShellEnv(),
         timeout: Math.min(Math.max(timeoutMs, 1000), 10 * 60 * 1000),
         windowsHide: true,
         maxBuffer: 4 * 1024 * 1024

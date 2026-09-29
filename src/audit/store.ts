@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { atomicReplaceSync } from "../state/atomic-replace.js";
 import type { AuditEvent } from "./types.js";
 
 type PersistedAudit = {
@@ -58,7 +59,7 @@ export class AuditStore {
     const payload: PersistedAudit = { version: 1, events: this.#events.slice(-this.#limit) };
     const temp = `${this.#persistencePath}.tmp-${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify(payload, null, 2) + "\n", "utf8");
-    fs.renameSync(temp, this.#persistencePath);
+    atomicReplaceSync(temp, this.#persistencePath);
   }
 
   upsert(event: AuditEvent): void {

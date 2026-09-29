@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "slotId": {
+      "type": "string",
+      "enum": [
+        "A",
+        "B"
+      ]
+    },
+    "stateDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9._-]{1,64}$"
+    },
+    "workspaceRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authorizationRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "principal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "port": {
+      "default": 0,
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "optionalRuntime": {
+      "default": true,
+      "type": "boolean"
+    },
+    "workflowCatalog": {
+      "type": "string"
+    },
+    "workflowAutoAdvance": {
+      "default": true,
+      "type": "boolean"
+    },
+    "processHostConnection": {
+      "type": "string"
+    },
+    "allowHostExecute": {
+      "default": false,
+      "type": "boolean"
+    },
+    "trustedHost": {
+      "default": false,
+      "type": "boolean"
+    },
+    "allowWrites": {
+      "default": false,
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "version",
+    "slotId",
+    "stateDir",
+    "workspaceId",
+    "workspaceRoot",
+    "authorizationRevision",
+    "principal"
+  ],
+  "additionalProperties": false,
+  "title": "P05 V3 local Core configuration",
+  "description": "Local operator-controlled configuration. Runtime also verifies absolute paths, real workspace boundaries and OS permissions."
+}

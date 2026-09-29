@@ -1,0 +1,273 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import * as z from "zod/v4";
+import { CoreRuntime } from "./core/index.js";
+import { DurableStore } from "./durable/store.js";
+import { createDurableKernel } from "./durable/kernel.js";
+import { DurableError, type Json } from "./durable/types.js";
+import { startRpcServer, type RpcRole } from "./transport/rpc.js";
+import { readV3Config } from "./config.js";
+import { verifyConfigurationProtection, verifyStateProtection } from "./protection.js";
+import { loadOrCreateToken } from "./credentials.js";
+import { createFileCapabilities, FILE_CAPABILITY_METADATA, publicRun, validateFileInput, validateFileTarget } from "./file-capabilities.js";
+import { V2OptionalHost } from "./optional/v2-host.js";
+import { createWorkflowService } from "./workflow-service.js";
+import { WorkflowError } from "./workflows/types.js";
+import { createProcessBridge, validateProcessInput } from "./process-bridge.js";
+import { createComponentBridge } from "./component-bridge.js";
+
+const id = z.string().min(1).max(160);
+const querySchema = z.object({ id }).strict();
+const submitSchema = z.object({ capability: id, input: z.json(), idempotencyKey: z.string().min(1).max(256) }).strict();
+const waitSchema = z.object({ id, afterVersion: z.number().int().nonnegative().default(0), waitMs: z.number().int().min(0).max(30000).default(1000) }).strict();
+const eventsSchema = z.object({ id, afterSequence: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(200).default(100) }).strict();
+
+/** One application per process: V2 file guards are deliberately kept at their original module boundary. */
+export async function startV3Application(configFile: string, maintenance: { recoverUncleanOwner?: { coreInstanceId: string; reason: string } } = {}) {
+  if (!(await verifyStateProtection(path.dirname(path.resolve(configFile)))).verified) throw new Error("CONFIGURATION_PARENT_PROTECTION_UNVERIFIED");
+  if (!(await verifyConfigurationProtection(configFile)).verified) throw new Error("CONFIGURATION_PROTECTION_UNVERIFIED");
+  const config = readV3Config(configFile);
+  const optional = config.optionalRuntime ? new V2OptionalHost({
+    nodeExecutable: process.execPath, entrypoint: fileURLToPath(new URL("../index.js", import.meta.url)),
+    workspaceRoot: config.workspaceRoot, slot: config.slotId, stateDir: config.stateDir,
+    profile: "readonly", capabilities: { git_status: "git_status", git_diff: "git_diff" }
+  }) : undefined;
+  const core = await CoreRuntime.start({
+    stateDir: config.stateDir, slotId: config.slotId,
+    workspaceRoots: [config.workspaceRoot], verifyProtection: verifyStateProtection,
+    ...(maintenance.recoverUncleanOwner ? { recoverUncleanOwner: maintenance.recoverUncleanOwner } : {}),
+    ...(optional ? { connectOptional: async (signal: AbortSignal) => {
+      signal.addEventListener("abort", () => { void optional.close(); }, { once: true });
+      const health = await optional.start();
+      if (health.state !== "ready") throw new Error("OPTIONAL_HOST_UNAVAILABLE");
+    } } : {})
+  });
+  const slotDir = core.state.slotDir;
+  let kernel: ReturnType<typeof createDurableKernel>["kernel"] | undefined;
+  let server: Awaited<ReturnType<typeof startRpcServer>> | undefined;
+  let workflows: Awaited<ReturnType<typeof createWorkflowService>> | undefined;
+  const release = async () => {
+    const errors: unknown[] = [];
+    try { await server?.close(); } catch (error) { errors.push(error); }
+    try { await workflows?.close(); } catch (error) { errors.push(error); }
+    try { await kernel?.close(); } catch (error) { errors.push(error); }
+    try { await optional?.close(); } catch (error) { errors.push(error); }
+    try { core.close(); } catch (error) { errors.push(error); }
+    if (errors.length) throw errors[0];
+  };
+  try {
+    // Credentials and resumable payloads are not written into an unverified shared directory.
+    if (!core.status().protection.verified) throw new Error("STATE_PROTECTION_UNVERIFIED: local setup is required");
+    const client = loadOrCreateToken(slotDir, "client");
+    const localOperator = loadOrCreateToken(slotDir, "operator");
+    if (!(await verifyStateProtection(slotDir)).verified) throw new Error("SLOT_PROTECTION_UNVERIFIED");
+    // V2 config must capture this process's fixed workspace before its first dynamic import.
+    process.env.REMOTE_AGENT_ALLOWED_ROOTS = config.workspaceRoot;
+    process.env.REMOTE_AGENT_DEFAULT_CWD = config.workspaceRoot;
+    const capabilities = await createFileCapabilities();
+    let components: Awaited<ReturnType<typeof createComponentBridge>> | undefined;
+    if (config.componentHostConnection && config.componentCapabilities.length) {
+      try {
+        components = await createComponentBridge({ connectionFile: config.componentHostConnection, slotId: config.slotId,
+          principal: config.principal, workspaceRoot: config.workspaceRoot, allowlist: config.componentCapabilities });
+        capabilities.push(...components.capabilities);
+      } catch { /* Installed components are optional, never a minimal Core startup dependency. */ }
+    }
+    let processBridge: Awaited<ReturnType<typeof createProcessBridge>> | undefined;
+    if (config.processHostConnection && config.allowHostExecute) {
+      try {
+        processBridge = await createProcessBridge({ connectionFile: config.processHostConnection,
+          slotId: config.slotId, principal: config.principal, workspaceRoot: config.workspaceRoot });
+        capabilities.push(...processBridge.capabilities);
+      } catch { /* Process dependency failure must not take the minimal Core offline. */ }
+    }
+    const validateInput = (capability: string, input: Json) => {
+      if (capability.startsWith("component:")) {
+        if (!components) throw new DurableError("DEPENDENCY_UNAVAILABLE", "Component Host unavailable");
+        components.validateInput(capability, input);
+      }
+      else if (capability === "process_run") {
+        if (!processBridge) throw new DurableError("DEPENDENCY_UNAVAILABLE", "Process Host unavailable or disabled");
+        validateProcessInput(capability, input);
+      }
+      else if (optional && capability === "git_status") z.object({}).strict().parse(input);
+      else if (optional && capability === "git_diff") z.object({ staged: z.boolean().optional() }).strict().parse(input);
+      else validateFileInput(capability, input);
+    };
+    if (optional) {
+      for (const capability of ["git_status", "git_diff"]) capabilities.push({
+        capability, capabilityVersion: "1", bindingVersion: "v2-readonly-bridge.1",
+        async execute({ input, signal }) {
+          await core.optionalSettled;
+          if (optional.health().state !== "ready") throw new DurableError("DEPENDENCY_UNAVAILABLE", "Optional runtime unavailable");
+          let call = await optional.call(capability, input as Record<string, unknown>, { waitMs: 25 });
+          while (call.state === "pending" && !signal.aborted) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+            const next = optional.callStatus(call.callId);
+            if (!next) throw new DurableError("OPTIONAL_CALL_LOST", "Optional call receipt unavailable");
+            call = next;
+          }
+          if (call.state !== "completed") throw new DurableError("OPTIONAL_OUTCOME_UNCONFIRMED", "Read-only downstream result unconfirmed");
+          if (call.result?.isError) throw new DurableError("DOWNSTREAM_TOOL_ERROR", "Read-only downstream tool failed");
+          return (call.result?.structuredContent ?? call.result ?? null) as Json;
+        }
+      });
+    }
+    const owner = { principal: config.principal, slotId: config.slotId };
+    const context = {
+      ...owner, hostId: core.state.identity.hostId, workspaceId: config.workspaceId,
+      workspaceRoot: config.workspaceRoot, authorizationRevision: config.authorizationRevision
+    };
+    const store = new DurableStore(path.join(slotDir, "runs.sqlite"));
+    const created = createDurableKernel({
+      store,
+      authorize(run, input) {
+        validateInput(run.capability, input);
+        if (!["fs_write", "process_run"].includes(run.capability)) return { decision: "ALLOW" };
+        const enabled = run.capability === "process_run" ? config.allowHostExecute : config.allowWrites;
+        if (!enabled || !config.trustedHost || !core.status().readiness.mutations) {
+          return { decision: "DENY", reason: "WORKSPACE_WRITE_NOT_AUTHORIZED" };
+        }
+        return { decision: "CONFIRM", reason: run.capability === "process_run" ? "HostExecute E4: unrestricted trusted-host process; inspect executable and args with the local Operator" : "Workspace file mutation; inspect the immutable intent with the local Operator", expiresAt: Date.now() + 15 * 60 * 1000 };
+      },
+      async revalidate(run) {
+        if (!(await verifyConfigurationProtection(configFile)).verified || !(await verifyStateProtection(path.dirname(path.resolve(configFile)))).verified) return false;
+        const current = readV3Config(configFile);
+        if (current.principal !== run.context.principal || current.slotId !== run.context.slotId ||
+            current.workspaceId !== run.context.workspaceId || current.workspaceRoot !== run.context.workspaceRoot ||
+            current.authorizationRevision !== run.context.authorizationRevision) return false;
+        if (fs.realpathSync(config.workspaceRoot) !== config.workspaceRoot) return false;
+        if (run.capability.startsWith("component:")) return current.componentHostConnection === config.componentHostConnection && current.componentCapabilities.includes(run.capability.slice("component:".length));
+        if (run.capability === "process_run") return current.allowHostExecute && current.trustedHost && current.processHostConnection === config.processHostConnection && core.status().readiness.mutations;
+        return run.capability !== "fs_write" || (current.allowWrites && current.trustedHost && core.status().readiness.mutations);
+      }
+    });
+    kernel = created.kernel;
+    const activeKernel = kernel;
+    for (const capability of capabilities) activeKernel.register(capability);
+    if (config.workflowCatalog) {
+      try {
+        workflows = await createWorkflowService({
+          // HostExecute is not part of the current Workflow Read/WorkspaceWrite authority model.
+          catalogFile: config.workflowCatalog, state: core.state, kernel: activeKernel, context, capabilities: capabilities.filter(c => c.capability !== "process_run"),
+          authority: config.allowWrites ? ["Read", "WorkspaceWrite"] : ["Read"], autoAdvance: config.workflowAutoAdvance
+        });
+      } catch { /* A broken optional catalog must leave diagnostics and recovery reachable. */ }
+    }
+    const status = () => {
+      const current = core.status();
+      const execution = activeKernel.health();
+      const dependencyUnavailable = Boolean(config.workflowCatalog && !workflows) || Boolean(config.allowHostExecute && !processBridge) || Boolean(config.componentHostConnection && config.componentCapabilities.length && !components);
+      return { ...current, mode: !execution.executionAvailable ? "LOCKED" : dependencyUnavailable && current.mode === "NORMAL" ? "DEGRADED" : current.mode,
+        readiness: { ...current.readiness, mutations: current.readiness.mutations && execution.executionAvailable }, execution,
+        optional: optional?.health() ?? null,
+        processHost: { configured: Boolean(config.processHostConnection), enabled: config.allowHostExecute, connectedAtStartup: Boolean(processBridge) },
+        workflow: { configured: Boolean(config.workflowCatalog), available: Boolean(workflows), faultCode: config.workflowCatalog && !workflows ? "WORKFLOW_CATALOG_UNAVAILABLE" : null },
+        componentHost: { configured: Boolean(config.componentHostConnection), connectedAtStartup: Boolean(components), capabilityCount: components?.capabilities.length ?? 0 },
+        features: { fileCapabilities: true, durableRuns: true, durableApprovals: true, osSandbox: false, separateExecutionHost: Boolean(processBridge), optionalPluginHost: Boolean(optional) } };
+    };
+    const handle = async (method: string, input: unknown, role: RpcRole): Promise<unknown> => {
+      try {
+        switch (method) {
+          case "workflow_list":
+          case "workflow_scheduler_status":
+          case "workflow_resume":
+          case "workflow_start":
+          case "workflow_status":
+          case "workflow_tick":
+          case "workflow_cancel": {
+            if (!workflows) throw new DurableError("DEPENDENCY_UNAVAILABLE", "No local workflow catalog configured");
+            return await workflows.handle(method, input);
+          }
+          case "core_status": return status();
+          case "capability_list": return { capabilities: [
+            ...FILE_CAPABILITY_METADATA.filter(c => c.capability !== "fs_write" || config.allowWrites),
+            ...(processBridge?.metadata ?? []),
+            ...(components?.metadata ?? []),
+            ...(optional ? [
+              { capability: "git_status", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({}).strict()) },
+              { capability: "git_diff", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({ staged: z.boolean().optional() }).strict()) }
+            ] : [])
+          ], securityMode: "trusted-host" };
+          case "execution_submit": {
+            const request = submitSchema.parse(input);
+            validateInput(request.capability, request.input as Json);
+            await validateFileTarget(request.capability, request.input as Json, config.workspaceRoot);
+            return publicRun(activeKernel.submit(context, request));
+          }
+          case "execution_status": return publicRun(activeKernel.status(owner, querySchema.parse(input).id));
+          case "execution_process_status": {
+            if (!processBridge) throw new DurableError("DEPENDENCY_UNAVAILABLE", "Process Host unavailable");
+            return await processBridge.statusForRun(activeKernel.status(owner, querySchema.parse(input).id));
+          }
+          case "execution_process_output": {
+            if (!processBridge) throw new DurableError("DEPENDENCY_UNAVAILABLE", "Process Host unavailable");
+            const request = z.object({ id, stream: z.enum(["stdout", "stderr"]).optional(), offset: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(65536).optional() }).strict().parse(input);
+            return await processBridge.outputForRun(activeKernel.status(owner, request.id), request);
+          }
+          case "execution_wait": {
+            const request = waitSchema.parse(input);
+            const result = await activeKernel.wait(owner, request.id, request.afterVersion, request.waitMs);
+            return { ...result, run: publicRun(result.run) };
+          }
+          case "execution_events": {
+            const request = eventsSchema.parse(input);
+            const events = activeKernel.events(owner, request.id, request.afterSequence, request.limit);
+            return { events, nextSequence: events.at(-1)?.sequence ?? request.afterSequence };
+          }
+          case "execution_cancel": {
+            const run = activeKernel.cancel(owner, querySchema.parse(input).id);
+            if (run.capability === "process_run" && run.state === "UNKNOWN") {
+              if (!processBridge) return { ...publicRun(run), processCancellation: { code: "DEPENDENCY_UNAVAILABLE", terminationConfirmed: false } };
+              try {
+                const process = await processBridge.cancelForRun(run);
+                return { ...publicRun(run), processCancellation: { state: process.state, receipt: process.receipt ?? null, treeTermination: "unconfirmed" } };
+              } catch { return { ...publicRun(run), processCancellation: { code: "PROCESS_CANCEL_UNCONFIRMED", terminationConfirmed: false } }; }
+            }
+            return publicRun(run);
+          }
+          case "operator_approvals": {
+            if (role !== "operator") throw new DurableError("FORBIDDEN", "Operator role required");
+            return { approvals: created.operator.pending(config.slotId).map(approval => ({
+              ...approval, run: publicRun(store.internal(approval.executionId))
+            })) };
+          }
+          case "operator_inspect": {
+            if (role !== "operator") throw new DurableError("FORBIDDEN", "Operator role required");
+            const executionId = querySchema.parse(input).id;
+            const run = store.internal(executionId);
+            if (run.context.slotId !== config.slotId) throw new DurableError("FORBIDDEN", "Wrong Slot");
+            return { run, input: store.input(executionId) };
+          }
+          case "operator_decide": {
+            if (role !== "operator") throw new DurableError("FORBIDDEN", "Operator role required");
+            const request = z.object({ approvalId: id, expectedDecisionVersion: z.number().int().nonnegative(), decision: z.enum(["APPROVE", "DENY"]) }).strict().parse(input);
+            return publicRun(created.operator.decide({ ...request, actor: "authenticated-local-operator" }));
+          }
+          default: throw new DurableError("UNKNOWN_METHOD", "Unsupported operation");
+        }
+      } catch (error) {
+        // Safe domain codes are data; transport failures remain distinct from execution outcomes.
+        if (error instanceof DurableError || error instanceof WorkflowError) return { error: { code: error.code } };
+        if (error instanceof z.ZodError) return { error: { code: "INVALID_ARGUMENT" } };
+        throw error;
+      }
+    };
+    server = await startRpcServer({ clientToken: client.token, operatorToken: localOperator.token, handle, port: config.port });
+    core.setConnectionState("connected");
+    const connection = { endpoint: server.url, slotId: config.slotId, clientTokenFile: client.file };
+    fs.writeFileSync(path.join(slotDir, "connection.json"), JSON.stringify(connection, null, 2) + "\n", { mode: 0o600 });
+    let closing: Promise<void> | undefined;
+    return {
+      ...connection, operatorTokenFile: localOperator.file,
+      status,
+      close(): Promise<void> {
+        return closing ??= release();
+      }
+    };
+  } catch (error) {
+    await release().catch(() => undefined);
+    throw error;
+  }
+}
