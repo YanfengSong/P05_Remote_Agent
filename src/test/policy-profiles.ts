@@ -298,6 +298,22 @@ const { permissionDecision } = await import("../policy/permission.js");
   );
   check("permission: arbitrary shell execution defaults CONFIRM", unknownShell.mode === "confirm");
 
+  const rawSsh = await permissionDecision(
+    "shell_run",
+    { command: "ssh example-host uptime", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: generic SSH execution remains CONFIRM", rawSsh.mode === "confirm");
+
+  const sshForward = await permissionDecision(
+    "shell_run",
+    { command: "ssh -L 9000:localhost:9000 example-host", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: SSH forwarding remains CONFIRM", sshForward.mode === "confirm");
+
   const destructiveShell = await permissionDecision(
     "shell_run",
     { command: "Clear-Disk -Number 0", cwd: workspaceRoot },

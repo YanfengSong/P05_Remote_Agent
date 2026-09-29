@@ -865,16 +865,34 @@ for (const scenario of scenarios) {
     );
 
     await fs.rm(outsideFile, { force: true });
-    const secondApprovalId = await requestShellConfirmation(
-      outsideCommand,
-      "developer shell: consumed Tool Approval cannot be reused"
+    const immediateReplay = await outcome(() =>
+      session.client.callTool({
+        name: "shell_run",
+        arguments: { command: outsideCommand, cwd: ROOT }
+      })
     );
     check(
-      "developer shell: consumed approval creates a new Tool Approval request",
+      "developer shell: immediate replay after consumed approval is suppressed",
+      immediateReplay.failed &&
+        immediateReplay.message.includes("PERMISSION_CONFIRM_ALREADY_USED") &&
+        immediateReplay.message.includes(`approvalId: ${approvalId}`)
+    );
+    check(
+      "developer shell: suppressed immediate replay has no side effect",
+      !(await pathExists(outsideFile))
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5_200));
+    const secondApprovalId = await requestShellConfirmation(
+      outsideCommand,
+      "developer shell: intentional later retry requires a new approval"
+    );
+    check(
+      "developer shell: replay guard expiry creates a new Tool Approval request",
       secondApprovalId !== approvalId
     );
     check(
-      "developer shell: retry after approval consumption has no side effect",
+      "developer shell: later retry before second approval has no side effect",
       !(await pathExists(outsideFile))
     );
 

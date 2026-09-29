@@ -41,6 +41,8 @@ const auditEventSchema = z.object({
   principal: z.string().optional(),
   clientName: z.string().optional(),
   clientVersion: z.string().optional(),
+  approvalId: z.string().optional(),
+  authorizationOperation: z.string().optional(),
   state: z.enum(["running", "succeeded", "failed"]),
   phase: z.enum(["prepare", "authorize", "execute", "verify", "complete"]),
   startedAt: z.string(),

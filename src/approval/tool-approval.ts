@@ -5,6 +5,7 @@ import path from "node:path";
 export type ToolApprovalStatus =
   | "pending"
   | "approved"
+  | "executing"
   | "denied"
   | "consumed";
 
@@ -25,11 +26,13 @@ export type ToolApprovalRecord = {
   requestedAt: string;
   expiresAt: string;
   decisionAt?: string;
+  executingAt?: string;
   consumedAt?: string;
 };
 
 const APPROVAL_TTL_MS = 15 * 60 * 1000;
 const RETENTION_MS = 60 * 60 * 1000;
+const RECENT_CONSUMED_REPLAY_GUARD_MS = 5 * 1000;
 
 function approvalDir(stateDir: string): string {
   return path.join(stateDir, "tool-approvals");
@@ -75,7 +78,7 @@ function readRecord(target: string): ToolApprovalRecord | undefined {
       (value.inputSummary !== undefined && typeof value.inputSummary !== "string") ||
       typeof value.purpose !== "string" ||
       typeof value.reason !== "string" ||
-      !["pending", "approved", "denied", "consumed"].includes(String(value.status)) ||
+      !["pending", "approved", "executing", "denied", "consumed"].includes(String(value.status)) ||
       typeof value.requestedAt !== "string" ||
       typeof value.expiresAt !== "string"
     ) {
@@ -153,6 +156,18 @@ export function toolApprovalFingerprint(input: {
 export type ToolApprovalGate =
   | { state: "approved"; approvalId: string }
   | {
+      state: "executing";
+      approvalId: string;
+      reason: string;
+      purpose: string;
+    }
+  | {
+      state: "recently_consumed";
+      approvalId: string;
+      reason: string;
+      purpose: string;
+    }
+  | {
       state: "pending";
       approvalId: string;
       reason: string;
@@ -182,17 +197,31 @@ export function gateToolApproval(
   const fingerprint = toolApprovalFingerprint(input);
   const now = Date.now();
   const matching = records(stateDir).filter(
-    (record) =>
-      record.fingerprint === fingerprint &&
-      Date.parse(record.expiresAt) > now
+    (record) => record.fingerprint === fingerprint
   );
+  const unexpired = (record: ToolApprovalRecord): boolean =>
+    Date.parse(record.expiresAt) > now;
 
-  const approved = matching.find((record) => record.status === "approved");
+  const approved = matching.find(
+    (record) => record.status === "approved" && unexpired(record)
+  );
   if (approved) {
     return { state: "approved", approvalId: approved.id };
   }
 
-  const denied = matching.find((record) => record.status === "denied");
+  const executing = matching.find((record) => record.status === "executing");
+  if (executing) {
+    return {
+      state: "executing",
+      approvalId: executing.id,
+      reason: executing.reason,
+      purpose: executing.purpose
+    };
+  }
+
+  const denied = matching.find(
+    (record) => record.status === "denied" && unexpired(record)
+  );
   if (denied) {
     return {
       state: "denied",
@@ -202,13 +231,31 @@ export function gateToolApproval(
     };
   }
 
-  const pending = matching.find((record) => record.status === "pending");
+  const pending = matching.find(
+    (record) => record.status === "pending" && unexpired(record)
+  );
   if (pending) {
     return {
       state: "pending",
       approvalId: pending.id,
       reason: pending.reason,
       purpose: pending.purpose
+    };
+  }
+
+  const recentlyConsumed = matching.find((record) => {
+    if (record.status !== "consumed" || !record.consumedAt) return false;
+    const consumedAt = Date.parse(record.consumedAt);
+    return Number.isFinite(consumedAt) &&
+      now - consumedAt >= 0 &&
+      now - consumedAt <= RECENT_CONSUMED_REPLAY_GUARD_MS;
+  });
+  if (recentlyConsumed) {
+    return {
+      state: "recently_consumed",
+      approvalId: recentlyConsumed.id,
+      reason: recentlyConsumed.reason,
+      purpose: recentlyConsumed.purpose
     };
   }
 
@@ -243,7 +290,7 @@ export function gateToolApproval(
   };
 }
 
-export function consumeToolApproval(
+export function beginToolApprovalExecution(
   stateDir: string,
   id: string
 ): ToolApprovalRecord {
@@ -255,6 +302,27 @@ export function consumeToolApproval(
   }
   if (record.status !== "approved") {
     throw new Error(`Tool approval request is not approved (status=${record.status}).`);
+  }
+
+  const executing: ToolApprovalRecord = {
+    ...record,
+    status: "executing",
+    executingAt: new Date().toISOString()
+  };
+  writeAtomic(target, executing);
+  return executing;
+}
+
+export function finishToolApprovalExecution(
+  stateDir: string,
+  id: string
+): ToolApprovalRecord {
+  const target = recordPath(stateDir, id);
+  const record = readRecord(target);
+  if (!record) throw new Error("Tool approval request not found.");
+  if (record.status === "consumed") return record;
+  if (record.status !== "executing") {
+    throw new Error(`Tool approval request is not executing (status=${record.status}).`);
   }
 
   const consumed: ToolApprovalRecord = {
@@ -302,7 +370,6 @@ export function decideToolApproval(
   writeAtomic(target, next);
   return next;
 }
-
 
 export type ToolApprovalPublicFields = {
   approvalId: string;

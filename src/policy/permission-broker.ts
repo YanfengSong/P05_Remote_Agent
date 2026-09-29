@@ -1,11 +1,13 @@
 import path from "node:path";
 import type { CapabilityCatalog } from "../capability/registry.js";
 import {
-  consumeToolApproval,
+  beginToolApprovalExecution,
+  finishToolApprovalExecution,
   gateToolApproval,
   type ToolApprovalGate,
   type ToolApprovalPublicFields
 } from "../approval/tool-approval.js";
+import { preflightShellExecution } from "../shell/preflight.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { permissionDecision } from "./permission.js";
 
@@ -22,6 +24,14 @@ export type PermissionAuthorization =
     } & ToolApprovalPublicFields)
   | ({
       state: "approval_denied";
+      decision: "confirm";
+    } & ToolApprovalPublicFields)
+  | ({
+      state: "approval_in_progress";
+      decision: "confirm";
+    } & ToolApprovalPublicFields)
+  | ({
+      state: "approval_recently_consumed";
       decision: "confirm";
     } & ToolApprovalPublicFields)
   | {
@@ -146,24 +156,7 @@ export class ToolPermissionBroker {
       };
     }
 
-    if (gate.state === "denied") {
-      return {
-        state: "approval_denied",
-        decision: "confirm",
-        approvalId: gate.approvalId,
-        slot: runtimeSlot,
-        workspaceId: workspace.id,
-        capability,
-        operation: decision.operation,
-        ...(decision.inputSummary ? { inputSummary: decision.inputSummary } : {}),
-        purpose: gate.purpose,
-        reason: gate.reason
-      };
-    }
-
-    return {
-      state: "approval_required",
-      decision: "confirm",
+    const common = {
       approvalId: gate.approvalId,
       slot: runtimeSlot,
       workspaceId: workspace.id,
@@ -173,10 +166,69 @@ export class ToolPermissionBroker {
       purpose: gate.purpose,
       reason: gate.reason
     };
+
+    if (gate.state === "denied") {
+      return {
+        state: "approval_denied",
+        decision: "confirm",
+        ...common
+      };
+    }
+
+    if (gate.state === "executing") {
+      return {
+        state: "approval_in_progress",
+        decision: "confirm",
+        ...common
+      };
+    }
+
+    if (gate.state === "recently_consumed") {
+      return {
+        state: "approval_recently_consumed",
+        decision: "confirm",
+        ...common
+      };
+    }
+
+    return {
+      state: "approval_required",
+      decision: "confirm",
+      ...common
+    };
   }
 
-  consumeApproval(approvalId: string): void {
-    consumeToolApproval(this.options.stateDir, approvalId);
+  async preflight(capability: string, args: unknown): Promise<void> {
+    if (
+      capability !== "shell_run" ||
+      !args ||
+      typeof args !== "object" ||
+      Array.isArray(args)
+    ) {
+      return;
+    }
+
+    const input = args as Record<string, unknown>;
+    const command =
+      typeof input.command === "string" ? input.command : "";
+    const cwd =
+      typeof input.cwd === "string" && input.cwd.trim()
+        ? input.cwd
+        : undefined;
+
+    await preflightShellExecution(
+      command,
+      this.options.workspaceManager.currentRoot(),
+      cwd
+    );
+  }
+
+  beginApprovalExecution(approvalId: string): void {
+    beginToolApprovalExecution(this.options.stateDir, approvalId);
+  }
+
+  finishApprovalExecution(approvalId: string): void {
+    finishToolApprovalExecution(this.options.stateDir, approvalId);
   }
 }
 
@@ -200,7 +252,20 @@ export function permissionErrorMessage(
   const header =
     authorization.state === "approval_required"
       ? "PERMISSION_CONFIRM_REQUIRED"
-      : "PERMISSION_CONFIRM_DENIED";
+      : authorization.state === "approval_denied"
+        ? "PERMISSION_CONFIRM_DENIED"
+        : authorization.state === "approval_in_progress"
+          ? "PERMISSION_CONFIRM_IN_PROGRESS"
+          : "PERMISSION_CONFIRM_ALREADY_USED";
+
+  const guidance =
+    authorization.state === "approval_required"
+      ? "Approve this request in the Local Operator. Compatible clients may resume it automatically; otherwise retry the same tool call once."
+      : authorization.state === "approval_in_progress"
+        ? "An identical approved call is already executing. Do not create or approve a duplicate request; inspect the original call instead."
+        : authorization.state === "approval_recently_consumed"
+          ? "An identical approved call completed moments ago. Do not retry automatically; issue a new call only if re-execution is intentionally required."
+          : undefined;
 
   return [
     header,
@@ -212,10 +277,6 @@ export function permissionErrorMessage(
     ...(authorization.inputSummary ? [`inputSummary: ${authorization.inputSummary}`] : []),
     `purpose: ${authorization.purpose}`,
     `reason: ${authorization.reason}`,
-    ...(authorization.state === "approval_required"
-      ? [
-          "Approve this request in the Local Operator. Compatible clients may resume it automatically; otherwise retry the same tool call once."
-        ]
-      : [])
+    ...(guidance ? [guidance] : [])
   ].join("\n");
 }
