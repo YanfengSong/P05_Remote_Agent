@@ -1,8 +1,9 @@
 # P05 V2 Deployment Hardening Plan
 
 Status: APPROVED FOR IMPLEMENTATION  
-Branch: `v2-deployment-hardening`  
-Baseline: `7a8bf99`  
+Active branch: `V2`  
+Historical implementation branch: `v2-deployment-hardening`  
+Current V2 baseline before this update: `66b81d3`  
 Scope: V2 deployment/core stabilization only
 
 Implementation status:
@@ -13,7 +14,7 @@ Phase 2  Preflight / dependency check       COMPLETE
 Phase 3  Network / proxy adaptation         COMPLETE
 Phase 4  Core bootstrap verification        PENDING
 Phase 5  Doctor                             POST-DEPLOYMENT
-Phase 6  Operator health semantics          POST-DEPLOYMENT
+Phase 6  Operator health semantics          PARTIAL — topology contract COMPLETE
 ```
 
 ## 1. Objective
@@ -431,11 +432,20 @@ An optional capability failure must not retroactively invalidate a healthy deplo
 
 Operator remains an operational surface after Core deployment.
 
-For an unconfigured slot:
+The configured/unconfigured Runtime topology contract is implemented on the active
+`V2` branch:
 
-- show `NOT CONFIGURED` instead of `OFFLINE`;
-- disable invalid actions;
-- do not count it as a Core failure.
+- `P05_RUNTIME_SLOTS` is authoritative when present;
+- legacy installs may infer configured slots from valid tunnel ids;
+- an unconfigured slot reports `configured:false`;
+- Operator renders `NOT CONFIGURED` instead of `OFFLINE`;
+- lifecycle, Workspace and slot-bridge mutations are refused for an unconfigured slot;
+- UI controls for an unconfigured slot are disabled;
+- an unconfigured slot does not count as a Core failure.
+
+The remaining Phase 6 work is broader health presentation: clearly separating Core
+state from optional-capability/plugin/downstream health without redefining deployment
+success.
 
 Operator availability or UI feature correctness is not required for Bootstrap to declare Core deployment ready unless Operator itself is later explicitly promoted into the Core contract.
 
@@ -497,10 +507,12 @@ Phase 3 acceptance is network/Core-path specific. It does not require plugin, Op
 
 ### Phase 6 - Operator health semantics (post-deployment, P1)
 
-1. Preserve configured/unconfigured slot semantics.
-2. Surface Core state clearly.
-3. Surface optional capability state separately.
-4. Never redefine deployment success.
+1. Preserve configured/unconfigured slot semantics. **COMPLETE**
+2. Refuse lifecycle/Workspace/slot-bridge mutation for unconfigured slots. **COMPLETE**
+3. Render `NOT CONFIGURED` and disable invalid controls. **COMPLETE**
+4. Surface Core state clearly. **PARTIAL**
+5. Surface optional capability state separately. **PENDING**
+6. Never redefine deployment success. **REQUIRED INVARIANT**
 
 ## 15. Tests and acceptance
 

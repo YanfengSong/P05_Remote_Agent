@@ -242,18 +242,18 @@ function buttons(){
   $("restartOperator").disabled=busy;
   $("closeOperator").disabled=busy;
   for(const slot of ["A","B"]){
-    const data=latest?.slots?.[slot]||{},online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=slotIsRunning(slot);
+    const data=latest?.slots?.[slot]||{},configured=data?.configured!==false,online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=configured&&slotIsRunning(slot);
     const toggle=$("slot"+slot+"Toggle");
-    toggle.disabled=busy;
-    toggle.textContent=running?"关闭 "+slot:"启动 "+slot;
+    toggle.disabled=busy||!configured;
+    toggle.textContent=!configured?"未配置 "+slot:running?"关闭 "+slot:"启动 "+slot;
     toggle.className=running?"danger":"primary";
-    $("slot"+slot+"Restart").disabled=busy||!running;
-    $("slot"+slot+"SwitchWorkspace").disabled=busy||!online;
-    $("slot"+slot+"PickWorkspace").disabled=busy;
-    $("slot"+slot+"SetWorkspace").disabled=busy||!online;
-    $("slot"+slot+"RegisterWorkspace").disabled=busy||!online||currentId!=="operator-session";
-    $("slot"+slot+"PickReference").disabled=busy;
-    $("slot"+slot+"AddReference").disabled=busy||!online;
+    $("slot"+slot+"Restart").disabled=busy||!configured||!running;
+    $("slot"+slot+"SwitchWorkspace").disabled=busy||!configured||!online;
+    $("slot"+slot+"PickWorkspace").disabled=busy||!configured;
+    $("slot"+slot+"SetWorkspace").disabled=busy||!configured||!online;
+    $("slot"+slot+"RegisterWorkspace").disabled=busy||!configured||!online||currentId!=="operator-session";
+    $("slot"+slot+"PickReference").disabled=busy||!configured;
+    $("slot"+slot+"AddReference").disabled=busy||!configured||!online;
   }
   if(document.querySelectorAll){
     document.querySelectorAll("[data-plugin-action]").forEach(btn=>{btn.disabled=busy||btn.dataset.locked==="true"});
@@ -337,58 +337,62 @@ function renderAction(op){const a=op?.action,e=$("actionBanner");if(!a){e.style.
 function metric(label,value,cls){return '<div class="metric"><span class="label">'+esc(label)+'</span><strong class="'+(cls||"")+'">'+esc(value)+'</strong></div>'}
 function renderSlot(slot,data){
   data=data||{};
-  const online=!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=data?.workspace?.all||[],device=data?.device||{};
+  const configured=data?.configured!==false,online=configured&&!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=configured?(data?.workspace?.all||[]):[],device=data?.device||{};
   $("slot"+slot+"Title").textContent="Runtime "+slot+" · "+(data.connector||"@Runtime-"+slot);
-  const stateText=data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
-  $("slot"+slot+"State").innerHTML=dot(!!data.connected,!!health.live)+esc(stateText);
-  $("slot"+slot+"DeviceId").textContent=device.deviceId||"-";
-  $("slot"+slot+"Workspace").textContent=current.label||current.id||"-";
-  $("slot"+slot+"BoundWorkspace").textContent=data.boundWorkspaceId||"-";
-  $("slot"+slot+"WorkspaceRoot").textContent=current.root||"-";
-  const references=data.references||[];
-  $("slot"+slot+"ReferenceList").innerHTML=references.length?references.map(r=>'<div class="row"><span><strong>'+esc(r.label||r.id)+'</strong><div class="small muted mono">'+esc(r.root||"")+'</div></span><button class="danger" data-reference-action="true" onclick="referenceRemove(\\''+slot+'\\',\\''+esc(r.id)+'\\')">移除</button></div>').join(""):'<div class="empty">暂无参考目录</div>';
+  const stateText=!configured?"NOT CONFIGURED":data.connected?"ONLINE":health.ready?"READY · 等待插件唤醒":health.live?"LIVE":"OFFLINE";
+  $("slot"+slot+"State").innerHTML=dot(configured&&!!data.connected,configured&&!!health.live)+esc(stateText);
+  $("slot"+slot+"DeviceId").textContent=configured?(device.deviceId||"-"):"-";
+  $("slot"+slot+"Workspace").textContent=configured?(current.label||current.id||"-"):"-";
+  $("slot"+slot+"BoundWorkspace").textContent=configured?(data.boundWorkspaceId||"-"):"-";
+  $("slot"+slot+"WorkspaceRoot").textContent=configured?(current.root||"-"):"-";
+  const references=configured?(data.references||[]):[];
+  $("slot"+slot+"ReferenceList").innerHTML=!configured?'<div class="empty">Runtime 未配置</div>':references.length?references.map(r=>'<div class="row"><span><strong>'+esc(r.label||r.id)+'</strong><div class="small muted mono">'+esc(r.root||"")+'</div></span><button class="danger" data-reference-action="true" onclick="referenceRemove(\\''+slot+'\\',\\''+esc(r.id)+'\\')">移除</button></div>').join(""):'<div class="empty">暂无参考目录</div>';
   const select=$("slot"+slot+"WorkspaceSelect"),pending=slotSelectionDirty[slot]?select.value:"";
   select.innerHTML=workspaces.map(x=>'<option value="'+esc(x.id)+'" '+(x.current?'selected':'')+'>'+esc((x.label||x.id)+"  ["+(x.kind||"-")+"]")+'</option>').join("");
-  if(slotSelectionDirty[slot]&&workspaces.some(x=>x.id===pending)){select.value=pending}else if(slotSelectionDirty[slot]){slotSelectionDirty[slot]=false}
+  if(!configured){slotSelectionDirty[slot]=false}
+  else if(slotSelectionDirty[slot]&&workspaces.some(x=>x.id===pending)){select.value=pending}else if(slotSelectionDirty[slot]){slotSelectionDirty[slot]=false}
 }
 function render(d){
 latest=d;const c=d.connection||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{},device=slotA.device||slotB.device||{};
 function topRuntime(slot,label){
-  const running=!!slot?.connected,ready=!!slot?.health?.ready,live=!!slot?.health?.live;
+  const configured=slot?.configured!==false,running=configured&&!!slot?.connected,ready=configured&&!!slot?.health?.ready,live=configured&&!!slot?.health?.live;
   $(label+"Label").textContent="Runtime "+(label==="topA"?"A":"B")+" · "+(slot?.connector||"-");
-  const state=running?"ONLINE":ready?"READY":live?"LIVE":"OFFLINE";
+  const state=!configured?"NOT CONFIGURED":running?"ONLINE":ready?"READY":live?"LIVE":"OFFLINE";
   $(label+"State").innerHTML=dot(running,ready||live)+esc(state);
-  $(label+"StateDetail").textContent=(slot?.connector||"-")+" · "+(slot?.bridge?.online?"bridge online":"bridge offline");
+  $(label+"StateDetail").textContent=!configured?"Runtime 未配置":(slot?.connector||"-")+" · "+(slot?.bridge?.online?"bridge online":"bridge offline");
   const ws=slot?.workspace?.current||{},g=slot?.git||{};
-  $(label+"Workspace").textContent=ws.label||ws.id||"-";
-  $(label+"Git").textContent=g.available
-    ? ((g.branch||"detached")+" · "+(g.dirty?"有未提交修改":"clean"))
-    : "Git unavailable";
+  $(label+"Workspace").textContent=configured?(ws.label||ws.id||"-"):"-";
+  $(label+"Git").textContent=!configured
+    ? "Not configured"
+    : g.available
+      ? ((g.branch||"detached")+" · "+(g.dirty?"有未提交修改":"clean"))
+      : "Git unavailable";
 }
 topRuntime(slotA,"topA");
 topRuntime(slotB,"topB");
 renderSlot("A",slotA);renderSlot("B",slotB);
 
 function renderMcpPanel(prefix,slot){
-  const bridge=slot?.bridge||{},health=slot?.health||{},m=slot?.mcp||{},ex=m.exposure||{},device=slot?.device||{};
+  const configured=slot?.configured!==false,bridge=slot?.bridge||{},health=slot?.health||{},m=slot?.mcp||{},ex=m.exposure||{},device=slot?.device||{};
   $(prefix+"StatusSummary").innerHTML=
-    metric("BRIDGE",bridge.online?"ONLINE":"OFFLINE",bridge.online?"goodText":"badText")+
-    metric("READY",health.ready?"READY":health.live?"LIVE":"OFFLINE",health.ready?"goodText":health.live?"warnText":"badText")+
-    metric("PROFILE",m.profile||"-","")+
-    metric("EXPOSED",ex.exposed?.length??0,"")+
-    metric("SUPPRESSED",ex.suppressed?.length??0,(ex.suppressed?.length??0)?"warnText":"");
-  $(prefix+"BridgeState").innerHTML=dot(!!bridge.online,false)+esc(bridge.online?"ONLINE":"OFFLINE");
-  $(prefix+"StartedAt").textContent=dateTime(device.startedAt);
-  $(prefix+"ProfileSource").textContent=m.profileSource||"-";
-  $(prefix+"DeviceId").textContent=device.deviceId||"-";
-  const err=bridge.error||health.error||"";
+    metric("BRIDGE",!configured?"NOT CONFIGURED":bridge.online?"ONLINE":"OFFLINE",configured?(bridge.online?"goodText":"badText"):"")+
+    metric("READY",!configured?"NOT CONFIGURED":health.ready?"READY":health.live?"LIVE":"OFFLINE",configured?(health.ready?"goodText":health.live?"warnText":"badText"):"")+
+    metric("PROFILE",configured?(m.profile||"-"):"-","")+
+    metric("EXPOSED",configured?(ex.exposed?.length??0):0,"")+
+    metric("SUPPRESSED",configured?(ex.suppressed?.length??0):0,configured&&(ex.suppressed?.length??0)?"warnText":"");
+  $(prefix+"BridgeState").innerHTML=dot(configured&&!!bridge.online,false)+esc(!configured?"NOT CONFIGURED":bridge.online?"ONLINE":"OFFLINE");
+  $(prefix+"StartedAt").textContent=configured?dateTime(device.startedAt):"-";
+  $(prefix+"ProfileSource").textContent=configured?(m.profileSource||"-"):"-";
+  $(prefix+"DeviceId").textContent=configured?(device.deviceId||"-"):"-";
+  const err=!configured?"Runtime 未配置":bridge.error||health.error||"";
   $(prefix+"StatusError").textContent=err||"-";
-  $(prefix+"StatusError").className="value small "+(err?"badText":"muted");
+  $(prefix+"StatusError").className="value small "+(configured&&err?"badText":"muted");
 }
 renderMcpPanel("mcpA",slotA);
 renderMcpPanel("mcpB",slotB);
 
-$("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,!!slotA.health?.ready)+esc(slotA.connected?"ONLINE":slotA.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,!!slotB.health?.ready)+esc(slotB.connected?"ONLINE":slotB.health?.ready?"READY":"OFFLINE")+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
+const slotSummary=s=>s?.configured===false?"NOT CONFIGURED":s?.connected?"ONLINE":s?.health?.ready?"READY":s?.health?.live?"LIVE":"OFFLINE";
+$("runtimeRows").innerHTML='<div class="row"><span>启动模式</span><strong>MANUAL · REPO LOCAL</strong></div><div class="row"><span>Runtime A</span><span>'+dot(!!slotA.connected,slotA.configured!==false&&!!slotA.health?.ready)+esc(slotSummary(slotA))+'</span></div><div class="row"><span>Runtime B</span><span>'+dot(!!slotB.connected,slotB.configured!==false&&!!slotB.health?.ready)+esc(slotSummary(slotB))+'</span></div><div class="row"><span>A Profile</span><span class="mono small">'+esc(slotA.tunnelAlias||"p05-a")+'</span></div><div class="row"><span>B Profile</span><span class="mono small">'+esc(slotB.tunnelAlias||"p05-b")+'</span></div>';
 $("deviceRows").innerHTML='<div class="row"><span>主机</span><span>'+esc(device.hostname||"-")+'</span></div><div class="row"><span>P05 版本</span><span>'+esc(device.agentVersion||"-")+'</span></div><div class="row"><span>系统</span><span>'+esc((device.platform||"-")+" "+(device.release||"")+" "+(device.arch||""))+'</span></div>';
 const ps=c.processes||[];$("processRows").innerHTML=ps.length?ps.map(p=>{
   const target=p.RestartTarget;

@@ -9,7 +9,13 @@ import { LiveActivityStore, summarizeToolInput } from "../monitor/live-activity.
 import { startLocalControlBridge } from "../operator/bridge.js";
 import {
   bridgeRequest,
+  bridgeRequestForSlot,
+  configuredRuntimeSlots,
+  connectRuntimeSlot,
   operatorOverview,
+  persistRuntimeSlotWorkspace,
+  restartRuntimeSlot,
+  runtimeSlotConfigured,
   runtimeSlotStateDir
 } from "../operator/runtime-control.js";
 import { operatorPage } from "../operator/ui.js";
@@ -514,6 +520,30 @@ check(
     domElement("slotATitle").textContent === "Runtime A · @Fixture-A" &&
     domElement("slotBTitle").textContent === "Runtime B · @Fixture-B"
 );
+
+(renderFixture.slots.B as any).configured = false;
+(browserContext as any).__p05Render(renderFixture);
+check(
+  "operator: unconfigured Runtime B renders NOT CONFIGURED instead of OFFLINE",
+  domElement("topBState").innerHTML.includes("NOT CONFIGURED") &&
+    domElement("slotBState").innerHTML.includes("NOT CONFIGURED") &&
+    domElement("runtimeRows").innerHTML.includes("NOT CONFIGURED") &&
+    domElement("topBWorkspace").textContent === "-" &&
+    domElement("topBGit").textContent === "Not configured"
+);
+check(
+  "operator: unconfigured Runtime B disables lifecycle and Workspace controls",
+  domElement("slotBToggle").disabled === true &&
+    domElement("slotBRestart").disabled === true &&
+    domElement("slotBSwitchWorkspace").disabled === true &&
+    domElement("slotBPickWorkspace").disabled === true &&
+    domElement("slotBSetWorkspace").disabled === true &&
+    domElement("slotBRegisterWorkspace").disabled === true &&
+    domElement("slotBPickReference").disabled === true &&
+    domElement("slotBAddReference").disabled === true
+);
+(renderFixture.slots.B as any).configured = true;
+(browserContext as any).__p05Render(renderFixture);
 check(
   "operator: managed P05 processes expose safe restart controls",
   renderedPage.includes('id="restartOperator"') &&
@@ -983,6 +1013,71 @@ try {
 
   const previousStateDir = process.env.P05_STATE_DIR;
   const previousOperatorRoot = process.env.P05_OPERATOR_ROOT;
+  const previousRuntimeSlots = process.env.P05_RUNTIME_SLOTS;
+  const previousTunnelA = process.env.P05_TUNNEL_A_ID;
+  const previousTunnelB = process.env.P05_TUNNEL_B_ID;
+
+  process.env.P05_RUNTIME_SLOTS = "A";
+  check(
+    "operator: explicit single-runtime topology configures A only",
+    configuredRuntimeSlots().join(",") === "A" &&
+      runtimeSlotConfigured("A") === true &&
+      runtimeSlotConfigured("B") === false
+  );
+
+  let workspaceMutationRefused = false;
+  try {
+    persistRuntimeSlotWorkspace("B", "business");
+  } catch (error) {
+    workspaceMutationRefused = /Runtime B is not configured/.test(String(error));
+  }
+  check(
+    "operator: unconfigured Runtime refuses Workspace binding",
+    workspaceMutationRefused
+  );
+
+  let bridgeRefused = false;
+  try {
+    await bridgeRequestForSlot("B", "/api/overview");
+  } catch (error) {
+    bridgeRefused = /Runtime B is not configured/.test(String(error));
+  }
+  check(
+    "operator: unconfigured Runtime refuses slot bridge actions",
+    bridgeRefused
+  );
+
+  let connectRefused = false;
+  try {
+    await connectRuntimeSlot("B");
+  } catch (error) {
+    connectRefused = /Runtime B is not configured/.test(String(error));
+  }
+  check(
+    "operator: unconfigured Runtime refuses connect before executing control script",
+    connectRefused
+  );
+
+  let restartRefused = false;
+  try {
+    await restartRuntimeSlot("B");
+  } catch (error) {
+    restartRefused = /Runtime B is not configured/.test(String(error));
+  }
+  check(
+    "operator: unconfigured Runtime refuses restart before executing control script",
+    restartRefused
+  );
+
+  delete process.env.P05_RUNTIME_SLOTS;
+  process.env.P05_TUNNEL_A_ID = "tunnel_legacyA";
+  delete process.env.P05_TUNNEL_B_ID;
+  check(
+    "operator: legacy topology infers configured slots from valid tunnel ids",
+    configuredRuntimeSlots().join(",") === "A"
+  );
+
+  process.env.P05_RUNTIME_SLOTS = "A";
 
   delete process.env.P05_OPERATOR_ROOT;
   process.env.P05_STATE_DIR = path.join(FIXTURE, "runtime-owned-state");
@@ -1024,6 +1119,15 @@ try {
     );
 
     const statusOverview = await operatorOverview() as any;
+    check(
+      "operator: single-runtime overview reports B as not configured",
+      statusOverview?.slots?.A?.configured === true &&
+        statusOverview?.slots?.B?.configured === false &&
+        statusOverview?.connection?.slots?.A?.configured === true &&
+        statusOverview?.connection?.slots?.B?.configured === false &&
+        statusOverview?.slots?.B?.connected === false,
+      JSON.stringify(statusOverview?.slots)
+    );
     check(
       "operator: status overview satisfies slot-native GUI render contract",
       typeof statusOverview?.timestamp === "string" &&
@@ -1084,6 +1188,21 @@ try {
       delete process.env.P05_OPERATOR_ROOT;
     } else {
       process.env.P05_OPERATOR_ROOT = previousOperatorRoot;
+    }
+    if (previousRuntimeSlots === undefined) {
+      delete process.env.P05_RUNTIME_SLOTS;
+    } else {
+      process.env.P05_RUNTIME_SLOTS = previousRuntimeSlots;
+    }
+    if (previousTunnelA === undefined) {
+      delete process.env.P05_TUNNEL_A_ID;
+    } else {
+      process.env.P05_TUNNEL_A_ID = previousTunnelA;
+    }
+    if (previousTunnelB === undefined) {
+      delete process.env.P05_TUNNEL_B_ID;
+    } else {
+      process.env.P05_TUNNEL_B_ID = previousTunnelB;
     }
   }
 
