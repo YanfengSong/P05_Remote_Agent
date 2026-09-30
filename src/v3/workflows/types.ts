@@ -38,10 +38,12 @@ export interface WorkflowDefinition {
   dod: { id: string; condition: Condition; evidence: Value }[];
 }
 export interface Activation { source: 'explicit' | 'workflow-handoff' | 'intent-match'; reason: string }
-export interface ExecutionRequest { context: WorkflowContext; capability: string; capabilityVersion: string; input: Json; idempotencyKey: string }
+export interface AgentPolicy { allowedTools: { capability: string; capabilityVersion: string }[]; maxInternalToolCalls: number; maxIterations: number; deadline: number }
+export interface ProviderUsage { internalToolCalls: number; iterations: number }
+export interface ExecutionRequest { context: WorkflowContext; capability: string; capabilityVersion: string; input: Json; idempotencyKey: string; agentPolicy?: AgentPolicy }
 export interface ExecutionSnapshot {
   executionId: string; state: 'QUEUED' | 'WAITING_APPROVAL' | 'RUNNING' | 'CANCEL_REQUESTED' | 'SUCCEEDED' | 'FAILED' | 'DENIED' | 'EXPIRED' | 'CANCELLED' | 'UNKNOWN';
-  result?: Json | null; safeRetry?: boolean; artifactRefs?: string[];
+  result?: Json | null; safeRetry?: boolean; artifactRefs?: string[]; usage?: ProviderUsage; budgetExhausted?: boolean;
 }
 /** submit must durably deduplicate keys before effects; status must enforce context ownership. */
 export interface ControlledExecutor {
@@ -64,7 +66,7 @@ export interface NodeRecord {
   executorState?: ExecutionSnapshot['state']; safeRetry?: boolean; output?: Json; iteration?: number; selected?: 'then' | 'otherwise';
   cursor?: number; artifactRefs: string[]; failureCode?: string;
   requestInput?: Json;
-  scopeAuthority?: string[]; providerRevision?: string;
+  scopeAuthority?: string[]; providerRevision?: string; providerUsage?: ProviderUsage;
 }
 export interface WorkflowRun {
   runId: string; context: WorkflowContext; definitionDigest: string; intentDigest: string; definition: DefinitionSnapshot;

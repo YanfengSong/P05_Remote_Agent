@@ -1,3 +1,11 @@
+> **2026-09-30 T47 验收闭环**
+>
+> - 新增两类真实子进程 Agent Provider：CLI JSONL 与 IPC Protocol，均走同一 durable submit/status/cancel/result 合同。
+> - Engine 生成不可由 Agent 自填的 internal-tool permit 与剩余 call/iteration/deadline budget；实际内部工具与迭代用量按增量计入原 Run。
+> - Agent 声称“用户已批准”不能扩大 capability/authority；未声明 write tool 在 parent gateway 前拒绝且真实 executor 调用数为 0。
+> - call、iteration、timeout 三类耗尽均进入 BUDGET_EXHAUSTED；当前 subprocess provider 明确仅支持 trusted-host，不冒充 OS sandbox。
+> - 当前矩阵：PASS 34 / PARTIAL 17 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T46 验收闭环**
 >
 > - 新增授权不变量专项：interceptor deny 单调、actor/authority/approval envelope 不可改写，异常/超时/非法返回均 fail closed。

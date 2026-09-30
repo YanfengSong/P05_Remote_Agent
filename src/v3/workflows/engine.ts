@@ -184,12 +184,30 @@ export class WorkflowEngine {
       else {
         const capability = node.kind === 'capability' ? node.capability : node.provider;
         const version = node.kind === 'capability' ? this.skill(r).requiredCapabilities.find(c => c.capability === capability)!.version : record.providerRevision!;
-        snapshot = await executor.submit({ context, capability, capabilityVersion: version, input: copy(record.requestInput!), idempotencyKey: record.idempotencyKey });
+        const skill = this.skill(r);
+        const agentPolicy = node.kind === 'agent' ? {
+          allowedTools: skill.requiredCapabilities.map(item => ({ capability: item.capability, capabilityVersion: item.version })),
+          maxInternalToolCalls: Math.max(0, Math.min(skill.budget.maxCalls - r.stageCalls, r.definition.workflow.budget.maxCalls - r.usedCalls)),
+          maxIterations: Math.max(0, Math.min(skill.budget.maxIterations - r.stageIterations, r.definition.workflow.budget.maxIterations - r.usedIterations)),
+          deadline: Math.min(r.deadline, r.stageStartedAt + skill.budget.timeoutMs)
+        } : undefined;
+        snapshot = await executor.submit({ context, capability, capabilityVersion: version, input: copy(record.requestInput!), idempotencyKey: record.idempotencyKey, ...(agentPolicy ? { agentPolicy } : {}) });
       }
     } catch { record.state = record.executionId ? 'WAITING' : 'UNKNOWN'; record.failureCode = 'EXECUTOR_TRANSPORT_UNCONFIRMED'; await this.save(session, 'EXECUTOR_UNCONFIRMED'); return { state: record.executionId ? 'waiting' : 'unknown' }; }
     if (!snapshot.executionId || (record.executionId && snapshot.executionId !== record.executionId)) throw new WorkflowError('EXECUTOR_IDENTITY', 'Execution identity changed');
     record.executionId = snapshot.executionId; record.executorState = snapshot.state;
     const invocation = r.invocations.find(i => i.idempotencyKey === record.idempotencyKey)!; invocation.executionId = snapshot.executionId; invocation.state = snapshot.state;
+    if (record.executor === 'agent') {
+      const usage = snapshot.usage ?? { internalToolCalls: 0, iterations: 0 };
+      if (!Number.isSafeInteger(usage.internalToolCalls) || usage.internalToolCalls < 0 || !Number.isSafeInteger(usage.iterations) || usage.iterations < 0) throw new WorkflowError('PROVIDER_USAGE_INVALID', 'Provider usage is invalid');
+      const prior = record.providerUsage ?? { internalToolCalls: 0, iterations: 0 };
+      if (usage.internalToolCalls < prior.internalToolCalls || usage.iterations < prior.iterations) throw new WorkflowError('PROVIDER_USAGE_INVALID', 'Provider usage moved backwards');
+      const addedCalls = usage.internalToolCalls - prior.internalToolCalls, addedIterations = usage.iterations - prior.iterations;
+      const skill = this.skill(r), workflowBudget = r.definition.workflow.budget;
+      if (r.usedCalls + addedCalls > workflowBudget.maxCalls || r.stageCalls + addedCalls > skill.budget.maxCalls || r.usedIterations + addedIterations > workflowBudget.maxIterations || r.stageIterations + addedIterations > skill.budget.maxIterations) throw new WorkflowError('PROVIDER_BUDGET_VIOLATION', 'Provider exceeded the platform budget envelope');
+      r.usedCalls += addedCalls; r.stageCalls += addedCalls; r.usedIterations += addedIterations; r.stageIterations += addedIterations; record.providerUsage = { ...usage };
+      if (snapshot.budgetExhausted) { if (!executorFinished.has(snapshot.state)) throw new WorkflowError('PROVIDER_USAGE_INVALID', 'Budget exhaustion must be terminal'); record.state = 'FAILED'; record.failureCode = 'BUDGET_EXHAUSTED'; throw new WorkflowError('BUDGET_EXHAUSTED', 'Agent provider budget exhausted'); }
+    }
     const artifacts = snapshot.artifactRefs ?? [];
     if (artifacts.length > 100 || artifacts.some(a => typeof a !== 'string' || a.length > 2048)) throw new WorkflowError('ARTIFACT_LIMIT', 'Invalid artifact references');
     record.artifactRefs = [...new Set(artifacts)]; r.artifactRefs = [...new Set([...r.artifactRefs, ...artifacts])];
