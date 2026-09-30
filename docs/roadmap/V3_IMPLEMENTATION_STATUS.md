@@ -1,3 +1,10 @@
+> **2026-09-30 T42 验收闭环**
+>
+> - V2 PluginRuntime 新增 Slot-local 持久 desired/observed/manualHold/controllerRevision 状态。
+> - Operator stop 写入 manualHold，Core/Slot 重启后 startAll 不会反向拉起；start/resume 清除 hold；restart 保持 desired enabled 且不留下 hold。
+> - 真实 Runtime 跨两次重启专项、Plugin Framework、Plugin API v1、Operator Console 与 V3 Component Host 回归均通过。
+> - 当前矩阵：PASS 32 / PARTIAL 18 / NOT_RUN 20 / N/A 0。
+>
 > **2026-09-30 T48/T49 验收闭环**
 >
 > - T48：Skill 合同缺失在激活前失败；同 revision 内容不可变；运行中 Run 固定原 revision/contentDigest，新 revision 只由新 Run 显式采用。

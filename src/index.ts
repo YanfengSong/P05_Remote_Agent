@@ -113,7 +113,8 @@ serveStdio(() => {
   const pluginRegistry = new PluginRegistry(BUILTIN_PLUGINS);
   const pluginRuntime = new PluginRuntime(
     pluginRegistry,
-    workspaceManager
+    workspaceManager,
+    p05StatePath("plugin-controller.json")
   );
   activePluginRuntime = pluginRuntime;
   void pluginRuntime.startAll();

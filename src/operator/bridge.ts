@@ -198,14 +198,15 @@ export async function startLocalControlBridge(
       }
 
       const pluginActionMatch = url.pathname.match(
-        /^\/api\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop)$/
+        /^\/api\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop|restart)$/
       );
       if (request.method === "POST" && pluginActionMatch) {
         const pluginId = pluginActionMatch[1]!;
         const action = pluginActionMatch[2]!;
-        const plugin =
-          action === "start"
-            ? await deps.pluginRuntime.start(pluginId)
+        const plugin = action === "start"
+          ? await deps.pluginRuntime.start(pluginId)
+          : action === "restart"
+            ? await deps.pluginRuntime.restart(pluginId, deps.downstreamRegistry)
             : await deps.pluginRuntime.stop(pluginId, deps.downstreamRegistry);
         json(response, 200, { plugin });
         return;

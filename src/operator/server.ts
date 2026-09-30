@@ -204,7 +204,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     const slotPluginActionMatch = url.pathname.match(
-      /^\/api\/slot\/(A|B)\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop)$/
+      /^\/api\/slot\/(A|B)\/plugin\/([a-z0-9][a-z0-9._-]{0,63})\/action\/(start|stop|restart)$/
     );
     if (request.method === "POST" && slotPluginActionMatch) {
       const slot = slotPluginActionMatch[1] as "A" | "B";

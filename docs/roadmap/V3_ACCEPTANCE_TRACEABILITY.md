@@ -47,7 +47,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T39 | PASS | v3-resources, v3-resource-host | Multi-resource ordering/cancel/restart reconciliation covered |
 | T40 | PARTIAL | workflow parallel tests | Real Git worktree concurrent-edit/conflict integration not implemented |
 | T41 | PARTIAL | protection/reference tests | Worktree shared-metadata and active-artifact GC acceptance incomplete |
-| T42 | PARTIAL | V2 plugin regression; v3-component-host manualHold persistence | V2 plugin controller behavior across Slot restart needs V3 acceptance |
+| T42 | PASS | v3-plugin-controller real Runtime restart acceptance; V2 plugin framework/API/operator regressions; v3-component-host manualHold persistence | Operator stop persists desired=enabled/manualHold=true in Slot-local controller state; Core/Slot restart does not auto-restart held plugins; explicit start clears hold; explicit restart remains enabled; controller revision and observed state are durable |
 | T43 | PASS | v3-downstream-containment hostile MCP fixture; downstream smoke; v3-component-host isolation | Official MCP schema rejection quarantines malformed results, downstream process loss invalidates the connection, health records only safe failure categories, and a clean reconnect succeeds without affecting component/Core isolation |
 | T44 | PASS | v3-component-host, v3-composition | In-flight binding revision pinning and replacement behavior covered |
 | T45 | PASS | v3-component-host, v3-composition | Activation failure, dependency lifecycle and disposal semantics covered |
