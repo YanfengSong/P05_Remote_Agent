@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { startV3Application } from "../v3/application.js";
+import { startV3Application, validatePublicCapabilityCatalog } from "../v3/application.js";
 import { createRpcClient, startRpcServer } from "../v3/transport/rpc.js";
 import { ProcessExecutionHost } from "../v3/process/host.js";
 import { createPrivateV3Fixture } from "./v3-private-fixture.js";
@@ -33,6 +33,10 @@ execFileSync("git", ["init", "--quiet", fixture.workspace], { windowsHide: true 
 let application: Awaited<ReturnType<typeof startV3Application>> | undefined;
 let edge: Client | undefined;
 type RunView = { executionId: string; state: string; stateVersion: number; result: unknown; approval: null | { approvalId: string; decisionVersion: number } };
+const catalogProbe = { capability: "probe", capabilityVersion: "1", bindingVersion: "1" };
+const catalogInvalid = (error: unknown) => typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "CAPABILITY_CATALOG_INVALID";
+assert.throws(() => validatePublicCapabilityCatalog([catalogProbe], []), catalogInvalid);
+assert.throws(() => validatePublicCapabilityCatalog([catalogProbe], [{ capability: "probe", effect: "E0", authority: ["Read"], executionIdentity: "run-context", backend: "", inputSchema: {} }]), catalogInvalid);
 async function awaitState(rpc: ReturnType<typeof createRpcClient>, id: string, desired: string): Promise<RunView> {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -50,6 +54,13 @@ try {
   let operator = createRpcClient({ url: application.endpoint, token: (await fs.readFile(application.operatorTokenFile, "utf8")).trim() });
   assert.equal(application.status().protection.verified, true);
   assert.equal(application.status().isolationVerified, false);
+  const capabilityCatalog = await rpc.call("capability_list", {}) as { capabilities: { capability: string; effect: string; executionIdentity: string; backend: string }[] };
+  assert.ok(capabilityCatalog.capabilities.length >= 5);
+  for (const capability of capabilityCatalog.capabilities) {
+    assert.match(capability.effect, /^E[0-4]$/);
+    assert.equal(capability.executionIdentity, "run-context");
+    assert.match(capability.backend, /^[a-z][a-z0-9._:-]{0,95}$/);
+  }
   const git = await rpc.call("execution_submit", { capability: "git_status", input: {}, idempotencyKey: randomUUID() }) as RunView;
   assert.ok((await awaitState(rpc, git.executionId, "SUCCEEDED")).result);
   const read = await rpc.call("execution_submit", { capability: "fs_read", input: { path: "input.txt" }, idempotencyKey: randomUUID() }) as RunView;
@@ -201,7 +212,24 @@ try {
     assert.ok(Date.now() < detachedDeadline); await new Promise(resolve => setTimeout(resolve, 25));
   }
   assert.equal(await fs.readFile(path.join(fixture.workspace, "detach-completed.txt"), "utf8"), "completed");
-  console.log("V3_APPLICATION_OK (real ACL, SQLite restart, original approval resume, exact intent, CAS, MCP Edge, Git bridge, HostExecute approval/output, three-stage workflow restart, link retarget refusal, revocation)");
+  // An invalid bootstrap trust manifest enters diagnostics-only LOCKED mode before any execution backend starts.
+  await application.close();
+  const trustManifest = path.join(fixture.state, "trust-manifest.json");
+  await fs.writeFile(trustManifest, JSON.stringify({ version: 1, slotId: "A", workspaceId: "test", workspaceRoot: fixture.workspace,
+    authorizationRevision: "stale-policy", principal: "fixture-user" }), { mode: 0o600 });
+  await fs.writeFile(configFile, JSON.stringify({ ...config, authorizationRevision: "test-policy-2", allowWrites: false, trustManifest }), { mode: 0o600 });
+  application = await startV3Application(configFile);
+  rpc = createRpcClient({ url: application.endpoint, token: (await fs.readFile(application.clientTokenFile, "utf8")).trim() });
+  const locked = application.status() as { mode: string; trust: { verified: boolean; code: string }; readiness: { mutations: boolean; optional: boolean }; features: { durableRuns: boolean }; processHost: { connectedAtStartup: boolean } };
+  assert.equal(locked.mode, "LOCKED");
+  assert.equal(locked.trust.verified, false);
+  assert.equal(locked.trust.code, "TRUST_MANIFEST_MISMATCH");
+  assert.equal(locked.readiness.mutations, false); assert.equal(locked.readiness.optional, false);
+  assert.equal(locked.features.durableRuns, false); assert.equal(locked.processHost.connectedAtStartup, false);
+  assert.equal((await rpc.call("execution_submit", { capability: "fs_read", input: { path: "output.txt" }, idempotencyKey: randomUUID() }) as { error: { code: string } }).error.code, "CORE_LOCKED");
+  assert.equal((await rpc.call("capability_list", {}) as { error: { code: string } }).error.code, "CORE_LOCKED");
+  assert.equal((await rpc.call("core_status", {}) as { mode: string }).mode, "LOCKED");
+  console.log("V3_APPLICATION_OK (real ACL, SQLite restart, original approval resume, exact intent, CAS, MCP Edge, Git bridge, HostExecute approval/output, three-stage workflow restart, link retarget refusal, revocation, trust-manifest LOCKED)");
 } finally {
   await edge?.close();
   await application?.close();

@@ -1,3 +1,11 @@
+> **2026-09-30 T04/T08/T18/T65 验收闭环**
+>
+> - T04：新增受保护 bootstrap trust manifest 验证与 diagnostics-only LOCKED 启动路径；配置的 manifest 缺失、未保护、非法或绑定不匹配时不会启动执行后端。
+> - T08：新增持久 Lifecycle Restart、RPC ackBarrier、v3-main supervisor 重启、重连健康 receipt 与幂等防重复重启验收。
+> - T18：审批可跨 pre-dispatch 等待保留；dispatch reservation 持久化后进入 UNKNOWN 时不能退款或重复消费审批。
+> - T65：Application 启动时强制注册 Capability 与 effect / execution identity / backend 安全元数据精确一致。
+> - 当前矩阵：PASS 28 / PARTIAL 22 / NOT_RUN 20 / N/A 0。
+> - 完整 npm run verify:v3 已于 2026-09-30 本机通过，覆盖类型检查、构建、V2 兼容回归、默认 V3 全套测试与 T01–T70 验收矩阵门禁。
 > **2026-09-29 T03/T06/T13/T17/T20 验收闭环**
 >
 > - T03：broken optional/workflow catalog 明确进入 DEGRADED，同时 Core liveness 与最小读路径保持可用。

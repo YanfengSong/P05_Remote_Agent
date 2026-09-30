@@ -17,6 +17,16 @@ const METHOD_PATTERN = /^[a-z][a-z0-9_]{0,79}$/;
 const DEFAULT_REQUEST_BYTES = 256 * 1024;
 const DEFAULT_RESPONSE_BYTES = 1024 * 1024;
 
+const AFTER_RESPONSE = Symbol("p05.rpc.after-response");
+type RpcAfterResponse = { [AFTER_RESPONSE]: true; result: unknown; action: () => void | Promise<void> };
+export function afterRpcResponse(result: unknown, action: () => void | Promise<void>): unknown {
+  return { [AFTER_RESPONSE]: true, result, action } satisfies RpcAfterResponse;
+}
+function asAfterResponse(value: unknown): RpcAfterResponse | undefined {
+  return typeof value === "object" && value !== null && (value as Partial<RpcAfterResponse>)[AFTER_RESPONSE] === true
+    ? value as RpcAfterResponse : undefined;
+}
+
 function bound(value: number | undefined, fallback: number, maximum: number): number {
   const result = value ?? fallback;
   if (!Number.isSafeInteger(result) || result < 1 || result > maximum) {
@@ -42,6 +52,20 @@ function send(response: http.ServerResponse, status: number, body: string): void
     "content-length": Buffer.byteLength(body)
   });
   response.end(body);
+}
+
+function sendFlushed(response: http.ServerResponse, status: number, body: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (response.destroyed || response.writableEnded) { reject(new Error("RESPONSE_NOT_FLUSHED")); return; }
+    const cleanup = () => { response.off("finish", finished); response.off("close", closed); response.off("error", failed); };
+    const finished = () => { cleanup(); resolve(); };
+    const closed = () => { if (!response.writableFinished) { cleanup(); reject(new Error("RESPONSE_NOT_FLUSHED")); } };
+    const failed = (error: Error) => { cleanup(); reject(error); };
+    response.once("finish", finished); response.once("close", closed); response.once("error", failed);
+    response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store",
+      "x-content-type-options": "nosniff", "content-length": Buffer.byteLength(body), "connection": "close" });
+    response.end(body);
+  });
 }
 
 function failure(response: http.ServerResponse, status: number, code: string): void {
@@ -97,7 +121,7 @@ export async function startRpcServer(options: RpcServerOptions): Promise<RpcServ
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid RPC port.");
   const clientDigest = tokenDigest(options.clientToken);
   const operatorDigest = tokenDigest(options.operatorToken);
-  const active = new Set<Promise<void>>();
+  const active = new Set<Promise<unknown>>();
   let authority = "";
   let closing = false;
 
@@ -145,7 +169,7 @@ export async function startRpcServer(options: RpcServerOptions): Promise<RpcServ
         failure(response, 413, "REQUEST_TOO_LARGE");
         return;
       }
-      const operation = (async (): Promise<void> => {
+      const operation = (async (): Promise<(() => void | Promise<void>) | undefined> => {
         const envelope = await readBody(request, requestLimit);
         if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
           throw new RequestError(400, "INVALID_REQUEST");
@@ -156,13 +180,18 @@ export async function startRpcServer(options: RpcServerOptions): Promise<RpcServ
           throw new RequestError(400, "INVALID_REQUEST");
         }
         // Disconnect is a transport event. It must not cancel accepted work.
-        const result = await options.handle(record.method, record.input, isOperator ? "operator" : "client");
-        const body = JSON.stringify({ ok: true, result: result ?? null });
+        const handled = await options.handle(record.method, record.input, isOperator ? "operator" : "client");
+        const deferred = asAfterResponse(handled);
+        const body = JSON.stringify({ ok: true, result: deferred ? deferred.result ?? null : handled ?? null });
         if (Buffer.byteLength(body) > responseLimit) throw new RequestError(502, "RESPONSE_TOO_LARGE");
+        if (deferred) { await sendFlushed(response, 200, body); return deferred.action; }
         send(response, 200, body);
+        return undefined;
       })();
       active.add(operation);
-      try { await operation; } finally { active.delete(operation); }
+      let afterResponse: (() => void | Promise<void>) | undefined;
+      try { afterResponse = await operation; } finally { active.delete(operation); }
+      if (afterResponse) { try { await afterResponse(); } catch { /* Response is already acknowledged; supervisor reports its own failure. */ } }
     } catch (error) {
       if (error instanceof RequestError) failure(response, error.status, error.code);
       else failure(response, 500, "INTERNAL_ERROR");

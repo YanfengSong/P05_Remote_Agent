@@ -18,6 +18,7 @@ const schema = z.object({
   componentHostConnection: z.string().refine(path.isAbsolute).optional(),
   componentCapabilities: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/)).max(64).default([]),
   allowHostExecute: z.boolean().default(false),
+  trustManifest: z.string().refine(path.isAbsolute).optional(),
   trustedHost: z.boolean().default(false),
   allowWrites: z.boolean().default(false)
 }).strict();

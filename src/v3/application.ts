@@ -6,9 +6,11 @@ import { CoreRuntime } from "./core/index.js";
 import { DurableStore } from "./durable/store.js";
 import { createDurableKernel } from "./durable/kernel.js";
 import { DurableError, type Json } from "./durable/types.js";
-import { startRpcServer, type RpcRole } from "./transport/rpc.js";
+import { afterRpcResponse, startRpcServer, type RpcRole } from "./transport/rpc.js";
+import { beginLifecycleRestart, claimLifecycleRestart, completeLifecycleRestart as completeLifecycleRestartRecord, lifecycleRestartStatus, type LifecycleRestartRecord } from "./lifecycle.js";
 import { readV3Config } from "./config.js";
 import { verifyConfigurationProtection, verifyStateProtection } from "./protection.js";
+import { verifyBootstrapTrustManifest } from "./trust.js";
 import { loadOrCreateToken } from "./credentials.js";
 import { createFileCapabilities, FILE_CAPABILITY_METADATA, publicRun, validateFileInput, validateFileTarget } from "./file-capabilities.js";
 import { V2OptionalHost } from "./optional/v2-host.js";
@@ -23,11 +25,54 @@ const submitSchema = z.object({ capability: id, input: z.json(), idempotencyKey:
 const waitSchema = z.object({ id, afterVersion: z.number().int().nonnegative().default(0), waitMs: z.number().int().min(0).max(30000).default(1000) }).strict();
 const eventsSchema = z.object({ id, afterSequence: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(200).default(100) }).strict();
 
+export type PublicCapabilityMetadata = {
+  capability: string;
+  effect: "E0" | "E1" | "E2" | "E3" | "E4";
+  authority: readonly string[];
+  inputSchema: unknown;
+  executionIdentity: "run-context";
+  backend: string;
+  [key: string]: unknown;
+};
+type RegisteredCapability = { capability: string; capabilityVersion: string; bindingVersion: string };
+
+function withBackend<T extends { capability: string; effect: string; authority: readonly string[]; inputSchema: unknown }>(
+  metadata: T, backend: string
+): PublicCapabilityMetadata {
+  return { ...metadata, effect: metadata.effect as PublicCapabilityMetadata["effect"], executionIdentity: "run-context", backend };
+}
+
+export function validatePublicCapabilityCatalog(
+  capabilities: readonly RegisteredCapability[],
+  metadata: readonly PublicCapabilityMetadata[]
+): PublicCapabilityMetadata[] {
+  const registered = new Set<string>();
+  for (const capability of capabilities) {
+    if (!/^[a-z][a-z0-9:_-]{0,159}$/.test(capability.capability) || !capability.capabilityVersion.trim() || !capability.bindingVersion.trim())
+      throw new DurableError("CAPABILITY_CATALOG_INVALID", "Capability identity is incomplete");
+    if (registered.has(capability.capability)) throw new DurableError("CAPABILITY_CATALOG_INVALID", "Duplicate capability registration");
+    registered.add(capability.capability);
+  }
+  const declared = new Set<string>();
+  for (const item of metadata) {
+    if (!/^E[0-4]$/.test(item.effect) || item.executionIdentity !== "run-context" ||
+        !/^[a-z][a-z0-9._:-]{0,95}$/.test(item.backend) || !item.authority.length || item.inputSchema === undefined)
+      throw new DurableError("CAPABILITY_CATALOG_INVALID", "Capability metadata is incomplete");
+    if (declared.has(item.capability)) throw new DurableError("CAPABILITY_CATALOG_INVALID", "Duplicate capability metadata");
+    declared.add(item.capability);
+  }
+  if (registered.size !== declared.size || [...registered].some(capability => !declared.has(capability)))
+    throw new DurableError("CAPABILITY_CATALOG_INVALID", "Registered capabilities and public metadata differ");
+  return metadata.map(item => ({ ...item, authority: [...item.authority] }));
+}
+
 /** One application per process: V2 file guards are deliberately kept at their original module boundary. */
-export async function startV3Application(configFile: string, maintenance: { recoverUncleanOwner?: { coreInstanceId: string; reason: string } } = {}) {
+export interface V3LifecycleHooks { restartAfterAck?: (lifecycleId: string) => void | Promise<void>; }
+export async function startV3Application(configFile: string, maintenance: { recoverUncleanOwner?: { coreInstanceId: string; reason: string } } = {}, lifecycle: V3LifecycleHooks = {}) {
   if (!(await verifyStateProtection(path.dirname(path.resolve(configFile)))).verified) throw new Error("CONFIGURATION_PARENT_PROTECTION_UNVERIFIED");
   if (!(await verifyConfigurationProtection(configFile)).verified) throw new Error("CONFIGURATION_PROTECTION_UNVERIFIED");
   const config = readV3Config(configFile);
+  const trust = await verifyBootstrapTrustManifest(config.trustManifest, config);
   const optional = config.optionalRuntime ? new V2OptionalHost({
     nodeExecutable: process.execPath, entrypoint: fileURLToPath(new URL("../index.js", import.meta.url)),
     workspaceRoot: config.workspaceRoot, slot: config.slotId, stateDir: config.stateDir,
@@ -37,7 +82,7 @@ export async function startV3Application(configFile: string, maintenance: { reco
     stateDir: config.stateDir, slotId: config.slotId,
     workspaceRoots: [config.workspaceRoot], verifyProtection: verifyStateProtection,
     ...(maintenance.recoverUncleanOwner ? { recoverUncleanOwner: maintenance.recoverUncleanOwner } : {}),
-    ...(optional ? { connectOptional: async (signal: AbortSignal) => {
+    ...(optional && trust.verified ? { connectOptional: async (signal: AbortSignal) => {
       signal.addEventListener("abort", () => { void optional.close(); }, { once: true });
       const health = await optional.start();
       if (health.state !== "ready") throw new Error("OPTIONAL_HOST_UNAVAILABLE");
@@ -62,6 +107,25 @@ export async function startV3Application(configFile: string, maintenance: { reco
     const client = loadOrCreateToken(slotDir, "client");
     const localOperator = loadOrCreateToken(slotDir, "operator");
     if (!(await verifyStateProtection(slotDir)).verified) throw new Error("SLOT_PROTECTION_UNVERIFIED");
+    if (!trust.verified) {
+      const lockedStatus = () => {
+        const current = core.status();
+        return { ...current, mode: "LOCKED" as const, trust, readiness: { ...current.readiness, recovery: false, mutations: false, optional: false },
+          optional: null, processHost: { configured: Boolean(config.processHostConnection), enabled: config.allowHostExecute, connectedAtStartup: false },
+          workflow: { configured: Boolean(config.workflowCatalog), available: false, faultCode: null },
+          componentHost: { configured: Boolean(config.componentHostConnection), connectedAtStartup: false, capabilityCount: 0 },
+          features: { fileCapabilities: true, durableRuns: false, durableApprovals: false, osSandbox: false, separateExecutionHost: false, optionalPluginHost: false } };
+      };
+      const lockedHandle = async (method: string): Promise<unknown> => method === "core_status" ? lockedStatus() : { error: { code: "CORE_LOCKED" } };
+      server = await startRpcServer({ clientToken: client.token, operatorToken: localOperator.token, handle: lockedHandle, port: config.port });
+      core.setConnectionState("connected");
+      const connection = { endpoint: server.url, slotId: config.slotId, clientTokenFile: client.file };
+      fs.writeFileSync(path.join(slotDir, "connection.json"), JSON.stringify(connection, null, 2) + "\n", { mode: 0o600 });
+      let closing: Promise<void> | undefined;
+      return { ...connection, operatorTokenFile: localOperator.file, status: lockedStatus,
+        completeLifecycleRestart(_lifecycleId: string): LifecycleRestartRecord { throw new DurableError("CORE_LOCKED", "Lifecycle health cannot complete while Core is locked"); },
+        close(): Promise<void> { return closing ??= release(); } };
+    }
     // V2 config must capture this process's fixed workspace before its first dynamic import.
     process.env.REMOTE_AGENT_ALLOWED_ROOTS = config.workspaceRoot;
     process.env.REMOTE_AGENT_DEFAULT_CWD = config.workspaceRoot;
@@ -114,6 +178,15 @@ export async function startV3Application(configFile: string, maintenance: { reco
         }
       });
     }
+    const capabilityCatalog = validatePublicCapabilityCatalog(capabilities, [
+      ...FILE_CAPABILITY_METADATA.map(item => withBackend(item, "trusted-host:file-adapter")),
+      ...(processBridge?.metadata ?? []).map(item => withBackend(item, "process-host")),
+      ...(components?.metadata ?? []).map(item => withBackend(item, "component-host")),
+      ...(optional ? [
+        withBackend({ capability: "git_status", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({}).strict()) }, "v2-optional-host"),
+        withBackend({ capability: "git_diff", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({ staged: z.boolean().optional() }).strict()) }, "v2-optional-host")
+      ] : [])
+    ]);
     const owner = { principal: config.principal, slotId: config.slotId };
     const context = {
       ...owner, hostId: core.state.identity.hostId, workspaceId: config.workspaceId,
@@ -159,7 +232,7 @@ export async function startV3Application(configFile: string, maintenance: { reco
       const current = core.status();
       const execution = activeKernel.health();
       const dependencyUnavailable = Boolean(config.workflowCatalog && !workflows) || Boolean(config.allowHostExecute && !processBridge) || Boolean(config.componentHostConnection && config.componentCapabilities.length && !components);
-      return { ...current, mode: !execution.executionAvailable ? "LOCKED" : dependencyUnavailable && current.mode === "NORMAL" ? "DEGRADED" : current.mode,
+      return { ...current, trust, mode: !execution.executionAvailable ? "LOCKED" : dependencyUnavailable && current.mode === "NORMAL" ? "DEGRADED" : current.mode,
         readiness: { ...current.readiness, mutations: current.readiness.mutations && execution.executionAvailable }, execution,
         optional: optional?.health() ?? null,
         processHost: { configured: Boolean(config.processHostConnection), enabled: config.allowHostExecute, connectedAtStartup: Boolean(processBridge) },
@@ -170,6 +243,24 @@ export async function startV3Application(configFile: string, maintenance: { reco
     const handle = async (method: string, input: unknown, role: RpcRole): Promise<unknown> => {
       try {
         switch (method) {
+          case "operator_lifecycle_restart": {
+            if (role !== "operator") throw new DurableError("FORBIDDEN", "Operator role required");
+            if (!lifecycle.restartAfterAck) throw new DurableError("LIFECYCLE_SUPERVISOR_UNAVAILABLE", "Lifecycle supervisor unavailable");
+            const request = z.object({ idempotencyKey: z.string().min(1).max(256) }).strict().parse(input);
+            const pending = beginLifecycleRestart(core.state, request.idempotencyKey);
+            if (pending.record.state !== "ACK_PENDING") return pending.record;
+            return afterRpcResponse(pending.record, async () => {
+              const claimed = claimLifecycleRestart(core.state, pending.record.lifecycleId);
+              if (claimed) await lifecycle.restartAfterAck!(pending.record.lifecycleId);
+            });
+          }
+          case "operator_lifecycle_status": {
+            if (role !== "operator") throw new DurableError("FORBIDDEN", "Operator role required");
+            const lifecycleId = querySchema.parse(input).id;
+            const record = lifecycleRestartStatus(core.state, lifecycleId);
+            if (!record) throw new DurableError("LIFECYCLE_NOT_FOUND", "Lifecycle run not found");
+            return record;
+          }
           case "workflow_list":
           case "workflow_scheduler_status":
           case "workflow_resume":
@@ -181,15 +272,8 @@ export async function startV3Application(configFile: string, maintenance: { reco
             return await workflows.handle(method, input);
           }
           case "core_status": return status();
-          case "capability_list": return { capabilities: [
-            ...FILE_CAPABILITY_METADATA.filter(c => c.capability !== "fs_write" || config.allowWrites),
-            ...(processBridge?.metadata ?? []),
-            ...(components?.metadata ?? []),
-            ...(optional ? [
-              { capability: "git_status", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({}).strict()) },
-              { capability: "git_diff", effect: "E0", authority: ["Read"], inputSchema: z.toJSONSchema(z.object({ staged: z.boolean().optional() }).strict()) }
-            ] : [])
-          ], securityMode: "trusted-host" };
+          case "capability_list": return { capabilities: capabilityCatalog.filter(c => c.capability !== "fs_write" || config.allowWrites),
+            securityMode: "trusted-host" };
           case "execution_submit": {
             const request = submitSchema.parse(input);
             validateInput(request.capability, request.input as Json);
@@ -262,6 +346,13 @@ export async function startV3Application(configFile: string, maintenance: { reco
     return {
       ...connection, operatorTokenFile: localOperator.file,
       status,
+      completeLifecycleRestart(lifecycleId: string): LifecycleRestartRecord {
+        const current = status();
+        return completeLifecycleRestartRecord(core.state, lifecycleId, {
+          liveness: current.liveness, mode: current.mode, protectionVerified: current.protection.verified,
+          executionAvailable: current.execution.executionAvailable
+        });
+      },
       close(): Promise<void> {
         return closing ??= release();
       }

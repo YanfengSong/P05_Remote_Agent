@@ -96,7 +96,9 @@ try {
   const queued = receipts.create(context, { capability: 'write', capabilityVersion: '1', bindingVersion: '1' }, null, 'approved-restart');
   receipts.awaitApproval(queued.executionId, queued.stateVersion, 'approve', now + 1000);
   const qa = receipts.internal(queued.executionId).approval!;
-  receipts.decide({ approvalId: qa.approvalId, expectedDecisionVersion: 1, decision: 'APPROVE', actor: 'operator' }); receipts.close();
+  const approvedQueued = receipts.decide({ approvalId: qa.approvalId, expectedDecisionVersion: 1, decision: 'APPROVE', actor: 'operator' });
+  assert.equal(approvedQueued.state, 'QUEUED');
+  assert.equal(approvedQueued.approval?.status, 'APPROVED'); receipts.close();
   runtime = createDurableKernel(options()); runtime.kernel.register(cap);
   await settle(queued.executionId, 'SUCCEEDED'); assert.equal(executions, 2);
   await runtime.kernel.close();
@@ -107,6 +109,22 @@ try {
   assert.equal((await settle(mismatch.executionId, 'FAILED')).error, 'PINNED_BINDING_UNAVAILABLE');
   assert.equal(executions, 2);
   await runtime.kernel.close();
+
+  // Once dispatch reservation is durable, uncertainty never refunds or reuses the approval.
+  const rp = join(dir, 'approval-reservation.db');
+  let rs = new DurableStore(rp, { clock });
+  const rr = rs.create(context, { capability: 'write', capabilityVersion: '1', bindingVersion: '1' }, null, 'approval-reservation');
+  rs.awaitApproval(rr.executionId, rr.stateVersion, 'reserve once', now + 1000);
+  const ra = rs.internal(rr.executionId).approval!;
+  const rq = rs.decide({ approvalId: ra.approvalId, expectedDecisionVersion: ra.decisionVersion, decision: 'APPROVE', actor: 'operator' });
+  rs.dispatch(rq.executionId, rq.stateVersion); rs.close();
+  rs = new DurableStore(rp, { clock }); rs.recover();
+  const ru = rs.status(context, rr.executionId);
+  assert.equal(ru.state, 'UNKNOWN'); assert.equal(ru.approval?.status, 'APPROVED');
+  try {
+    assert.throws(() => rs.dispatch(rr.executionId, ru.stateVersion), (error: unknown) => error instanceof DurableError && error.code === 'STATE_CONFLICT');
+    assert.throws(() => rs.decide({ approvalId: ra.approvalId, expectedDecisionVersion: ra.decisionVersion + 1, decision: 'APPROVE', actor: 'operator' }), (error: unknown) => error instanceof DurableError && error.code === 'APPROVAL_CONFLICT');
+  } finally { rs.close(); }
 
   // Pending approval freezes context/input and never retargets to a replacement binding.
   const pendingBindingPath = join(dir, 'pending-binding.db');

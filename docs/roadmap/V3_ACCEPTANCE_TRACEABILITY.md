@@ -9,11 +9,11 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T01 | PARTIAL | V2 test:compiled; src/test/v3-v2-regression.ts | Core V2 regression is gated; live MATLAB and deployment applicability remain separate |
 | T02 | NOT_RUN | none | Need A/B different-workspace test with A restart while B has live work |
 | T03 | PASS | v3-core optional-failure/hang tests; v3-application broken workflow catalog | Bad optional startup/config is bounded and reports DEGRADED while Core liveness and minimal read path remain available |
-| T04 | PARTIAL | v3-protection, v3-recovery | Need explicit invalid trust-manifest Recovery/LOCKED acceptance |
+| T04 | PASS | protected trust manifest validation plus diagnostics-only application LOCKED path and recovery boundary | Missing/unprotected/invalid/mismatched configured trust manifests cannot start execution backends; mismatch acceptance proves LOCKED core_status remains available while execution and capability surfaces return CORE_LOCKED |
 | T05 | PASS | v3-core, v3-recovery, host ownership-lock tests | Slot ownership and stale-owner fencing are exercised |
 | T06 | PASS | v3-core 64-way reconcile flood plus persistent crash-loop restart budget | Reconcile flood starts one child only; repeated crashes latch CRASH_LOOP until explicit recovery |
 | T07 | PASS | v3-durable, v3-application | Stable execution identity and non-terminal wait timeout covered |
-| T08 | PARTIAL | durable lifecycle primitives | Full Core lifecycle disconnect/reconnect health proof not closed |
+| T08 | PASS | lifecycle durable state machine, RPC ackBarrier, v3-main supervisor restart, v3-lifecycle reconnect acceptance | Restart intent is durable before acknowledgement; dispatch is released only after response finish; Core generation advances and reconnect observes a SUCCEEDED supervisor health receipt; idempotent retry does not restart twice |
 | T09 | PASS | v3-process-bridge, v3-recovery | External process survives Core observation loss and reconciles to original Run |
 | T10 | PASS | v3-durable, v3-process-bridge, v3-recovery | Crash windows preserve UNKNOWN and prohibit blind replay |
 | T11 | PASS | v3-durable | Idempotency identity/conflict behavior covered |
@@ -23,7 +23,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T15 | PASS | v3-durable, v3-application | Approval CAS and single-side-effect continuation covered |
 | T16 | PASS | v3-durable, v3-application | Deny/cancel/late-decision behavior covered |
 | T17 | PASS | v3-durable pending approval freezes workspace/input and rejects replacement binding; v3-application revalidates content/link/auth revision | Pending approval cannot be retargeted by context/input/binding or external target changes |
-| T18 | PARTIAL | durable approval reservation logic | Need preflight/resource-queue/uncertain-dispatch authorization-consumption scenario |
+| T18 | PASS | v3-durable pre-dispatch queue plus uncertain dispatch reservation | Original approval survives pre-dispatch waiting without a second decision; after dispatch reservation UNKNOWN cannot refund or reuse it |
 | T19 | PARTIAL | V2 operator tests; V3 approval metadata | V3 contextual queue and fast-approval UI path are incomplete |
 | T20 | PASS | v3-durable terminal receipt survives deliberate audit-event deletion | SUCCEEDED Run/result remains authoritative with receipt intact even when audit events are absent |
 | T21 | PARTIAL | V2 policy profiles; V3 authorization tests | Full hierarchical Grant/revocation/version matrix is not closed |
@@ -70,7 +70,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T62 | NOT_RUN | none | Linux minimum-contract suite not executed |
 | T63 | NOT_RUN | none | Multi-device delegation/receipt/artifact transfer not implemented |
 | T64 | NOT_RUN | none | 24-hour dual-Slot soak/capacity acceptance not executed |
-| T65 | PARTIAL | V2 profile exposure/output schema; V3 capability metadata | Need exhaustive V3 public-capability effect/identity/backend registration gate |
+| T65 | PASS | V3 application capability-catalog startup gate and public catalog assertions | Startup rejects missing or invalid effect/execution identity/backend metadata and requires an exact declaration for every registered capability |
 | T66 | NOT_RUN | none | Sleep/time-change/remote-restart lease-expiry acceptance not executed |
 | T67 | PARTIAL | v3-component-host asset digest/activation checks | Cross-principal query, reference retention and cleanup acceptance incomplete |
 | T68 | PARTIAL | V2 regression under V3 worktree | Real V2 config/history migration and stale-approval non-revival drill remains |
