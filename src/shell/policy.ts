@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { assertAccessiblePath } from "../security.js";
 
 export type ShellPolicyDecision = {
@@ -546,6 +547,117 @@ function isDriveRoot(value: string): boolean {
   return /^[a-zA-Z]:[\\/]?(?:\*)?$/.test(value.trim());
 }
 
+function normalizedPath(value: string, cwd: string): string | undefined {
+  if (!value || /[*?~$(){}\[\]`]/.test(value)) return undefined;
+  try {
+    const resolved = path.resolve(cwd, value);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  } catch {
+    return undefined;
+  }
+}
+
+function criticalRecursiveDeleteTarget(
+  value: string,
+  workspaceRoot: string,
+  cwd: string
+): boolean {
+  const normalized = normalizedPath(value, cwd);
+  if (!normalized) return false;
+  const workspace = normalizedPath(workspaceRoot, cwd);
+  if (workspace && normalized === workspace) return true;
+
+  if (process.platform === "win32") {
+    if (/^[a-z]:[\\/]?$/.test(normalized)) return true;
+    return [
+      "c:\\windows",
+      "c:\\users",
+      "c:\\program files",
+      "c:\\program files (x86)",
+      "c:\\programdata"
+    ].includes(normalized);
+  }
+
+  return [
+    "/",
+    "/etc",
+    "/usr",
+    "/var",
+    "/home",
+    "/root",
+    "/boot",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64"
+  ].includes(normalized);
+}
+
+export function catastrophicShellReason(
+  command: string,
+  workspaceRoot: string,
+  cwd: string
+): string | undefined {
+  const trimmed = command.trim();
+
+  if (
+    /(^|[\s"';&|])(?:format(?:\.com)?|diskpart|clear-disk|initialize-disk|remove-partition|format-volume|mkfs(?:\.[a-z0-9_-]+)?|fdisk|parted|wipefs|blkdiscard)(?=$|[\s"';&|])/i.test(trimmed)
+  ) {
+    return "disk formatting, partitioning or filesystem destruction is denied";
+  }
+
+  if (
+    /\bdd\b[\s\S]*\bof\s*=\s*(?:\/dev\/(?:sd[a-z]|hd[a-z]|vd[a-z]|nvme\d+n\d+|mmcblk\d+)|\\\\\.\\PhysicalDrive\d+)/i.test(trimmed)
+  ) {
+    return "raw disk overwrite is denied";
+  }
+
+  if (
+    /\brm\b[\s\S]*(?:\s-rf\b|\s-fr\b|\s-r\b|\s--recursive\b)[\s\S]*(?:^|\s)["']?\/(?:["']?)(?=\s|$|[;&|])/i.test(trimmed)
+  ) {
+    return "recursive deletion of the filesystem root is denied";
+  }
+
+  const tokens = tokenize(trimmed);
+  if (!tokens?.length) return undefined;
+  const executable = tokens[0]!.toLowerCase();
+
+  if (executable === "remove-item") {
+    const recursive = tokens.some((token) =>
+      ["-recurse", "-r"].includes(token.toLowerCase())
+    );
+    if (recursive) {
+      const explicit = flagValues(tokens, PATH_FLAGS);
+      const targets = explicit.length ? explicit : positionalPaths(tokens);
+      if (targets.some((target) =>
+        isDriveRoot(target) ||
+        criticalRecursiveDeleteTarget(target, workspaceRoot, cwd)
+      )) {
+        return "recursive deletion of a drive, Workspace root or system-critical root is denied";
+      }
+    }
+  }
+
+  if (["rm", "rmdir", "rd"].includes(executable)) {
+    const recursive = tokens.some((token) =>
+      ["-r", "-rf", "-fr", "--recursive", "/s"].includes(token.toLowerCase())
+    );
+    const targets = positionalPaths(tokens);
+    if (
+      recursive &&
+      targets.some((target) =>
+        target === "/" ||
+        isDriveRoot(target) ||
+        criticalRecursiveDeleteTarget(target, workspaceRoot, cwd)
+      )
+    ) {
+      return "recursive deletion of a drive, Workspace root or system-critical root is denied";
+    }
+  }
+
+  return undefined;
+}
+
 function catastrophic(tokens: string[]): string | undefined {
   const executable = tokens[0]!.toLowerCase();
 
@@ -619,6 +731,15 @@ export async function classifyShellCommand(
   cwd: string
 ): Promise<ShellPolicyDecision> {
   const trimmed = command.trim();
+  const hardDenied = catastrophicShellReason(trimmed, workspaceRoot, cwd);
+  if (hardDenied) {
+    return {
+      mode: "deny",
+      reason: hardDenied,
+      purpose: describe(tokenize(trimmed))
+    };
+  }
+
   const pipeline = splitSimplePipeline(trimmed);
 
   if (!pipeline) {

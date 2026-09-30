@@ -25,6 +25,7 @@ select,input{width:100%;background:#0b1424;color:var(--text);border:1px solid va
 pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;overflow:auto;max-height:280px;font:11px/1.45 Consolas,monospace}
 .toast{position:fixed;right:18px;bottom:18px;background:#111b2f;border:1px solid var(--line);padding:11px 14px;border-radius:8px;display:none;max-width:520px;z-index:20}
 .detail{color:#c5d1e6;max-width:620px;overflow-wrap:anywhere}.workspaceCard{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:7px;background:#0c1525}.workspaceCard.current{border-color:#6887df}.empty{color:var(--muted);font-size:12px;padding:8px 0}
+.approvalModeGroup{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:9px;padding:4px 6px;background:#0b1424}.approvalModeBadge{font-size:10px;font-weight:700;padding:0 4px}.approvalModeBadge.trusted{color:var(--warn)}.approvalModeBadge.standard{color:var(--good)}
 .approvalGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.approvalColumn{min-width:0;border:1px solid var(--line);border-radius:9px;padding:10px;background:#0c1525}.approvalColumnHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.approvalColumnHeader strong{font-size:13px}.approvalCount{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;color:var(--muted)}.approvalCount.pending{border-color:#8e6d27;color:var(--warn)}.approvalIdLine{font-size:14px;font-weight:700;color:var(--warn);letter-spacing:.02em;margin-top:3px}
 @media(max-width:1100px){.span3,.span4{grid-column:span 6}.span5,.span6,.span7,.span8{grid-column:span 12}}
 @media(max-width:900px){.approvalGrid{grid-template-columns:1fr}}
@@ -39,6 +40,11 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
       <div class="sub">连接控制 · Workspace · MCP · Git · 实时行为 · Recovery</div>
     </div>
     <div class="actions">
+      <div class="approvalModeGroup">
+        <span id="approvalModeBadge" class="approvalModeBadge standard">APPROVALS · STANDARD</span>
+        <button id="approvalModeStandard" class="primary">STANDARD</button>
+        <button id="approvalModeTrusted" class="warning">TRUSTED</button>
+      </div>
       <button id="operatorState" class="primary" disabled>Console 已开启</button>
       <button id="restartOperator" class="warning">重启 Console</button>
       <button id="closeOperator" class="danger">关闭 Console</button>
@@ -241,6 +247,8 @@ function slotIsRunning(slot){
 function buttons(){
   $("restartOperator").disabled=busy;
   $("closeOperator").disabled=busy;
+  $("approvalModeStandard").disabled=busy;
+  $("approvalModeTrusted").disabled=busy;
   for(const slot of ["A","B"]){
     const data=latest?.slots?.[slot]||{},configured=data?.configured!==false,online=!!data?.bridge?.online,currentId=data?.workspace?.current?.id||"",running=configured&&slotIsRunning(slot);
     const toggle=$("slot"+slot+"Toggle");
@@ -263,6 +271,17 @@ function buttons(){
   }
 }
 async function action(name){if(busy)return;busy=true;buttons();try{await api("/api/action/"+name,{method:"POST",body:"{}"});await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}}
+async function setApprovalMode(mode){
+  if(busy)return;
+  if(mode==="trusted"&&!confirm("启用 TRUSTED 模式？\\n\\nP05 将不再为普通 CONFIRM 操作请求审批，包括 Git push、软件安装、Runtime 重启、SSH 写操作和任意脚本执行。\\n\\n磁盘格式化、分区清除、原始磁盘覆盖、根目录/Workspace 根/系统关键根目录递归删除仍会被永久拒绝。"))return;
+  busy=true;buttons();
+  try{
+    await api("/api/approval-mode",{method:"POST",body:JSON.stringify({mode})});
+    toast(mode==="trusted"?"TRUSTED 已启用：普通审批已关闭。":"STANDARD 已启用：恢复正常审批。");
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
 async function restartOperatorConsole(){
   if(busy||!confirm("确认重启 Operator Console？Runtime A/B 不会被重启。"))return;
   busy=true;buttons();
@@ -354,6 +373,12 @@ function renderSlot(slot,data){
 }
 function render(d){
 latest=d;const c=d.connection||{},slotA=d.slots?.A||{},slotB=d.slots?.B||{},device=slotA.device||slotB.device||{};
+const approvalMode=d.approvalMode?.mode==="trusted"?"trusted":"standard";
+const badge=$("approvalModeBadge");
+badge.textContent=approvalMode==="trusted"?"APPROVALS OFF · TRUSTED":"APPROVALS · STANDARD";
+badge.className="approvalModeBadge "+approvalMode;
+$("approvalModeStandard").className=approvalMode==="standard"?"primary":"";
+$("approvalModeTrusted").className=approvalMode==="trusted"?"warning":"";
 function topRuntime(slot,label){
   const configured=slot?.configured!==false,running=configured&&!!slot?.connected,ready=configured&&!!slot?.health?.ready,live=configured&&!!slot?.health?.live;
   $(label+"Label").textContent="Runtime "+(label==="topA"?"A":"B")+" · "+(slot?.connector||"-");
@@ -492,6 +517,8 @@ $("logsB").textContent=(slotB.logTail||[]).join("\\n")||"暂无日志";
 renderAction(d.operator);buttons();
 }
 async function refresh(){try{render(await api("/api/status"))}catch(e){toast("状态刷新失败: "+e.message,true)}}
+$("approvalModeStandard").onclick=()=>setApprovalMode("standard");
+$("approvalModeTrusted").onclick=()=>setApprovalMode("trusted");
 $("restartOperator").onclick=restartOperatorConsole;
 $("closeOperator").onclick=async()=>{
   if(busy||!confirm("确认关闭 Operator Console？Runtime A/B 不会被自动关闭。"))return;

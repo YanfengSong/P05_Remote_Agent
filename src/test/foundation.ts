@@ -55,6 +55,8 @@ async function rejects(label: string, fn: () => Promise<unknown>, mustContain?: 
 }
 
 await fs.rm(FIXTURE, { recursive: true, force: true });
+process.env.P05_APPROVAL_MODE_STATE_FILE = path.join(FIXTURE, "approval-mode.json");
+process.env.P05_APPROVAL_MODE = "standard";
 await fs.mkdir(WS_A, { recursive: true });
 await fs.mkdir(WS_B, { recursive: true });
 await fs.mkdir(REGISTRY_ALLOWED, { recursive: true });

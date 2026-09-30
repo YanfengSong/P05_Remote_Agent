@@ -100,6 +100,12 @@ check(
     operatorServerSource.includes("listToolApprovals")
 );
 check(
+  "operator: approval mode is exposed through token-protected status and mutation API",
+  operatorServerSource.includes('url.pathname === "/api/approval-mode"') &&
+    operatorServerSource.includes("readApprovalMode()") &&
+    operatorServerSource.includes("writeApprovalMode(mode)")
+);
+check(
   "operator: restart request is detached and bounded instead of waiting on a long shell lifecycle",
   requestRestartOperatorSource.includes("Start-Process") &&
     requestRestartOperatorSource.includes("restart-operator.ps1") &&
@@ -118,6 +124,10 @@ check(
 check(
   "operator: default shell timeout leaves transport completion headroom",
   envExampleSource.includes("REMOTE_AGENT_SHELL_TIMEOUT_MS=90000")
+);
+check(
+  "operator: approval mode defaults to STANDARD in env template",
+  envExampleSource.includes("P05_APPROVAL_MODE=standard")
 );
 check(
   "operator: approval payload uses the canonical ToolApprovalView contract",
@@ -157,6 +167,7 @@ const domElement = (id: string) => domElements[id] ??= {
 };
 const renderFixture = {
   timestamp: "2026-09-21T00:00:00.000Z",
+  approvalMode: { mode: "standard", source: "default" },
   liveActivity: [
     {
       id: "live-a",
@@ -427,8 +438,36 @@ const browserContext = vm.createContext({
   confirm: () => true,
   console
 });
-new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;globalThis.__p05RestartOperator=restartOperatorConsole;globalThis.__p05RestartManagedProcess=restartManagedProcess;").runInContext(browserContext);
+new vm.Script(renderedScript + "\n;globalThis.__p05Render=render;globalThis.__p05SetApprovalMode=setApprovalMode;globalThis.__p05PluginControl=pluginControl;globalThis.__p05ReferenceRemove=referenceRemove;globalThis.__p05ToolApproval=toolApproval;globalThis.__p05RestartOperator=restartOperatorConsole;globalThis.__p05RestartManagedProcess=restartManagedProcess;").runInContext(browserContext);
 (browserContext as any).__p05Render(renderFixture);
+check(
+  "operator: STANDARD approval mode renders visibly in header",
+  domElement("approvalModeBadge").textContent.includes("STANDARD") &&
+    domElement("approvalModeStandard").className === "primary"
+);
+
+(renderFixture as any).approvalMode = { mode: "trusted", source: "state" };
+(browserContext as any).__p05Render(renderFixture);
+check(
+  "operator: TRUSTED approval mode renders approvals-off warning",
+  domElement("approvalModeBadge").textContent.includes("APPROVALS OFF") &&
+    domElement("approvalModeBadge").textContent.includes("TRUSTED") &&
+    domElement("approvalModeTrusted").className === "warning"
+);
+(renderFixture as any).approvalMode = { mode: "standard", source: "default" };
+(browserContext as any).__p05Render(renderFixture);
+
+browserRequests.length = 0;
+await (browserContext as any).__p05SetApprovalMode("trusted");
+check(
+  "operator: approval mode toggle posts TRUSTED to explicit API",
+  browserRequests.some((item) =>
+    item.path === "/api/approval-mode" &&
+    item.method === "POST" &&
+    item.body === JSON.stringify({ mode: "trusted" })
+  )
+);
+
 check(
   "operator: process time never renders Invalid Date",
   !domElement("processRows").innerHTML.includes("Invalid Date") &&

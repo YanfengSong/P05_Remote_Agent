@@ -4,7 +4,7 @@
  *
  * Run: npm run test:policy
  */
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -188,7 +188,11 @@ check("spec: lookup returns undefined for an unknown tool", specFor("nope") === 
 // ---------------------------------------------------------------- dangerous commands
 process.env.REMOTE_AGENT_ALLOWED_ROOTS = process.platform === "win32" ? "C:\\p05-root" : "/srv/project_git";
 const { assertAllowedPath, assertPathShape, assertSafeCommand, protectionReason } = await import("../security.js");
+const approvalModeTestPath = path.join(path.resolve("."), "_p05_approval_mode_test.json");
+process.env.P05_APPROVAL_MODE_STATE_FILE = approvalModeTestPath;
+await rm(approvalModeTestPath, { force: true });
 const { permissionDecision } = await import("../policy/permission.js");
+const { readApprovalMode, writeApprovalMode } = await import("../policy/approval-mode.js");
 
 // ---------------------------------------------------------------- V2 common permission policy
 {
@@ -457,6 +461,125 @@ const { permissionDecision } = await import("../policy/permission.js");
     workspaceRoot
   );
   check("permission: catastrophic shell operation is DENY", destructiveShell.mode === "deny");
+
+  check(
+    "approval mode: default is STANDARD",
+    readApprovalMode().mode === "standard"
+  );
+  writeApprovalMode("trusted");
+
+  const trustedCommandRun = await permissionDecision(
+    "command_run",
+    { action: "check" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED bypasses command_run confirmation",
+    trustedCommandRun.mode === "allow" &&
+      trustedCommandRun.reason.includes("TRUSTED approval mode")
+  );
+
+  const trustedRestart = await permissionDecision(
+    "runtime_restart",
+    {},
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED bypasses Runtime restart confirmation",
+    trustedRestart.mode === "allow"
+  );
+
+  const trustedPush = await permissionDecision(
+    "git_push",
+    { remote: "origin" },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED bypasses Git push confirmation",
+    trustedPush.mode === "allow"
+  );
+
+  const trustedArbitraryShell = await permissionDecision(
+    "shell_run",
+    { command: "python script.py", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED allows arbitrary non-catastrophic shell execution",
+    trustedArbitraryShell.mode === "allow"
+  );
+
+  const trustedRemoteWrite = await permissionDecision(
+    "shell_run",
+    { command: 'ssh example-host "touch /tmp/p05-write"', cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED allows SSH remote writes without P05 approval",
+    trustedRemoteWrite.mode === "allow"
+  );
+
+  const { preflightShellExecution } = await import("../shell/preflight.js");
+  const trustedPreflight = await preflightShellExecution(
+    "reg query HKCU",
+    workspaceRoot,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED bypasses legacy broad shell blocklist at execution preflight",
+    trustedPreflight.safeCwd === workspaceRoot
+  );
+
+  const trustedDiskWipe = await permissionDecision(
+    "shell_run",
+    { command: "Clear-Disk -Number 0", cwd: workspaceRoot },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED still DENY disk destruction",
+    trustedDiskWipe.mode === "deny"
+  );
+
+  const trustedWorkspaceDelete = await permissionDecision(
+    "shell_run",
+    {
+      command: `Remove-Item -LiteralPath "${workspaceRoot}" -Recurse -Force`,
+      cwd: workspaceRoot
+    },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check(
+    "approval mode: TRUSTED still DENY recursive Workspace-root deletion",
+    trustedWorkspaceDelete.mode === "deny"
+  );
+
+  writeApprovalMode("standard");
+  check(
+    "approval mode: can return to STANDARD",
+    readApprovalMode().mode === "standard"
+  );
+
+  await writeFile(
+    approvalModeTestPath,
+    String.fromCharCode(0xfeff) + JSON.stringify({
+      mode: "trusted",
+      updatedAt: "2026-09-29T00:00:00.000Z"
+    }),
+    "utf8"
+  );
+  check(
+    "approval mode: BOM-prefixed state file still parses as TRUSTED",
+    readApprovalMode().mode === "trusted"
+  );
+
+  await rm(approvalModeTestPath, { force: true });
 }
 
 

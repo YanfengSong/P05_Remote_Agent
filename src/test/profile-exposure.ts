@@ -35,6 +35,7 @@ await fs.mkdir(OUTSIDE_FIXTURES, { recursive: true });
 await fs.mkdir(REFERENCE_ROOT, { recursive: true });
 await fs.mkdir(STATE_DIR, { recursive: true });
 await fs.rm(path.join(STATE_DIR, "tool-approvals"), { recursive: true, force: true });
+await fs.rm(path.join(STATE_DIR, "approval-mode.json"), { force: true });
 await fs.writeFile(path.join(REFERENCE_ROOT, "reference.txt"), "reference-ok\n", "utf8");
 await fs.writeFile(
   path.join(STATE_DIR, "references.json"),
@@ -77,6 +78,8 @@ function childEnv(extra: Record<string, string>): Record<string, string> {
   env.REMOTE_AGENT_ALLOWED_ROOTS = ROOT;
   env.REMOTE_AGENT_DEFAULT_CWD = ROOT;
   env.P05_STATE_DIR = STATE_DIR;
+  env.P05_APPROVAL_MODE_STATE_FILE = path.join(STATE_DIR, "approval-mode.json");
+  env.P05_APPROVAL_MODE = "standard";
   return { ...env, ...extra };
 }
 

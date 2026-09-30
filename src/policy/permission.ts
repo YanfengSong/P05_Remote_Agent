@@ -1,6 +1,7 @@
 import type { CapabilityCatalog } from "../capability/registry.js";
 import { summarizeToolInput } from "../monitor/live-activity.js";
 import { classifyShellCommand } from "../shell/policy.js";
+import { trustedApprovalModeEnabled } from "./approval-mode.js";
 
 export type PermissionMode = "allow" | "confirm" | "deny";
 
@@ -53,11 +54,14 @@ function common(
   args: unknown
 ): PermissionDecision {
   const inputSummary = summarizeToolInput(capability, args);
+  const trustedBypass = mode === "confirm" && trustedApprovalModeEnabled();
   return {
-    mode,
+    mode: trustedBypass ? "allow" : mode,
     capability,
     operation,
-    reason,
+    reason: trustedBypass
+      ? `TRUSTED approval mode bypassed confirmation: ${reason}`
+      : reason,
     purpose,
     ...(inputSummary ? { inputSummary } : {})
   };

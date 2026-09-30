@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { decideToolApproval, listToolApprovals, toolApprovalView } from "../approval/tool-approval.js";
+import { readApprovalMode, writeApprovalMode } from "../policy/approval-mode.js";
 import {
   bridgeRequestForSlot,
   chooseWorkspaceFolder,
@@ -120,6 +121,7 @@ const server = http.createServer(async (request, response) => {
       json(response, 200, {
         ...overview,
         approvals,
+        approvalMode: readApprovalMode(),
         operator: {
           startedAt,
           pid: process.pid,
@@ -127,6 +129,19 @@ const server = http.createServer(async (request, response) => {
           port: PORT,
           config: operatorConfigView
         }
+      });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/approval-mode") {
+      const body = await bodyJson(request);
+      const mode = body.mode;
+      if (mode !== "standard" && mode !== "trusted") {
+        throw new Error("Approval mode must be standard or trusted.");
+      }
+      json(response, 200, {
+        ok: true,
+        approvalMode: writeApprovalMode(mode)
       });
       return;
     }

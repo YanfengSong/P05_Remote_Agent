@@ -1,14 +1,22 @@
 import fs from "node:fs/promises";
+import { trustedApprovalModeEnabled } from "../policy/approval-mode.js";
 import { assertAccessiblePath, assertSafeCommand } from "../security.js";
+import { catastrophicShellReason } from "./policy.js";
 
 export async function preflightShellExecution(
   command: string,
   workspaceRoot: string,
   cwd?: string
 ): Promise<{ safeCwd: string }> {
-  assertSafeCommand(command);
-
   const requestedCwd = cwd ?? workspaceRoot;
+
+  if (trustedApprovalModeEnabled()) {
+    const denied = catastrophicShellReason(command, workspaceRoot, requestedCwd);
+    if (denied) throw new Error(`Command blocked by catastrophic safety policy: ${denied}`);
+  } else {
+    assertSafeCommand(command);
+  }
+
   const safeCwd = await assertAccessiblePath(
     requestedCwd,
     "read",
