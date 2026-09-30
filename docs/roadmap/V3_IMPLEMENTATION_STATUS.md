@@ -1,3 +1,9 @@
+> **2026-09-30 T43 验收闭环**
+>
+> - 新增 hostile downstream MCP 专项：malformed CallToolResult 由官方 MCP schema gate 拒绝并隔离；调用中进程退出使连接失效；健康状态仅保留 safe category；后续调用可重连恢复。
+> - 原 downstream smoke 与 V3 Component Host 28 项隔离验收继续通过。
+> - 当前矩阵：PASS 29 / PARTIAL 21 / NOT_RUN 20 / N/A 0。
+>
 > **2026-09-30 T04/T08/T18/T65 验收闭环**
 >
 > - T04：新增受保护 bootstrap trust manifest 验证与 diagnostics-only LOCKED 启动路径；配置的 manifest 缺失、未保护、非法或绑定不匹配时不会启动执行后端。

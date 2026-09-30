@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/core";
 import { VERSION } from "../version.js";
 import {
   resolveDownstreamTarget,
@@ -32,6 +33,14 @@ export const CONNECT_ERROR_CATEGORIES = [
   "connection refused",
   "connection failed"
 ] as const;
+
+function runtimeFailureCategory(error: unknown): "invalid response" | "transport failure" {
+  const value = error as { name?: unknown; message?: unknown };
+  const name = typeof value?.name === "string" ? value.name : "";
+  const message = typeof value?.message === "string" ? value.message : "";
+  return name === "ProtocolError" || /invalid\s+(?:tools\/call\s+)?result|invalid response|schema|parse|validation/i.test(message)
+    ? "invalid response" : "transport failure";
+}
 
 export class DownstreamMcpClient {
   private client?: Client;
@@ -107,9 +116,26 @@ export class DownstreamMcpClient {
     }
   }
 
+  private async runtimeFailure(category: "invalid response" | "transport failure"): Promise<never> {
+    const client = this.client;
+    this.client = undefined;
+    this.transport = undefined;
+    this.connected = false;
+    this.bindingKey = undefined;
+    this.boundWorkspaceId = undefined;
+    this.lastError = category;
+    await client?.close().catch(() => undefined);
+    throw new Error(category);
+  }
+
   async listTools(): Promise<DownstreamTool[]> {
     await this.connect();
-    const result = await this.client!.listTools();
+    let raw: unknown;
+    try { raw = await this.client!.listTools(); }
+    catch (error) { return this.runtimeFailure(runtimeFailureCategory(error)); }
+    let result;
+    try { result = ListToolsResultSchema.parse(raw); }
+    catch { return this.runtimeFailure("invalid response"); }
     return result.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -120,10 +146,15 @@ export class DownstreamMcpClient {
   async callTool(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
     await this.connect();
     const timeout = this.definition.requestTimeoutMs ?? 60_000;
-    return this.client!.callTool(
-      { name, arguments: args },
-      { timeout, maxTotalTimeout: timeout }
-    );
+    let raw: unknown;
+    try {
+      raw = await this.client!.callTool(
+        { name, arguments: args },
+        { timeout, maxTotalTimeout: timeout }
+      );
+    } catch (error) { return this.runtimeFailure(runtimeFailureCategory(error)); }
+    try { return CallToolResultSchema.parse(raw); }
+    catch { return this.runtimeFailure("invalid response"); }
   }
 
   async close(): Promise<void> {

@@ -13,5 +13,17 @@ serveStdio(() => {
     content: [{ type: "text", text: message }]
   }));
 
+  server.registerTool("malformed_result", {
+    description: "Return a deliberately invalid MCP result for containment acceptance.",
+    inputSchema: z.object({})
+  }, async () => ({ content: [{ type: "text", text: 42 }] } as any));
+
+  server.registerTool("crash_during_call", {
+    description: "Terminate the downstream process during a call for containment acceptance.",
+    inputSchema: z.object({})
+  }, async () => {
+    process.exit(17);
+  });
+
   return server;
 });

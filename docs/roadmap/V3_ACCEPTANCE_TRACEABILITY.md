@@ -48,7 +48,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T40 | PARTIAL | workflow parallel tests | Real Git worktree concurrent-edit/conflict integration not implemented |
 | T41 | PARTIAL | protection/reference tests | Worktree shared-metadata and active-artifact GC acceptance incomplete |
 | T42 | PARTIAL | V2 plugin regression; v3-component-host manualHold persistence | V2 plugin controller behavior across Slot restart needs V3 acceptance |
-| T43 | PARTIAL | V2 downstream smoke; component isolation tests | Actual downstream MCP fault/schema containment needs dedicated acceptance |
+| T43 | PASS | v3-downstream-containment hostile MCP fixture; downstream smoke; v3-component-host isolation | Official MCP schema rejection quarantines malformed results, downstream process loss invalidates the connection, health records only safe failure categories, and a clean reconnect succeeds without affecting component/Core isolation |
 | T44 | PASS | v3-component-host, v3-composition | In-flight binding revision pinning and replacement behavior covered |
 | T45 | PASS | v3-component-host, v3-composition | Activation failure, dependency lifecycle and disposal semantics covered |
 | T46 | PARTIAL | v3-composition, v3-component-host | Shadow/interceptor authorization-invariance acceptance not fully closed |
