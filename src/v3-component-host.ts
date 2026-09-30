@@ -4,7 +4,7 @@ try {
   const filename = process.env.P05_V3_COMPONENT_CONFIG;
   if (!filename) throw new Error("P05_V3_COMPONENT_CONFIG_REQUIRED");
   const host = await startComponentHost(filename);
-  process.stderr.write(JSON.stringify({ event: "p05.v3.component.ready", endpoint: host.endpoint, slotId: host.slotId, principalId: host.principalId, bindingDigest: host.bindingDigest, clientTokenFile: host.clientTokenFile, operatorTokenFile: host.operatorTokenFile, isolationEnforced: false }) + "\n");
+  process.stderr.write(JSON.stringify({ event: "p05.v3.component.ready", endpoint: host.endpoint, slotId: host.slotId, principalId: host.principalId, bindingDigest: host.bindingDigest, clientTokenFile: host.clientTokenFile, operatorTokenFile: host.operatorTokenFile, isolationEnforced: host.isolationEnforced, securityMode: host.securityMode }) + "\n");
   const close = () => { void host.close().then(() => process.exit(0), () => process.exit(1)); };
   process.once("SIGINT", close); process.once("SIGTERM", close);
 } catch (error) {

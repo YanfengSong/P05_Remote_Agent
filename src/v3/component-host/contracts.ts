@@ -8,13 +8,16 @@ const absolute = z.string().min(1).max(2048).refine(path.isAbsolute);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const componentHostConfigSchema = z.object({
   version: z.literal(1), slotId: id, principalId: id, workspaceRoot: absolute,
+  isolationMode: z.enum(["trusted-local-plugin", "node-permission"]).default("trusted-local-plugin"),
+  maxResultBytes: z.number().int().min(1024).max(1024 * 1024).default(256 * 1024),
   stateDir: absolute, installationRoot: absolute, port: z.number().int().min(0).max(65535).default(0),
   installations: z.array(z.object({ installationId: id, file: absolute, manifest: componentManifestSchema }).strict()).min(1).max(64),
   components: z.array(z.object({ componentId: id, installationId: id, config: z.unknown() }).strict()).min(1).max(32),
   capabilities: z.array(z.object({ capabilityId: id, componentId: id, key: serviceKeySchema, effect: z.enum(["E0", "E1"]), description: z.string().min(1).max(512) }).strict()).max(64),
   assets: z.array(z.object({ assetId: id, revision: id, file: absolute, digest, evidenceRef: z.string().min(1).max(512), operatorReviewed: z.literal(true), effects: z.array(z.enum(["E0", "E1", "E2", "E3", "E4"])).max(5) }).strict()).max(64).default([]),
 }).strict();
-export type ComponentHostConfig = z.infer<typeof componentHostConfigSchema>;
+type ParsedComponentHostConfig = z.output<typeof componentHostConfigSchema>;
+export type ComponentHostConfig = Omit<ParsedComponentHostConfig, "isolationMode" | "maxResultBytes"> & Partial<Pick<ParsedComponentHostConfig, "isolationMode" | "maxResultBytes">>;
 export interface InstalledComponentModule {
   createComponent(api: { z: typeof z }): {
     configSchema: z.ZodType;

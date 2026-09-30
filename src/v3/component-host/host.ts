@@ -11,9 +11,48 @@ import { verifyConfigurationProtection, verifyStateProtection } from "../protect
 import { loadOrCreateToken } from "../credentials.js";
 import { startRpcServer, type RpcServer } from "../transport/rpc.js";
 import { assetQuerySchema, callSchema, componentHostConfigSchema, ComponentHostError, desiredSchema, replaceSchema, type CallableComponentService, type ComponentHostConfig, type InstalledComponentModule } from "./contracts.js";
+import { componentHostPermissionPreflightDigest } from "./permissions.js";
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 function fail(code: string): never { throw new ComponentHostError(code); }
+function boundedComponentResult(value: unknown, limit: number): unknown {
+  let bytes = 0, nodes = 0;
+  const seen = new Set<object>();
+  const add = (count: number) => { bytes += count; if (bytes > limit) fail("COMPONENT_OUTPUT_LIMIT_EXCEEDED"); };
+  const visit = (item: unknown, depth: number): void => {
+    if (++nodes > 10000 || depth > 32) fail("COMPONENT_OUTPUT_LIMIT_EXCEEDED");
+    if (item === null) { add(4); return; }
+    switch (typeof item) {
+      case "string": add(Buffer.byteLength(item, "utf8") + 2); return;
+      case "number": add(32); return;
+      case "boolean": add(item ? 4 : 5); return;
+      case "undefined": add(4); return;
+      case "bigint":
+      case "symbol":
+      case "function": fail("COMPONENT_OUTPUT_INVALID");
+      case "object": break;
+      default: fail("COMPONENT_OUTPUT_INVALID");
+    }
+    const object = item as object;
+    if (seen.has(object)) fail("COMPONENT_OUTPUT_INVALID");
+    seen.add(object);
+    if (Array.isArray(object)) {
+      add(2); for (const child of object) { visit(child, depth + 1); add(1); }
+    } else {
+      const prototype = Object.getPrototypeOf(object);
+      if (prototype !== Object.prototype && prototype !== null) fail("COMPONENT_OUTPUT_INVALID");
+      add(2);
+      const descriptors = Object.getOwnPropertyDescriptors(object);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (descriptor.get || descriptor.set || !("value" in descriptor)) fail("COMPONENT_OUTPUT_INVALID");
+        add(Buffer.byteLength(key, "utf8") + 3); visit(descriptor.value, depth + 1); add(1);
+      }
+    }
+    seen.delete(object);
+  };
+  visit(value, 0);
+  return structuredClone(value);
+}
 const inside = (root: string, candidate: string) => { const relative = path.relative(root, candidate); return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)); };
 type Installation = ComponentHostConfig["installations"][number];
 type SavedDesired = { revision: string; entrypointDigest: string; configVersion: string; config: unknown };
@@ -22,14 +61,30 @@ type SavedDesired = { revision: string; entrypointDigest: string; configVersion:
  * a process boundary protects Core's event loop, not the OS user's files or credentials. */
 export async function startComponentHost(configFile: string) {
   const filename = path.resolve(configFile);
-  if (!(await verifyStateProtection(path.dirname(filename))).verified || !(await verifyConfigurationProtection(filename)).verified) fail("COMPONENT_CONFIGURATION_UNPROTECTED");
   if (fs.statSync(filename).size > 256 * 1024) fail("COMPONENT_CONFIGURATION_TOO_LARGE");
-  const config = componentHostConfigSchema.parse(JSON.parse(fs.readFileSync(filename, "utf8")));
-  for (const directory of [config.stateDir, config.installationRoot]) if (!(await verifyStateProtection(directory)).verified) fail("COMPONENT_DIRECTORY_UNPROTECTED");
+  const configBytes = fs.readFileSync(filename);
+  const config = componentHostConfigSchema.parse(JSON.parse(configBytes.toString("utf8")));
+  if (config.isolationMode === "node-permission") {
+    if (process.env.P05_V3_COMPONENT_PERMISSION_PREFLIGHT !== componentHostPermissionPreflightDigest(filename, configBytes)) fail("COMPONENT_PERMISSION_PREFLIGHT_REQUIRED");
+  } else {
+    if (!(await verifyStateProtection(path.dirname(filename))).verified || !(await verifyConfigurationProtection(filename)).verified) fail("COMPONENT_CONFIGURATION_UNPROTECTED");
+    for (const directory of [config.stateDir, config.installationRoot]) if (!(await verifyStateProtection(directory)).verified) fail("COMPONENT_DIRECTORY_UNPROTECTED");
+  }
   config.stateDir = fs.realpathSync(config.stateDir); config.installationRoot = fs.realpathSync(config.installationRoot); config.workspaceRoot = fs.realpathSync(config.workspaceRoot);
   if (!fs.statSync(config.workspaceRoot).isDirectory()) fail("COMPONENT_WORKSPACE_INVALID");
   for (const directory of [config.stateDir, config.installationRoot]) if (inside(config.workspaceRoot, directory) || inside(directory, config.workspaceRoot)) fail("COMPONENT_WORKSPACE_OVERLAP");
   if (inside(config.workspaceRoot, fs.realpathSync(filename))) fail("COMPONENT_WORKSPACE_OVERLAP");
+  if (config.isolationMode === "node-permission") {
+    const permission = process.permission;
+    if (!permission || !permission.has("fs.read", filename) || !permission.has("fs.read", config.stateDir) ||
+        !permission.has("fs.read", config.installationRoot) || !permission.has("fs.read", config.workspaceRoot) ||
+        !permission.has("fs.write", config.stateDir)) fail("COMPONENT_PERMISSION_ISOLATION_REQUIRED");
+    if (config.capabilities.some(item => item.effect === "E1") && !permission.has("fs.write", config.workspaceRoot)) fail("COMPONENT_PERMISSION_ISOLATION_REQUIRED");
+    const workspaceParent = path.dirname(config.workspaceRoot);
+    const driveRoot = path.parse(config.workspaceRoot).root;
+    if (workspaceParent === config.workspaceRoot || permission.has("fs.read", workspaceParent) || permission.has("fs.write", workspaceParent) ||
+        permission.has("fs.read", driveRoot) || permission.has("fs.write", driveRoot)) fail("COMPONENT_PERMISSION_SCOPE_TOO_BROAD");
+  }
   const unique = (values: string[]) => new Set(values).size === values.length;
   if (!unique(config.installations.map((x) => x.installationId)) || !unique(config.components.map((x) => x.componentId)) || !unique(config.capabilities.map((x) => x.capabilityId)) || !unique(config.assets.map((x) => `${x.assetId}/${x.revision}`))) fail("COMPONENT_DUPLICATE_DECLARATION");
   if (config.installations.some((x) => x.manifest.scope !== "workspace")) fail("COMPONENT_HOST_REQUIRES_WORKSPACE_SCOPE");
@@ -66,7 +121,7 @@ export async function startComponentHost(configFile: string) {
       client = loadOrCreateToken(config.stateDir, "client"); operator = loadOrCreateToken(config.stateDir, "operator");
       assets = new AssetStore(path.join(config.stateDir, "assets"), (asset, evidenceRef) => config.assets.some((item) => item.assetId === asset.assetId && item.revision === asset.revision && item.digest === asset.contentDigest && item.evidenceRef === evidenceRef && item.operatorReviewed));
     } finally { process.umask(previousMask); }
-    if (client.token === operator.token || !(await verifyStateProtection(config.stateDir)).verified) fail("COMPONENT_CREATED_STATE_UNPROTECTED");
+    if (client.token === operator.token || (config.isolationMode !== "node-permission" && !(await verifyStateProtection(config.stateDir)).verified)) fail("COMPONENT_CREATED_STATE_UNPROTECTED");
     const db = database;
     const desiredStore: CompositionDesiredStore = {
       get<T>(key: string): T | undefined { const row = db.prepare("SELECT value FROM settings WHERE key=?").get(key) as { value: string } | undefined; return row ? JSON.parse(row.value) as T : undefined; },
@@ -89,7 +144,7 @@ export async function startComponentHost(configFile: string) {
     for (const installation of config.installations) validatedBytes(installation.file, installation.manifest.entrypointDigest);
     const definitions = new Map<string, ComponentDefinition>();
     const load = async (installation: Installation): Promise<ComponentDefinition> => {
-      if (!(await verifyConfigurationProtection(installation.file)).verified) fail("COMPONENT_INSTALLATION_UNPROTECTED");
+      if (config.isolationMode !== "node-permission" && !(await verifyConfigurationProtection(installation.file)).verified) fail("COMPONENT_INSTALLATION_UNPROTECTED");
       const bytes = validatedBytes(installation.file, installation.manifest.entrypointDigest);
       const cached = definitions.get(installation.installationId); if (cached) return cached;
       // Execute the exact verified bytes. Relative imports are deliberately unsupported;
@@ -134,7 +189,7 @@ export async function startComponentHost(configFile: string) {
     }
     await composition.reconcile();
     const capabilities = Object.freeze(config.capabilities.map((item) => Object.freeze({ ...item, key: Object.freeze({ ...item.key }) })));
-    const metadata = { schemaVersion: "p05.component-host.v1", ...owner, bindingDigest, capabilities, securityMode: "trusted-local-plugin", isolationEnforced: false, externalGatewayAvailable: false };
+    const metadata = { schemaVersion: "p05.component-host.v1", ...owner, bindingDigest, capabilities, securityMode: config.isolationMode, isolationEnforced: config.isolationMode === "node-permission", externalGatewayAvailable: false };
     server = await startRpcServer({ port: config.port, clientToken: client.token, operatorToken: operator.token, maxConcurrent: 32,
       handle: async (method, input, role) => {
         try {
@@ -155,7 +210,7 @@ export async function startComponentHost(configFile: string) {
               const parsed = immutableSnapshot(pin.value.inputSchema.parse(value.input));
               const context = immutableSnapshot({ ...owner, capabilityId: capability.capabilityId, effect: capability.effect, ...(value.runId ? { runId: value.runId } : {}) });
               const result = await pin.value.invoke(parsed, context);
-              return { capabilityId: capability.capabilityId, effect: capability.effect, bindingId: pin.bindingId, bindingDigest, result: structuredClone(result) };
+              return { capabilityId: capability.capabilityId, effect: capability.effect, bindingId: pin.bindingId, bindingDigest, result: boundedComponentResult(result, config.maxResultBytes) };
             } finally { pin.release(); }
           }
           if (method === "component_replace") {

@@ -1,3 +1,13 @@
+> **2026-09-30 T25 验收闭环**
+>
+> - 既有 Component Host 进程边界继续覆盖插件崩溃/无限循环：Optional Host 可卡死或被杀，Core event loop 与状态探针仍可用。
+> - 新增 node-permission hostile-plugin 模式：可信 Supervisor 先做 Windows ACL/owner preflight，受限 Host 再自证 Node permission system 与最小文件范围；preflight 或 permission 任一缺失都 fail closed。
+> - 受限 Host 只获得应用运行根、本 Slot workspace、私有 state/install 根；workspace 父目录/盘根不能被广泛授权。真实 hostile fixture 读取其他 Slot 文件得到 ERR_ACCESS_DENIED。
+> - 不授予 child-process 权限；恶意插件尝试 spawn 子进程绕过文件权限同样得到 ERR_ACCESS_DENIED。
+> - component_call 结果在 RPC 序列化前按深度/节点/字节上限检查；连续 oversized result 返回 COMPONENT_OUTPUT_LIMIT_EXCEEDED，之后 Host 仍正常服务。
+> - 该模式是 Node runtime permission containment，不宣称 OS 级强沙箱；强隔离仍由后续 isolation acceptance 负责。
+> - 当前矩阵：PASS 40 / PARTIAL 11 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T27 验收闭环**
 >
 > - 新增 SecretRef/SecretResolver 合同：Run、审批和审计路径只持久化引用；审批前 resolver 调用数保持 0，只有真实执行提交前才解引用。
