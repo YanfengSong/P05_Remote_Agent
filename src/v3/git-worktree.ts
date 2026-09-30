@@ -51,7 +51,9 @@ function validateWriteIntent(paths: string[]): string[] {
   if (!Array.isArray(paths) || paths.length < 1 || paths.length > 256) throw new GitWorktreeError("INVALID_WRITE_INTENT");
   const result = paths.map(value => {
     const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+    const segments = normalized.split("/").map(segment => segment.replace(/[. ]+$/, "").toLowerCase());
     if (!normalized || normalized.startsWith("/") || normalized.includes("..") || normalized.includes("\0") || normalized.startsWith(":")) throw new GitWorktreeError("INVALID_WRITE_INTENT");
+    if (segments.includes(".git")) throw new GitWorktreeError("SHARED_GIT_METADATA_FORBIDDEN");
     return normalized;
   });
   return [...new Set(result)];

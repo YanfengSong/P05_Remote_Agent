@@ -1,3 +1,12 @@
+> **2026-09-30 T41 验收闭环**
+>
+> - Reference 暴露面保持只读；canonical path 检查拒绝 `.git` 等受保护共享元数据，并阻止 link/junction 越出授权 Reference root。
+> - Git worktree writeIntent 显式禁止 `.git` 共享管理路径；worktree 继续只作为协作隔离，不宣称安全沙箱。
+> - 新增 durable content-addressed ArtifactStore：临时写入、SHA-256 校验、原子发布、SQLite 索引与完整性读取。
+> - active-run、pending-review、pin、rollback 引用都会阻止 GC；相同 digest 被多个 Artifact 引用时不会误删 blob。
+> - 过期且无保护 Artifact、无索引 orphan blob 通过 maxScan/maxDelete 有界 GC 清理。
+> - 当前矩阵：PASS 37 / PARTIAL 14 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T54 验收闭环**
 >
 > - 新增 ResourceConstrainedExecutor，把 Workflow ControlledExecutor 与真实 ResourceCoordinator lease/fencing 串起来。
