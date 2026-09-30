@@ -40,7 +40,8 @@ export interface WorkflowDefinition {
 export interface Activation { source: 'explicit' | 'workflow-handoff' | 'intent-match'; reason: string }
 export interface AgentPolicy { allowedTools: { capability: string; capabilityVersion: string }[]; maxInternalToolCalls: number; maxIterations: number; deadline: number }
 export interface ProviderUsage { internalToolCalls: number; iterations: number }
-export interface ExecutionRequest { context: WorkflowContext; capability: string; capabilityVersion: string; input: Json; idempotencyKey: string; agentPolicy?: AgentPolicy }
+export interface ResourceExecutionPermit { owner: { slotId: string; runId: string; executorId: string; executorBootId: string }; leases: { resourceId: string; leaseId: string; fencingEpoch: number; token: string }[] }
+export interface ExecutionRequest { context: WorkflowContext; capability: string; capabilityVersion: string; input: Json; idempotencyKey: string; runId?: string; agentPolicy?: AgentPolicy; resourcePermit?: ResourceExecutionPermit }
 export interface ExecutionSnapshot {
   executionId: string; state: 'QUEUED' | 'WAITING_APPROVAL' | 'RUNNING' | 'CANCEL_REQUESTED' | 'SUCCEEDED' | 'FAILED' | 'DENIED' | 'EXPIRED' | 'CANCELLED' | 'UNKNOWN';
   result?: Json | null; safeRetry?: boolean; artifactRefs?: string[]; usage?: ProviderUsage; budgetExhausted?: boolean;

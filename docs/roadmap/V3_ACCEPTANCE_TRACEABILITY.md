@@ -59,7 +59,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T51 | PASS | v3-workflows | Stage progression and controlled handoff covered |
 | T52 | PASS | v3-workflows | Invalid/missing workflow contracts and bounded routing covered |
 | T53 | PASS | v3-workflows, v3-workflow-scheduler, v3-recovery | Restart/checkpoint continuation without replay covered |
-| T54 | PARTIAL | v3-workflows, scheduler budget tests | Real resource-constrained parallel-branch conflict integration remains |
+| T54 | PASS | v3-resource-workflow real Workflow+ResourceCoordinator integration; v3-workflows/scheduler/resources/resource-host/application regressions | Parallel branches are admitted through ResourceConstrainedExecutor; exclusive resources serialize real inner execution; multi-resource waits are atomic with no partial reservation; fencing permits are platform-generated and validated; bounded resource expiry produces explicit branch failure, cancel-siblings cleanup and lease release without hidden tool-call retries |
 | T55 | PARTIAL | workflow cancellation plus process cancellation tests | SSH child cancellation absent and full propagation chain not closed |
 | T56 | NOT_RUN | none | Generic desired/observed controller for Reviewer/Tunnel not implemented |
 | T57 | PARTIAL | V2 http-reviewer regression | V3 managed-service/Slot authorization integration remains |

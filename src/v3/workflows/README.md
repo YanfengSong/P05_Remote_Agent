@@ -65,3 +65,9 @@ Budgets bound calls, iterations, in-flight parallelism, Workflow deadline and pe
 ## Validation
 
 `npx tsx src/test/v3-workflows.ts` runs a real SQLite-backed three-stage baseline → approved write → callback reviewer flow, closes/reopens both Workflow and durable execution state during approval, then confirms the original node resumes and the write occurs once. It also covers immutable revisions, ownership, missing contracts, invalid router handoff, scope escalation, inactive conditions, actual-result loops, parallel/join, unknown execution and cancellation, explicit safe retries, call/deadline exhaustion, and nonresumable callback recovery. This validates local contracts; it is not evidence of a commercial Agent integration or multi-host deployment.
+
+## Resource-constrained execution
+
+`ResourceConstrainedExecutor` wraps a `ControlledExecutor` with real `ResourceCoordinator` admission. Bindings map a capability/version to an atomic resource bundle. The Workflow Engine supplies the trusted Run id; the wrapper derives a branch-specific executor owner, queues the complete bundle, and invokes the inner executor only after all requested resources are granted. Resource waiting does not resubmit the Workflow node or consume hidden tool-call budget.
+
+Resource permits are platform-generated only. The inner request receives the exact owner plus lease id, fencing epoch and token for each granted resource, so a cooperating adapter can validate fencing immediately before resource operations. Caller-supplied permits are rejected. Completion and confirmed cancellation release the leases and pump the queue; bounded wait expiry surfaces as a terminal executor result so parallel `cancel-siblings` behavior can clean up already-running siblings. This is coordination and fencing for cooperating adapters, not an OS sandbox.

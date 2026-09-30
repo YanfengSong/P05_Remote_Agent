@@ -196,7 +196,7 @@ abstract class SubprocessAgentProvider implements AgentProvider {
   private async tool(active: Active, capability: string, capabilityVersion: string, input: Json): Promise<{ ok: boolean; state: string; result?: Json | null }> {
     const key = active.request.idempotencyKey + ":tool:" + active.usage.internalToolCalls;
     let snapshot = await this.options.toolExecutor.submit({
-      context: copy(active.request.context), capability, capabilityVersion, input: copy(input), idempotencyKey: key
+      context: copy(active.request.context), capability, capabilityVersion, input: copy(input), idempotencyKey: key, ...(active.request.runId ? { runId: active.request.runId } : {})
     });
     active.currentTool = { executionId: snapshot.executionId };
     while (!terminalStates.has(snapshot.state)) {

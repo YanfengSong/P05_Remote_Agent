@@ -1,3 +1,12 @@
+> **2026-09-30 T54 验收闭环**
+>
+> - 新增 ResourceConstrainedExecutor，把 Workflow ControlledExecutor 与真实 ResourceCoordinator lease/fencing 串起来。
+> - 同一 Run 的并行 branch 使用独立 executor owner；资源 bundle 原子申请，等待不会部分占有其他资源，也不会制造隐藏 tool-call 重试。
+> - 平台生成 resourcePermit（owner + leaseId/fencingEpoch/token）后才调用底层 adapter；调用方自行注入 permit 被拒绝，专项中真实 validateToken 通过。
+> - exclusive resource 实际把两个并行 branch 的底层峰值并发限制为 1；handover fencing epoch 严格递增。
+> - bundle 等待超时后 branch 明确 EXPIRED，cancel-siblings 取消已运行兄弟并释放 lease；失败/整合路径可预测。
+> - 当前矩阵：PASS 36 / PARTIAL 15 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T40 验收闭环**
 >
 > - 新增真实 Git worktree isolation/reconciliation：记录 baseCommit/branch/root/ownerRun/writeIntent，写 Agent 从同一 base 在独立 worktree 工作。

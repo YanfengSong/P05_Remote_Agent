@@ -191,7 +191,7 @@ export class WorkflowEngine {
           maxIterations: Math.max(0, Math.min(skill.budget.maxIterations - r.stageIterations, r.definition.workflow.budget.maxIterations - r.usedIterations)),
           deadline: Math.min(r.deadline, r.stageStartedAt + skill.budget.timeoutMs)
         } : undefined;
-        snapshot = await executor.submit({ context, capability, capabilityVersion: version, input: copy(record.requestInput!), idempotencyKey: record.idempotencyKey, ...(agentPolicy ? { agentPolicy } : {}) });
+        snapshot = await executor.submit({ context, capability, capabilityVersion: version, input: copy(record.requestInput!), idempotencyKey: record.idempotencyKey, runId: r.runId, ...(agentPolicy ? { agentPolicy } : {}) });
       }
     } catch { record.state = record.executionId ? 'WAITING' : 'UNKNOWN'; record.failureCode = 'EXECUTOR_TRANSPORT_UNCONFIRMED'; await this.save(session, 'EXECUTOR_UNCONFIRMED'); return { state: record.executionId ? 'waiting' : 'unknown' }; }
     if (!snapshot.executionId || (record.executionId && snapshot.executionId !== record.executionId)) throw new WorkflowError('EXECUTOR_IDENTITY', 'Execution identity changed');
