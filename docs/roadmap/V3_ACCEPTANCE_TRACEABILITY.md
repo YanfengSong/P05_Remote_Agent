@@ -53,8 +53,8 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T45 | PASS | v3-component-host, v3-composition | Activation failure, dependency lifecycle and disposal semantics covered |
 | T46 | PARTIAL | v3-composition, v3-component-host | Shadow/interceptor authorization-invariance acceptance not fully closed |
 | T47 | NOT_RUN | callback provider only | Need two real Agent Providers, budget exhaustion and internal-tool boundary test |
-| T48 | PARTIAL | workflow catalog/registry validation | Skill revision-change acceptance incomplete |
-| T49 | PARTIAL | workflow routing/registry tests | Project-rule precedence and untrusted-text override scenario incomplete |
+| T48 | PASS | v3-workflows contract/revision acceptance plus persisted definition snapshots | Missing schema/capability/DoD/budget fail before activation; same-revision content changes are rejected; existing Runs retain pinned skill revision/content digest while only explicitly selected new Runs adopt revision 2 |
+| T49 | PASS | SkillActivationRouter unit acceptance plus workflow-service/Application routed-start integration | Deterministic precedence is explicit > workflow-handoff > evidence-backed intent; project rules and caller scope can only restrict authority; untrusted text is audit-only and cannot select targets or grant authority; conflicts fail explicitly and activation source/reason are persisted |
 | T50 | NOT_RUN | asset/component lifecycle pieces only | Full Skill install/upgrade/rollback/disable/cross-Host provenance not implemented |
 | T51 | PASS | v3-workflows | Stage progression and controlled handoff covered |
 | T52 | PASS | v3-workflows | Invalid/missing workflow contracts and bounded routing covered |

@@ -37,7 +37,7 @@ export interface WorkflowDefinition {
   stages: { stageId: string; skillId: string; skillRevision: string; next?: { routeId: string; revision: string } }[];
   dod: { id: string; condition: Condition; evidence: Value }[];
 }
-export interface Activation { source: 'explicit' | 'workflow-handoff'; reason: string }
+export interface Activation { source: 'explicit' | 'workflow-handoff' | 'intent-match'; reason: string }
 export interface ExecutionRequest { context: WorkflowContext; capability: string; capabilityVersion: string; input: Json; idempotencyKey: string }
 export interface ExecutionSnapshot {
   executionId: string; state: 'QUEUED' | 'WAITING_APPROVAL' | 'RUNNING' | 'CANCEL_REQUESTED' | 'SUCCEEDED' | 'FAILED' | 'DENIED' | 'EXPIRED' | 'CANCELLED' | 'UNKNOWN';

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createDurableKernel, DurableStore, type Run } from '../v3/durable/index.js';
-import { CallbackAgentProvider, WorkflowEngine, WorkflowRegistry, copy, type ControlledExecutor, type ExecutionSnapshot, type Json, type Node, type Schema, type SkillDefinition, type StateBackend, type WorkflowContext, type WorkflowDefinition } from '../v3/workflows/index.js';
+import { CallbackAgentProvider, WorkflowEngine, WorkflowError, WorkflowRegistry, copy, type ControlledExecutor, type ExecutionSnapshot, type Json, type Node, type Schema, type SkillDefinition, type StateBackend, type WorkflowContext, type WorkflowDefinition } from '../v3/workflows/index.js';
 
 class SqliteState implements StateBackend {
   readonly db: DatabaseSync;
@@ -69,6 +69,13 @@ try {
   registry.registerSkill({ ...skill('baseline', { id: 'capture', kind: 'capability', capability: 'baseline', input: { literal: 99 } }, ['baseline']), revision: '2' });
   assert.throws(() => registry.registerSkill({ ...skill('baseline', { id: 'capture', kind: 'capability', capability: 'baseline', input: { literal: 99 } }, ['baseline']) }), /new revision/);
   engine = new WorkflowEngine({ registry, state, executor, agents: [agent] });
+  const pinnedBeforeUpgrade = await engine.status(context, started.runId);
+  const pinnedBaselineDigest = pinnedBeforeUpgrade.definition.skillDigests['baseline@1'];
+  registry.registerWorkflow({ ...definition, revision: '2', stages: definition.stages.map(stage => stage.stageId === 'baseline' ? { ...stage, skillRevision: '2' } : stage) });
+  const upgraded = await engine.start(context, { workflowId: 'engineering', revision: '2', input: 1, idempotencyKey: 'three-stage-v2', activationSource });
+  assert.equal(upgraded.activeSkillRevision, '2'); assert.notEqual(upgraded.definitionDigest, started.definitionDigest);
+  const stillPinned = await engine.status(context, started.runId);
+  assert.equal(stillPinned.activeSkillRevision, '1'); assert.equal(stillPinned.definition.skillDigests['baseline@1'], pinnedBaselineDigest); assert.equal(stillPinned.definition.skills['baseline@2'], undefined);
   assert.equal((await engine.tick(context, started.runId)).state, 'WAITING_APPROVAL');
   const approval = durable.kernel.status(context, executionId).approval!;
   durable.operator.decide({ approvalId: approval.approvalId, expectedDecisionVersion: approval.decisionVersion, decision: 'APPROVE', actor: 'local-operator' });
@@ -89,6 +96,8 @@ try {
   const parallel = await engine.start(context, { workflowId: 'parallel', revision: '1', input: 4, idempotencyKey: 'parallel', activationSource });
   const parallelDone = await pump(parallel.runId, 'SUCCEEDED'); assert.deepEqual(parallelDone.output, { left: 5, right: 5 });
   assert.throws(() => registry.registerSkill(skill('missing', { id: 'missing', kind: 'capability', capability: 'missing', input: { ref: 'input' } }, ['missing'])), /MISSING_CAPABILITY/);
+  assert.throws(() => registry.registerSkill({ ...skill('missing-schema', { id: 'read', kind: 'capability', capability: 'baseline', input: { ref: 'input' } }, ['baseline']), inputSchema: undefined } as unknown as SkillDefinition), (error: unknown) => error instanceof WorkflowError && ['INVALID_JSON','INVALID_DEFINITION','INVALID_SCHEMA'].includes(error.code));
+  assert.throws(() => registry.registerSkill({ ...skill('bad-budget', { id: 'read', kind: 'capability', capability: 'baseline', input: { ref: 'input' } }, ['baseline']), budget: { ...budget, maxCalls: 0 } }), /INVALID_DEFINITION/);
   assert.throws(() => registry.registerSkill({ ...skill('missing-dod', { id: 'read', kind: 'capability', capability: 'baseline', input: { ref: 'input' } }, ['baseline']), dod: [] }), /INVALID_DEFINITION/);
   assert.throws(() => registry.registerWorkflow({ ...workflow('bad-route', 'baseline'), stages: [{ stageId: 'main', skillId: 'baseline', skillRevision: '1', next: { routeId: 'unregistered', revision: '1' } }] }), /INVALID_HANDOFF/);
   assert.throws(() => registry.registerSkill(skill('unsafe-parallel', { id: 'p', kind: 'parallel', failurePolicy: 'wait-all', branches: ['a', 'b'].map(key => ({ key, outputOwner: key, authority: ['WorkspaceWrite'], node: { id: key, kind: 'capability' as const, capability: 'edit', input: { ref: 'input' as const } } })) }, ['edit'])), /PARALLEL_WRITE_ISOLATION_REQUIRED/);

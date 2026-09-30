@@ -10,10 +10,19 @@ import { WorkflowEngine } from "./workflows/engine.js";
 import { WorkflowError, type Json, type SkillDefinition, type RouteDefinition, type WorkflowDefinition, type WorkflowRun } from "./workflows/types.js";
 import { verifyConfigurationProtection, verifyStateProtection } from "./protection.js";
 import { WorkflowScheduler } from "./workflow-scheduler.js";
+import { SkillActivationRouter, activationRouteSchema, projectRuleSchema } from "./workflows/routing.js";
 
 const label = z.string().min(1).max(160);
 const query = z.object({ id: label }).strict();
 const start = z.object({ workflowId: label, revision: label, input: z.json(), idempotencyKey: z.string().min(1).max(256), reason: z.string().min(1).max(4096) }).strict();
+const routed = z.object({
+  explicit: z.object({ workflowId: label, revision: label }).strict().optional(),
+  explicitAlias: label.optional(),
+  workflowHandoff: z.object({ workflowId: label, revision: label, reason: z.string().min(1).max(4096) }).strict().optional(),
+  intentSignals: z.array(label).max(32).optional(),
+  untrustedText: z.string().max(64 * 1024).optional(),
+  input: z.json(), idempotencyKey: z.string().min(1).max(256).optional()
+}).strict();
 
 export async function createWorkflowService(options: {
   catalogFile: string; state: CoreState; kernel: DurableKernel; context: ExecutionContext;
@@ -27,11 +36,13 @@ export async function createWorkflowService(options: {
     throw new Error("WORKFLOW_CATALOG_PROTECTION_UNVERIFIED");
   }
   if (fs.statSync(file).size > 1024 * 1024) throw new Error("WORKFLOW_CATALOG_LIMIT");
-  const catalog = z.object({ version: z.literal(1), skills: z.array(z.json()).max(128), routes: z.array(z.json()).max(128), workflows: z.array(z.json()).max(128) }).strict().parse(JSON.parse(fs.readFileSync(file, "utf8")));
+  const catalog = z.object({ version: z.literal(1), skills: z.array(z.json()).max(128), routes: z.array(z.json()).max(128), workflows: z.array(z.json()).max(128),
+    activationRoutes: z.array(activationRouteSchema).max(128).default([]), projectRules: z.array(projectRuleSchema).max(128).default([]) }).strict().parse(JSON.parse(fs.readFileSync(file, "utf8")));
   const registry = new WorkflowRegistry({ capabilities: options.capabilities.map(c => ({ capability: c.capability, version: c.capabilityVersion, effect: c.capability === "fs_write" || c.capability === "process_run" ? "write" : "read" })) });
   for (const skill of catalog.skills) registry.registerSkill(skill as unknown as SkillDefinition);
   for (const route of catalog.routes) registry.registerRoute(route as unknown as RouteDefinition);
   for (const workflow of catalog.workflows) registry.registerWorkflow(workflow as unknown as WorkflowDefinition);
+  const activationRouter = new SkillActivationRouter(registry, catalog.activationRoutes, catalog.projectRules);
   let closed = false;
   const assertOpen = () => { if (closed) throw new WorkflowError("WORKFLOW_SERVICE_CLOSED", "Workflow owner is closed"); };
   const stateKey = (namespace: string, key: string) => "service:workflow:" + createHash("sha256").update(JSON.stringify([namespace, key])).digest("hex");
@@ -95,6 +106,20 @@ export async function createWorkflowService(options: {
       switch (method) {
         case "workflow_scheduler_status": return { autoAdvance: Boolean(scheduler), discoveryFailures, scheduler: await scheduler?.status() ?? null };
         case "workflow_list": return { workflows: catalog.workflows.map(raw => { const d = raw as unknown as WorkflowDefinition; return { workflowId: d.workflowId, revision: d.revision, description: d.description }; }) };
+        case "workflow_route": {
+          const request = routed.parse(input);
+          return activationRouter.route({ ...options.context, authority: options.authority, securityMode: "trusted-host" }, request);
+        }
+        case "workflow_start_routed": {
+          const request = routed.parse(input);
+          if (!request.idempotencyKey) throw new WorkflowError("INVALID_ACTIVATION", "Routed start requires an idempotency key");
+          const selected = activationRouter.route({ ...options.context, authority: options.authority, securityMode: "trusted-host" }, request);
+          const run = await engine.start({ ...options.context, authority: options.authority, securityMode: "trusted-host" }, {
+            workflowId: selected.workflowId, revision: selected.revision, input: request.input, idempotencyKey: request.idempotencyKey, activationSource: selected.activation
+          });
+          await scheduler?.track(run.runId, run.state);
+          return { ...view(run), activationRoute: selected };
+        }
         case "workflow_start": {
           const request = start.parse(input);
           const run = await engine.start({ ...options.context, authority: options.authority, securityMode: "trusted-host" }, {

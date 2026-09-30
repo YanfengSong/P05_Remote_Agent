@@ -1,3 +1,9 @@
+> **2026-09-30 T48/T49 验收闭环**
+>
+> - T48：Skill 合同缺失在激活前失败；同 revision 内容不可变；运行中 Run 固定原 revision/contentDigest，新 revision 只由新 Run 显式采用。
+> - T49：新增确定性 SkillActivationRouter 与 workflow_route/workflow_start_routed；优先级为 explicit > workflow-handoff > evidence-backed intent；Project rule/调用方 scope 只能收窄权限；不可信文本不能覆盖授权或路由。
+> - 当前矩阵：PASS 31 / PARTIAL 19 / NOT_RUN 20 / N/A 0。
+>
 > **2026-09-30 T43 验收闭环**
 >
 > - 新增 hostile downstream MCP 专项：malformed CallToolResult 由官方 MCP schema gate 拒绝并隔离；调用中进程退出使连接失效；健康状态仅保留 safe category；后续调用可重连恢复。

@@ -262,6 +262,8 @@ export async function startV3Application(configFile: string, maintenance: { reco
             return record;
           }
           case "workflow_list":
+          case "workflow_route":
+          case "workflow_start_routed":
           case "workflow_scheduler_status":
           case "workflow_resume":
           case "workflow_start":

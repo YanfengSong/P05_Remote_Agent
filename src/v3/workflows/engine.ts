@@ -24,7 +24,7 @@ export class WorkflowEngine {
   }
   async status(owner: Owner, id: string): Promise<WorkflowRun> { return copy((await this.owned(owner, id)).run); }
   async start(context: WorkflowContext, request: StartRequest): Promise<WorkflowRun> {
-    if (!request.idempotencyKey || request.idempotencyKey.length > 256 || !['explicit', 'workflow-handoff'].includes(request.activationSource.source) || !request.activationSource.reason.trim() || request.activationSource.reason.length > 4096) throw new WorkflowError('INVALID_ACTIVATION', 'Explicit activation contract required');
+    if (!request.idempotencyKey || request.idempotencyKey.length > 256 || !['explicit', 'workflow-handoff', 'intent-match'].includes(request.activationSource.source) || !request.activationSource.reason.trim() || request.activationSource.reason.length > 4096) throw new WorkflowError('INVALID_ACTIVATION', 'Explicit activation contract required');
     const definition = this.options.registry.snapshot(request.workflowId, request.revision), workflow = definition.workflow;
     if (workflow.scope.workspaceId !== context.workspaceId || workflow.scope.securityMode !== context.securityMode || !workflow.scope.authority.every(a => context.authority.includes(a))) throw new WorkflowError('SCOPE_ESCALATION', 'Definition exceeds supplied execution scope');
     validate(workflow.inputSchema, request.input);
