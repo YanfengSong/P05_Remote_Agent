@@ -72,7 +72,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T64 | NOT_RUN | none | 24-hour dual-Slot soak/capacity acceptance not executed |
 | T65 | PASS | V3 application capability-catalog startup gate and public catalog assertions | Startup rejects missing or invalid effect/execution identity/backend metadata and requires an exact declaration for every registered capability |
 | T66 | NOT_RUN | none | Sleep/time-change/remote-restart lease-expiry acceptance not executed |
-| T67 | PARTIAL | v3-component-host asset digest/activation checks | Cross-principal query, reference retention and cleanup acceptance incomplete |
+| T67 | PASS | v3-asset-artifact-security plus v3-reference-artifact-gc/v3-composition/v3-component-host/application regressions | Artifact queries are bound to principal/workspace visibility and hide denied ids; blob digest substitution is detected before read; promotion claims pin source Artifacts against GC and Asset provenance records artifact/run/digest; forged promotion bytes are rejected; only exact-digest ACTIVE Asset revisions resolve for execution, while DRAFT/VERIFIED/REVOKED revisions do not; released provenance references become collectable |
 | T68 | PARTIAL | V2 regression under V3 worktree | Real V2 config/history migration and stale-approval non-revival drill remains |
 | T69 | NOT_RUN | none | Disk-full/WAL/backup-failure/log-flood fail-closed acceptance not executed |
 | T70 | PARTIAL | V3_LOCAL_DEVELOPMENT_HANDOFF.md | Formal independent Runbook handoff drill not executed |

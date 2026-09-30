@@ -1,3 +1,12 @@
+> **2026-09-30 T67 验收闭环**
+>
+> - ArtifactStore 固化 principal/workspace/visibility ACL；仅知道 artifactId 不能跨 principal/private 或跨 Workspace 查询与读取。
+> - Artifact blob 读取前重新校验 size + SHA-256；摘要替换在返回内容前 fail closed。
+> - Artifact→Asset promotion claim 自动增加 asset-source GC 引用；promotion receipt 固化 artifactId/producerRun/digest，伪造 bytes 会被拒绝。
+> - Asset DRAFT/VERIFIED/REVOKED 均不能 resolve 执行；只有 exact-digest ACTIVE revision 可返回执行 bytes，执行解析时再次校验 blob digest。
+> - Asset 撤销后显式释放 source 引用，源 Artifact 才重新具备 GC 资格；T41 retention/GC 与 Component Host 激活回归均通过。
+> - 当前矩阵：PASS 38 / PARTIAL 13 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T41 验收闭环**
 >
 > - Reference 暴露面保持只读；canonical path 检查拒绝 `.git` 等受保护共享元数据，并阻止 link/junction 越出授权 Reference root。

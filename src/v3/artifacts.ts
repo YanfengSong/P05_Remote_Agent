@@ -3,10 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export type ArtifactProtection = "active-run" | "pending-review" | "rollback" | "pin";
+export type ArtifactProtection = "active-run" | "pending-review" | "rollback" | "pin" | "asset-source";
+export type ArtifactAccessContext = { principalId: string; workspaceId: string };
+export type ArtifactVisibility = "private" | "workspace";
+export type ArtifactPromotionSource = { artifactId: string; producerRun: string; contentDigest: string; size: number; mediaType: string; bytes: Buffer };
 export type ArtifactRecord = {
   artifactId: string;
   producerRun: string;
+  principalId: string;
+  workspaceId: string;
+  visibility: ArtifactVisibility;
   digest: string;
   mediaType: string;
   size: number;
@@ -28,7 +34,7 @@ export type ArtifactStoreOptions = {
 
 function validId(value: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value); }
 function uniqueProtections(values: ArtifactProtection[]): ArtifactProtection[] {
-  const valid = new Set<ArtifactProtection>(["active-run", "pending-review", "rollback", "pin"]);
+  const valid = new Set<ArtifactProtection>(["active-run", "pending-review", "rollback", "pin", "asset-source"]);
   if (!Array.isArray(values) || values.some(value => !valid.has(value))) throw new ArtifactStoreError("INVALID_ARTIFACT_PROTECTION");
   return [...new Set(values)].sort() as ArtifactProtection[];
 }
@@ -55,6 +61,9 @@ export class ArtifactStore {
       CREATE TABLE IF NOT EXISTS artifacts(
         artifact_id TEXT PRIMARY KEY,
         producer_run TEXT NOT NULL,
+        principal_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        visibility TEXT NOT NULL,
         digest TEXT NOT NULL,
         media_type TEXT NOT NULL,
         size INTEGER NOT NULL,
@@ -75,8 +84,34 @@ export class ArtifactStore {
 
   private blobPath(digest: string): string { return path.join(this.blobs, digest.slice(0, 2), digest.slice(2)); }
 
-  publish(input: { producerRun: string; mediaType: string; content: Buffer | string; protections?: ArtifactProtection[]; retentionMs?: number }): ArtifactRecord {
+  private rawGet(artifactId: string): ArtifactRecord {
+    const row = this.db.prepare("SELECT * FROM artifacts WHERE artifact_id=?").get(artifactId) as any;
+    if (!row) throw new ArtifactStoreError("ARTIFACT_NOT_FOUND");
+    return {
+      artifactId: row.artifact_id,
+      producerRun: row.producer_run,
+      principalId: row.principal_id,
+      workspaceId: row.workspace_id,
+      visibility: row.visibility as ArtifactVisibility,
+      digest: row.digest,
+      mediaType: row.media_type,
+      size: Number(row.size),
+      createdAt: Number(row.created_at),
+      completedAt: row.completed_at === null ? null : Number(row.completed_at),
+      retentionUntil: Number(row.retention_until),
+      protections: JSON.parse(row.protections) as ArtifactProtection[]
+    };
+  }
+
+  private authorize(context: ArtifactAccessContext, record: ArtifactRecord): void {
+    if (!validId(context.principalId) || !validId(context.workspaceId)) throw new ArtifactStoreError("INVALID_ARTIFACT_ACCESS");
+    const allowed = context.workspaceId === record.workspaceId && (record.visibility === "workspace" || context.principalId === record.principalId);
+    if (!allowed) throw new ArtifactStoreError("ARTIFACT_NOT_FOUND");
+  }
+
+  publish(input: { producerRun: string; principalId: string; workspaceId: string; visibility: ArtifactVisibility; mediaType: string; content: Buffer | string; protections?: ArtifactProtection[]; retentionMs?: number }): ArtifactRecord {
     if (!validId(input.producerRun)) throw new ArtifactStoreError("INVALID_PRODUCER_RUN");
+    if (!validId(input.principalId) || !validId(input.workspaceId) || !["private", "workspace"].includes(input.visibility)) throw new ArtifactStoreError("INVALID_ARTIFACT_OWNER");
     if (typeof input.mediaType !== "string" || !input.mediaType.trim() || input.mediaType.length > 255) throw new ArtifactStoreError("INVALID_MEDIA_TYPE");
     const retentionMs = input.retentionMs ?? this.defaultRetentionMs;
     if (!Number.isSafeInteger(retentionMs) || retentionMs < 0) throw new ArtifactStoreError("INVALID_ARTIFACT_RETENTION");
@@ -99,6 +134,9 @@ export class ArtifactStore {
     const record: ArtifactRecord = {
       artifactId: "art-" + randomUUID(),
       producerRun: input.producerRun,
+      principalId: input.principalId,
+      workspaceId: input.workspaceId,
+      visibility: input.visibility,
       digest,
       mediaType: input.mediaType,
       size: bytes.length,
@@ -107,31 +145,21 @@ export class ArtifactStore {
       retentionUntil: now + retentionMs,
       protections
     };
-    this.db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-      record.artifactId, record.producerRun, record.digest, record.mediaType, record.size,
+    this.db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+      record.artifactId, record.producerRun, record.principalId, record.workspaceId, record.visibility, record.digest, record.mediaType, record.size,
       record.createdAt, null, record.retentionUntil, JSON.stringify(record.protections)
     );
     return structuredClone(record);
   }
 
-  get(artifactId: string): ArtifactRecord {
-    const row = this.db.prepare("SELECT * FROM artifacts WHERE artifact_id=?").get(artifactId) as any;
-    if (!row) throw new ArtifactStoreError("ARTIFACT_NOT_FOUND");
-    return {
-      artifactId: row.artifact_id,
-      producerRun: row.producer_run,
-      digest: row.digest,
-      mediaType: row.media_type,
-      size: Number(row.size),
-      createdAt: Number(row.created_at),
-      completedAt: row.completed_at === null ? null : Number(row.completed_at),
-      retentionUntil: Number(row.retention_until),
-      protections: JSON.parse(row.protections) as ArtifactProtection[]
-    };
+  get(context: ArtifactAccessContext, artifactId: string): ArtifactRecord {
+    const record = this.rawGet(artifactId);
+    this.authorize(context, record);
+    return structuredClone(record);
   }
 
-  read(artifactId: string): Buffer {
-    const record = this.get(artifactId);
+  read(context: ArtifactAccessContext, artifactId: string): Buffer {
+    const record = this.get(context, artifactId);
     const file = this.blobPath(record.digest);
     if (!fs.existsSync(file)) throw new ArtifactStoreError("ARTIFACT_BLOB_MISSING");
     const bytes = fs.readFileSync(file);
@@ -140,12 +168,12 @@ export class ArtifactStore {
   }
 
   updateProtection(artifactId: string, protection: ArtifactProtection, enabled: boolean): ArtifactRecord {
-    const record = this.get(artifactId);
+    const record = this.rawGet(artifactId);
     const set = new Set(record.protections);
     if (enabled) set.add(protection); else set.delete(protection);
     record.protections = uniqueProtections([...set]);
     this.db.prepare("UPDATE artifacts SET protections=? WHERE artifact_id=?").run(JSON.stringify(record.protections), artifactId);
-    return record;
+    return structuredClone(record);
   }
 
   completeRun(producerRun: string): number {
@@ -153,13 +181,26 @@ export class ArtifactStore {
     const now = this.time();
     let changed = 0;
     for (const row of this.db.prepare("SELECT artifact_id FROM artifacts WHERE producer_run=?").all(producerRun) as { artifact_id: string }[]) {
-      const record = this.get(row.artifact_id);
+      const record = this.rawGet(row.artifact_id);
       if (!record.protections.includes("active-run")) continue;
-      record.protections = record.protections.filter(value => value !== "active-run");
+      record.protections = record.protections.filter((value: ArtifactProtection) => value !== "active-run");
       this.db.prepare("UPDATE artifacts SET completed_at=?, protections=? WHERE artifact_id=?").run(now, JSON.stringify(record.protections), record.artifactId);
       changed++;
     }
     return changed;
+  }
+
+  claimForAsset(context: ArtifactAccessContext, artifactId: string): ArtifactPromotionSource {
+    const record = this.get(context, artifactId);
+    const bytes = this.read(context, artifactId);
+    this.updateProtection(artifactId, "asset-source", true);
+    return Object.freeze({ artifactId: record.artifactId, producerRun: record.producerRun, contentDigest: record.digest, size: record.size, mediaType: record.mediaType, bytes: Buffer.from(bytes) });
+  }
+
+  releaseAssetSource(context: ArtifactAccessContext, artifactId: string): ArtifactRecord {
+    const record = this.get(context, artifactId);
+    if (!record.protections.includes("asset-source")) return record;
+    return this.updateProtection(artifactId, "asset-source", false);
   }
 
   gc(input: { maxScan: number; maxDelete: number }): { scanned: number; deletedArtifacts: number; deletedBlobs: number; protectedArtifacts: number } {
@@ -172,7 +213,7 @@ export class ArtifactStore {
     let deletedArtifacts = 0, deletedBlobs = 0, protectedArtifacts = 0;
     for (const row of rows) {
       if (deletedArtifacts >= input.maxDelete) break;
-      const record = this.get(row.artifact_id);
+      const record = this.rawGet(row.artifact_id);
       if (record.protections.length > 0 || record.completedAt === null || record.retentionUntil > now) { protectedArtifacts++; continue; }
       this.db.prepare("DELETE FROM artifacts WHERE artifact_id=?").run(record.artifactId);
       deletedArtifacts++;

@@ -4,13 +4,14 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { CompositionError } from "./contracts.js";
+import type { ArtifactPromotionSource } from "../artifacts.js";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 const assetInput = z.object({ assetId: id, revision: id, source: z.string().min(1).max(2048), author: id, effects: z.array(z.enum(["E0", "E1", "E2", "E3", "E4"])).max(5) }).strict();
 const artifactInput = z.object({ artifactId: id, producerRunId: id, invocationId: id, attemptId: id, inputDigest: z.string().regex(/^[a-f0-9]{64}$/), mediaType: z.string().min(1).max(128), visibility: id }).strict();
 export type AssetDraft = z.infer<typeof assetInput>;
 export type ArtifactInput = z.infer<typeof artifactInput>;
-export interface AssetRevision extends AssetDraft { contentDigest: string; size: number; state: "DRAFT" | "VERIFIED" | "ACTIVE" | "DEPRECATED" | "REVOKED"; evidenceRef?: string; promotedFromArtifactId?: string }
+export interface AssetRevision extends AssetDraft { contentDigest: string; size: number; state: "DRAFT" | "VERIFIED" | "ACTIVE" | "DEPRECATED" | "REVOKED"; evidenceRef?: string; promotedFromArtifactId?: string; promotedFromRunId?: string; promotedFromArtifactDigest?: string }
 export interface ArtifactRecord extends ArtifactInput { contentDigest: string; size: number }
 
 /** Protected local content storage. Methods are trusted administration primitives,
@@ -119,6 +120,28 @@ export class AssetStore {
     return record;
   }
 
+  promoteExternalArtifact(source: Readonly<ArtifactPromotionSource>, input: Omit<AssetDraft, "source">): AssetRevision {
+    this.assertOpen();
+    const artifactId = id.parse(source.artifactId);
+    const producerRun = id.parse(source.producerRun);
+    if (!/^[a-f0-9]{64}$/.test(source.contentDigest) || !Number.isSafeInteger(source.size) || source.size < 0 || !(source.bytes instanceof Uint8Array)) throw new CompositionError("INVALID_ARTIFACT_PROMOTION_SOURCE");
+    const bytes = Buffer.from(source.bytes);
+    if (bytes.byteLength !== source.size || this.hash(bytes) !== source.contentDigest) throw new CompositionError("ARTIFACT_PROMOTION_DIGEST_MISMATCH");
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const record = { ...this.createDraft({ ...input, source: "artifact:" + artifactId }, bytes), promotedFromArtifactId: artifactId, promotedFromRunId: producerRun, promotedFromArtifactDigest: source.contentDigest };
+      this.db.prepare("UPDATE assets SET record=? WHERE asset_id=? AND revision=?").run(JSON.stringify(record), record.assetId, record.revision);
+      this.db.exec("COMMIT;");
+      return record;
+    } catch (error) { this.db.exec("ROLLBACK;"); throw error; }
+  }
+
+  resolveActive(assetId: string, revision: string, expectedDigest: string): { asset: AssetRevision; bytes: Buffer } {
+    const record = this.getAsset(assetId, revision);
+    if (record.state !== "ACTIVE" || record.contentDigest !== expectedDigest) throw new CompositionError("ASSET_NOT_ACTIVE");
+    const bytes = this.readBlob(record.contentDigest);
+    return { asset: structuredClone(record), bytes };
+  }
   promoteArtifact(artifactId: string, input: AssetDraft): AssetRevision {
     this.assertOpen();
     this.db.exec("BEGIN IMMEDIATE;");
