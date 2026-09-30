@@ -35,6 +35,14 @@ interface Fiber {
 export interface ServicePin<T> { value: T; bindingId: string; release(): void }
 export interface CompositionDesiredStore { get<T>(key: string): T | undefined; put(key: string, value: unknown): void }
 const savedDesiredSchema = z.object({ revision: z.string(), entrypointDigest: z.string(), configVersion: z.string(), config: z.unknown(), desired: z.object({ enabled: z.boolean(), manualHold: z.boolean(), revision: z.number().int().positive() }).strict() }).strict();
+const protectedServicePrefixes = Object.freeze(["p05.trust.", "p05.authorization.", "p05.storage.integrity", "p05.updater."]);
+function assertReplaceableServices(manifest: ComponentManifest): void {
+  for (const provided of manifest.provides) {
+    if (protectedServicePrefixes.some((prefix) => provided.key.name === prefix || provided.key.name.startsWith(prefix))) {
+      throw new CompositionError("PROTECTED_SERVICE_PROVIDER");
+    }
+  }
+}
 
 /** Trusted installed-code composition only. Scope and Shadow are not code/OS sandboxes. */
 export class CompositionRuntime {
@@ -63,6 +71,7 @@ export class CompositionRuntime {
 
   private parsed<C>(definition: ComponentDefinition<C>, scopeId: string): ComponentDefinition {
     const manifest = componentManifestSchema.parse(definition.manifest);
+    assertReplaceableServices(manifest);
     if (manifest.scope !== this.scope(scopeId).kind) throw new CompositionError("COMPONENT_SCOPE_MISMATCH");
     for (const contributions of [manifest.provides, manifest.requires]) if (new Set(contributions.map((item) => keyId(item.key))).size !== contributions.length) throw new CompositionError("DUPLICATE_SERVICE_DECLARATION");
     return { ...definition, manifest: immutableSnapshot(manifest) as ComponentManifest } as ComponentDefinition;

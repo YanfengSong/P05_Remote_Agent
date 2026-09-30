@@ -1,3 +1,10 @@
+> **2026-09-30 T46 验收闭环**
+>
+> - 新增授权不变量专项：interceptor deny 单调、actor/authority/approval envelope 不可改写，异常/超时/非法返回均 fail closed。
+> - CompositionRuntime 禁止普通组件发布或热替换 trust/authorization/storage-integrity/updater 保留服务；失败候选保留旧业务 binding。
+> - Shadow candidate 的 E2/E3/E4 外部效果在 gateway 前硬拒绝，真实 effect manager 调用数保持 0。
+> - 当前矩阵：PASS 33 / PARTIAL 17 / NOT_RUN 20 / N/A 0。
+>
 > **2026-09-30 T42 验收闭环**
 >
 > - V2 PluginRuntime 新增 Slot-local 持久 desired/observed/manualHold/controllerRevision 状态。

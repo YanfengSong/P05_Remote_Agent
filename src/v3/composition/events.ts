@@ -75,7 +75,15 @@ export class CompositionEvents {
     let denied = false;
     for (const interceptor of [...this.interceptors.get(point) ?? []]) {
       // Strict output schema rejects attempts to replace captured actor, permissions or approval.
-      const result = interceptorResult.parse(await this.bounded(() => interceptor.callback(snapshot)));
+      let raw: unknown;
+      try { raw = await this.bounded(() => interceptor.callback(snapshot)); }
+      catch (error) {
+        if (error instanceof CompositionError && error.code === "HOOK_TIMEOUT") throw error;
+        throw new CompositionError("INTERCEPTOR_FAILED");
+      }
+      let result: InterceptorResult;
+      try { result = interceptorResult.parse(raw); }
+      catch { throw new CompositionError("INTERCEPTOR_INVALID_RESULT"); }
       denied ||= result.deny === true;
       Object.assign(metadata, result.metadata);
     }

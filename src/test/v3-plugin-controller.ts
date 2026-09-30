@@ -44,15 +44,24 @@ function environment(): Record<string, string> {
   };
 }
 
-async function latestBridge(): Promise<BridgeMeta> {
+async function bridgeFiles(): Promise<Set<string>> {
+  return new Set((await fs.readdir(stateDir).catch(() => []))
+    .filter(name => name.startsWith("operator-bridge-") && name.endsWith(".json")));
+}
+
+async function latestBridge(previous: ReadonlySet<string>): Promise<BridgeMeta> {
   for (let i = 0; i < 500; i++) {
-    const files = (await fs.readdir(stateDir).catch(() => []))
-      .filter(name => name.startsWith("operator-bridge-") && name.endsWith(".json"));
+    const files = [...await bridgeFiles()].filter(name => !previous.has(name));
     for (const name of files) {
       try {
         const value = JSON.parse(await fs.readFile(path.join(stateDir, name), "utf8")) as BridgeMeta;
-        if (value.url.startsWith("http://127.0.0.1:") && value.token.length === 64) return value;
-      } catch { /* incomplete metadata */ }
+        if (name !== `operator-bridge-${value.pid}.json` || !value.url.startsWith("http://127.0.0.1:") || value.token.length !== 64) continue;
+        const response = await fetch(value.url + "/api/overview", {
+          headers: { authorization: `Bearer ${value.token}` },
+          signal: AbortSignal.timeout(500)
+        });
+        if (response.status === 200) return value;
+      } catch { /* incomplete or not-yet-live metadata */ }
     }
     await new Promise(resolve => setTimeout(resolve, 20));
   }
@@ -78,6 +87,7 @@ async function plugin(meta: BridgeMeta): Promise<PluginView> {
 }
 
 async function launch() {
+  const previous = await bridgeFiles();
   const client = new Client({ name: "t42-slot-restart", version: VERSION });
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -86,7 +96,7 @@ async function launch() {
     stderr: "pipe"
   });
   await client.connect(transport);
-  const meta = await latestBridge();
+  const meta = await latestBridge(previous);
   return { client, meta };
 }
 
