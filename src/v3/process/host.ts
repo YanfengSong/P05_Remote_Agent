@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import * as z from "zod/v4";
 import type { RpcRole } from "../transport/rpc.js";
+import { StreamingSecretRedactor, redactSecretText } from "../secrets.js";
 
 export type ProcessOwner = { slot: string; principal: string; runId: string; attemptId: string };
 export type ProcessHostOptions = {
@@ -24,7 +25,7 @@ export type ProcessView = {
 };
 type Row = Record<string, unknown>;
 const ownerSchema = z.object({ slot: z.string().min(1).max(80), principal: z.string().min(1).max(160), runId: z.string().min(1).max(160), attemptId: z.string().min(1).max(160) }).strict();
-const submitSchema = z.object({ dispatchKey: z.string().min(1).max(256), owner: ownerSchema, executable: z.string().min(1).max(4096), args: z.array(z.string().max(32768)).max(256) }).strict();
+const submitSchema = z.object({ dispatchKey: z.string().min(1).max(256), owner: ownerSchema, executable: z.string().min(1).max(4096), args: z.array(z.string().max(32768)).max(256), redactions: z.array(z.string().min(4).max(4096)).max(64).default([]) }).strict();
 const querySchema = z.object({ id: z.string().uuid(), owner: ownerSchema }).strict();
 const outputSchema = querySchema.extend({ stream: z.enum(["stdout", "stderr"]).default("stdout"), offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(65536).default(65536) }).strict();
 const PAGE_BYTES = 4096;
@@ -54,6 +55,7 @@ export class ProcessExecutionHost {
   readonly #maxConcurrent: number;
   readonly #children = new Map<string, ChildProcess>();
   readonly #scheduled = new Set<string>();
+  readonly #redactors = new Map<string, { stdout: StreamingSecretRedactor; stderr: StreamingSecretRedactor }>();
   #closing = false;
   #closed = false;
   #faulted = false;
@@ -164,15 +166,15 @@ export class ProcessExecutionHost {
     const id = randomUUID();
     this.#transaction(() => {
       this.#db.prepare("INSERT INTO processes(id,dispatch_key,input_digest,owner,input,boot,state,created,updated) VALUES(?,?,?,?,?,?,'REGISTERED',?,?)")
-        .run(id, input.dispatchKey, digest, identity, JSON.stringify({ executable: input.executable, args: input.args }), this.bootId, Date.now(), Date.now());
+        .run(id, input.dispatchKey, digest, identity, JSON.stringify({ executable: input.executable, args: input.args.map(argument => redactSecretText(argument, input.redactions)) }), this.bootId, Date.now(), Date.now());
     });
     this.#scheduled.add(id);
     // The durable acceptance exists before spawn; requests do not wait for process completion.
-    setImmediate(() => { this.#scheduled.delete(id); if (!this.#closing && !this.#faulted) this.#dispatch(id, input.executable, input.args); });
+    setImmediate(() => { this.#scheduled.delete(id); if (!this.#closing && !this.#faulted) this.#dispatch(id, input.executable, input.args, input.redactions); });
     return this.#view(this.#row(id, input.owner));
   }
 
-  #dispatch(id: string, executable: string, args: string[]): void {
+  #dispatch(id: string, executable: string, args: string[], redactions: string[]): void {
     try {
       // Persist intent before crossing the non-transactional OS boundary.
       this.#db.prepare("UPDATE processes SET state='RUNNING',updated=? WHERE id=? AND state='REGISTERED'").run(Date.now(), id);
@@ -182,8 +184,10 @@ export class ProcessExecutionHost {
       let finalEvidence: (Pick<ProcessReceipt, "kind" | "directTermination"> & Partial<ProcessReceipt>) | undefined;
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
       this.#children.set(id, child);
-      child.stdout?.on("data", (chunk: Buffer) => this.#capture(id, "stdout", chunk));
-      child.stderr?.on("data", (chunk: Buffer) => this.#capture(id, "stderr", chunk));
+      const outputRedactors = { stdout: new StreamingSecretRedactor(redactions), stderr: new StreamingSecretRedactor(redactions) };
+      this.#redactors.set(id, outputRedactors);
+      child.stdout?.on("data", (chunk: Buffer) => { const safe = outputRedactors.stdout.push(chunk); if (safe.length) this.#capture(id, "stdout", safe); });
+      child.stderr?.on("data", (chunk: Buffer) => { const safe = outputRedactors.stderr.push(chunk); if (safe.length) this.#capture(id, "stderr", safe); });
       child.once("spawn", () => {
         try { this.#db.prepare("UPDATE processes SET pid=?,updated=? WHERE id=?").run(child.pid!, Date.now(), id); }
         catch { this.#faulted = true; }
@@ -202,10 +206,18 @@ export class ProcessExecutionHost {
       });
       child.once("close", () => {
         if (drainTimer) clearTimeout(drainTimer);
+        const redactors = this.#redactors.get(id);
+        if (redactors) {
+          const stdout = redactors.stdout.flush(), stderr = redactors.stderr.flush();
+          if (stdout.length) this.#capture(id, "stdout", stdout);
+          if (stderr.length) this.#capture(id, "stderr", stderr);
+          this.#redactors.delete(id);
+        }
         this.#finish(id, finalEvidence ?? { kind: "unknown", directTermination: "unconfirmed", reason: "EXIT_EVIDENCE_MISSING" });
         this.#children.delete(id);
       });
     } catch {
+      this.#redactors.delete(id);
       this.#finish(id, { kind: "unknown", reason: "DISPATCH_FAILED", directTermination: "unconfirmed" });
     }
   }

@@ -7,10 +7,11 @@ import { createRpcClient } from "./transport/rpc.js";
 import { verifyConfigurationProtection, verifyStateProtection } from "./protection.js";
 import { DurableError, ExecutionDetached, ExecutionFailure, UnconfirmedOutcome, type Capability, type Json, type Run } from "./durable/types.js";
 import type { ProcessOwner } from "./process/host.js";
+import { secretArgumentSchema, type SecretResolver } from "./secrets.js";
 
 export const processRunInputSchema = z.object({
   executable: z.string().min(1).max(4096).refine((value) => path.isAbsolute(value) && !value.includes("\0")),
-  args: z.array(z.string().max(32768).refine((value) => !value.includes("\0"))).max(256)
+  args: z.array(z.union([z.string().max(32768).refine((value) => !value.includes("\0")), secretArgumentSchema])).max(256)
 }).strict();
 export const PROCESS_CAPABILITY_METADATA = [{
   capability: "process_run", effect: "E4", authority: ["HostExecute"], securityMode: "trusted-host",
@@ -37,7 +38,7 @@ const processViewSchema = z.object({
 type ProcessView = z.infer<typeof processViewSchema>;
 export type ProcessBridgeOptions = {
   connectionFile: string; slotId: string; principal: string; workspaceRoot: string;
-  pollIntervalMs?: number; rpcTimeoutMs?: number; maxPollMs?: number; summaryBytes?: number;
+  pollIntervalMs?: number; rpcTimeoutMs?: number; maxPollMs?: number; summaryBytes?: number; secretResolver?: SecretResolver;
 };
 
 function bound(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -125,12 +126,24 @@ export async function createProcessBridge(configuredOptions: ProcessBridgeOption
       const request = processRunInputSchema.parse(input);
       const owner = ownerFor(run);
       const dispatchKey = dispatchKeyFor(run);
+      const resolvedArgs: string[] = [];
+      const secretValues: string[] = [];
+      for (const argument of request.args) {
+        if (typeof argument === "string") { resolvedArgs.push(argument); continue; }
+        if (!options.secretResolver) throw new ExecutionFailure("SECRET_RESOLVER_UNAVAILABLE", { dispatched: false });
+        let secret: string;
+        try { secret = await options.secretResolver.resolveForExecution(argument, { principalId: run.context.principal, workspaceId: run.context.workspaceId, purpose: "process-argument" }); }
+        catch { throw new ExecutionFailure("SECRET_RESOLUTION_FAILED", { dispatched: false }); }
+        if (typeof secret !== "string" || secret.length < 4 || secret.length > 4096 || secret.includes("\0")) throw new ExecutionFailure("SECRET_RESOLUTION_FAILED", { dispatched: false });
+        secretValues.push(secret);
+        resolvedArgs.push(argument.prefix + secret + argument.suffix);
+      }
       if (signal.aborted && signal.reason instanceof ExecutionDetached) throw new UnconfirmedOutcome("PROCESS_CORE_DETACHED", reference(run));
       if (signal.aborted) throw new ExecutionFailure("PROCESS_ABORTED_BEFORE_SUBMIT", { dispatched: false });
-      const expectedDigest = createHash("sha256").update(JSON.stringify([request.executable, request.args, workspaceRoot, JSON.stringify([owner.slot, owner.principal, owner.runId, owner.attemptId])])).digest("hex");
+      const expectedDigest = createHash("sha256").update(JSON.stringify([request.executable, resolvedArgs, workspaceRoot, JSON.stringify([owner.slot, owner.principal, owner.runId, owner.attemptId])])).digest("hex");
       let view: ProcessView | undefined;
       try {
-        const response = await rpc.call("process_submit", { ...request, dispatchKey, owner });
+        const response = await rpc.call("process_submit", { executable: request.executable, args: resolvedArgs, redactions: secretValues, dispatchKey, owner });
         const code = (response as { error?: { code?: unknown } } | null)?.error?.code;
         if (typeof code === "string" && ["OWNER_MISMATCH", "INVALID_INPUT", "INVALID_COMMAND", "INPUT_TOO_LARGE", "HOST_BUSY", "HOST_UNAVAILABLE", "RECEIPT_CAPACITY_REACHED", "DISPATCH_CONFLICT"].includes(code)) throw new ExecutionFailure("PROCESS_SUBMIT_REJECTED", { code, dispatchKey });
         view = checkedView(response, run, expectedDigest);

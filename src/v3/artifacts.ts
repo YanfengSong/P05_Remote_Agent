@@ -30,6 +30,7 @@ export type ArtifactStoreOptions = {
   root: string;
   now?: () => number;
   defaultRetentionMs?: number;
+  redactContent?: (content: Buffer, mediaType: string) => Buffer;
 };
 
 function validId(value: string): boolean { return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value); }
@@ -44,6 +45,7 @@ export class ArtifactStore {
   private readonly blobs: string;
   private readonly now: () => number;
   private readonly defaultRetentionMs: number;
+  private readonly redactContent: (content: Buffer, mediaType: string) => Buffer;
 
   constructor(options: ArtifactStoreOptions) {
     if (!path.isAbsolute(options.root)) throw new ArtifactStoreError("ARTIFACT_ROOT_MUST_BE_ABSOLUTE");
@@ -55,6 +57,7 @@ export class ArtifactStore {
     fs.mkdirSync(this.blobs, { recursive: true, mode: 0o700 });
     this.now = options.now ?? Date.now;
     this.defaultRetentionMs = options.defaultRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
+    this.redactContent = options.redactContent ?? ((content) => Buffer.from(content));
     if (!Number.isSafeInteger(this.defaultRetentionMs) || this.defaultRetentionMs < 0) throw new ArtifactStoreError("INVALID_ARTIFACT_RETENTION");
     this.db = new DatabaseSync(path.join(realRoot, "artifacts.sqlite"));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -116,7 +119,9 @@ export class ArtifactStore {
     const retentionMs = input.retentionMs ?? this.defaultRetentionMs;
     if (!Number.isSafeInteger(retentionMs) || retentionMs < 0) throw new ArtifactStoreError("INVALID_ARTIFACT_RETENTION");
     const protections = uniqueProtections(input.protections ?? ["active-run"]);
-    const bytes = Buffer.isBuffer(input.content) ? input.content : Buffer.from(input.content, "utf8");
+    const sourceBytes = Buffer.isBuffer(input.content) ? Buffer.from(input.content) : Buffer.from(input.content, "utf8");
+    const bytes = this.redactContent(sourceBytes, input.mediaType);
+    if (!Buffer.isBuffer(bytes)) throw new ArtifactStoreError("INVALID_ARTIFACT_REDACTOR");
     const digest = createHash("sha256").update(bytes).digest("hex");
     const finalPath = this.blobPath(digest);
     fs.mkdirSync(path.dirname(finalPath), { recursive: true, mode: 0o700 });

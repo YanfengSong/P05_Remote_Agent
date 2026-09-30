@@ -32,7 +32,7 @@ Status semantics: PASS means the mandatory observation is covered by current evi
 | T24 | PARTIAL | application/process approval boundary; component external-effect rejection | Plugin/downstream/Agent paths are not all proven through one backend ceiling |
 | T25 | PARTIAL | v3-component-host | Crash/infinite-loop isolation covered; output limiting and cross-Slot hostile-read incomplete |
 | T26 | NOT_RUN | isolation backend reports unavailable | Production network deny/allowlist/DNS/proxy enforcement not implemented |
-| T27 | PARTIAL | credential-file and redaction checks in V3 hosts | Command/error/backup/Artifact secret-leak acceptance incomplete |
+| T27 | PASS | v3-secret-boundary plus v3-process/v3-process-bridge/v3-durable/T41/T67/application regressions | Run state persists SecretRef rather than plaintext; resolver is not invoked before approval and dereferences only at execution; Process Host persists redacted command args and stream-redacts stdout/stderr before storage; resolver failures collapse to stable codes; ArtifactStore can apply the same secret redaction policy before content-addressed persistence; secret-scanned backup materialization fails closed on any known plaintext credential |
 | T28 | PASS | v3-isolation | Strong-isolation request fails closed when backend is unavailable |
 | T29 | PASS | v3-process, v3-process-bridge, v3-terminal | Owned-process cancellation and termination semantics covered |
 | T30 | PARTIAL | v3-terminal real ConPTY test | PTY I/O/resize/paging bounded; malicious terminal-sequence UI rendering not tested |

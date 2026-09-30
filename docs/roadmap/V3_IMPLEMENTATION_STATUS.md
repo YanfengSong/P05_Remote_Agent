@@ -1,3 +1,12 @@
+> **2026-09-30 T27 验收闭环**
+>
+> - 新增 SecretRef/SecretResolver 合同：Run、审批和审计路径只持久化引用；审批前 resolver 调用数保持 0，只有真实执行提交前才解引用。
+> - Process bridge 只把临时明文交给可信 Host；Host 的 command args 持久化前脱敏，stdout/stderr 在分页落库前做跨 chunk 流式 secret redaction。
+> - resolver 异常和执行错误只持久化稳定 code/脱敏 evidence，不传播包含 secret 的原始异常文本。
+> - ArtifactStore 可注入同一 secret redaction policy，在内容寻址落盘前脱敏；T67 principal/workspace ACL 继续生效。
+> - 新增 secret-safe backup materialization：针对已一致/关闭的状态文件先扫描已知 secret，命中即整包 fail closed；不替代 T60 的在线 backup/restore。
+> - 当前矩阵：PASS 39 / PARTIAL 12 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T67 验收闭环**
 >
 > - ArtifactStore 固化 principal/workspace/visibility ACL；仅知道 artifactId 不能跨 principal/private 或跨 Workspace 查询与读取。
