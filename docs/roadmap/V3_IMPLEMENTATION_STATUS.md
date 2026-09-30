@@ -1,3 +1,11 @@
+> **2026-09-30 T40 验收闭环**
+>
+> - 新增真实 Git worktree isolation/reconciliation：记录 baseCommit/branch/root/ownerRun/writeIntent，写 Agent 从同一 base 在独立 worktree 工作。
+> - 整合必须同时通过 validation、authorization 与 integration guard；guard 在最终 merge 前再次验证。
+> - candidate 变更超出 writeIntent 直接拒绝；冲突先在 detached preview worktree 检测，目标分支不移动、不覆盖，冲突 worktree/commit 保留。
+> - 真实双 worktree 冲突专项、V2 Git mutation 和 V3 Workflow parallel 回归均通过。
+> - 当前矩阵：PASS 35 / PARTIAL 16 / NOT_RUN 19 / N/A 0。
+>
 > **2026-09-30 T47 验收闭环**
 >
 > - 新增两类真实子进程 Agent Provider：CLI JSONL 与 IPC Protocol，均走同一 durable submit/status/cancel/result 合同。
