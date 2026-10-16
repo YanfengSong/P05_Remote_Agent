@@ -1,163 +1,169 @@
 # P05 Repo-local Deployment
 
-P05 is deployed from one Git repository. Runtime binaries, tunnel profiles, logs,
-health files and per-runtime state are machine-local under `<repo>/.p05` and are
-ignored by Git.
+P05 is deployed from one Git repository. The committed repository is the single
+source of truth for GUI, backend logic, policy, plugins, tests and deployment scripts.
 
-## Target layout
+Machine-local binaries, credentials, tunnel profiles, logs, runtime state and workspace
+bindings live under `<repo>/.p05` or the Git-ignored `.env`. They are deliberately
+not copied between computers.
 
-```text
-P05_Remote_Agent/
-├─ bootstrap.ps1
-├─ P05-Operator.cmd
-├─ src/
-├─ dist/
-├─ scripts/deployment/
-└─ .p05/
-   ├─ tools/
-   │  ├─ node/
-   │  └─ tunnel-client/
-   ├─ tunnel/
-   │  ├─ profiles/
-   │  ├─ health/
-   │  └─ logs/
-   ├─ runtime-a/state/
-   └─ runtime-b/state/
-```
+## Universal deployment contract
 
-No Windows Scheduled Task is required by the normal runtime path.
+The following are identical on every machine when the same Git commit is deployed:
+
+- Operator Console GUI and control behavior;
+- P05 Core MCP tools, policy and permission semantics;
+- Runtime lifecycle and A/B slot behavior;
+- Workspace and Reference Root authorization rules;
+- Plugin framework and downstream binding rules;
+- Audit / Recovery behavior;
+- pinned Node.js and tunnel-client bootstrap versions;
+- automated verification suites.
+
+The following are intentionally machine-specific:
+
+- `REMOTE_AGENT_ALLOWED_ROOTS` and optional workspace roots;
+- Device ID, generated locally under `.p05/device.json`;
+- OpenAI Tunnel ID(s);
+- `CONTROL_PLANE_API_KEY`;
+- ChatGPT connector display names;
+- local MATLAB / Simulink installation and credentials;
+- local proxy/network settings.
+
+**Do not copy another host's `.env`, `.p05`, Device ID, Tunnel ID,
+API key, OAuth client secret or runtime state to another computer.** The target is
+behavioral and code-level parity, not shared machine identity.
 
 ## Fresh machine
 
-Prerequisites:
+Supported deployment target for the current V2 path:
 
-- Windows x64
-- Git
-- PowerShell
-- outbound HTTPS access to Node.js, GitHub/OpenAI and `api.openai.com`
-- two pre-created OpenAI Tunnel IDs, one for `@Boonray-A` and one for `@Boonray-B`
-- one control-plane API key
+- Windows x64;
+- Git;
+- PowerShell;
+- outbound HTTPS access to the required package/control-plane endpoints.
 
-Clone the repository, then run:
+Node.js and tunnel-client are installed by Bootstrap into the repository-local
+`.p05/tools` directory. The current validated Node target is 22.23.1 and the
+current validated tunnel-client target is 0.0.14; do not change either only for
+portability without rerunning the full validation. Node publishes a Windows x64 binary for 22.23.1.
+The tunnel-client v0.0.14 release is the currently validated multi-replica rollout
+target used by this repository.
+
+### Install
+
+Clone the repository and run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-The script first asks for Runtime topology:
+Bootstrap asks for:
 
-1. Single Runtime A (default)
-2. Dual Runtime A+B
+1. Runtime topology: A only (default) or A+B;
+2. Tunnel ID for each configured Runtime;
+3. OpenAI control-plane API key.
 
-It then prompts only for the Tunnel ID(s) required by that topology and one OpenAI control-plane API key.
+It derives all repository paths from the location of `bootstrap.ps1`. By default,
+the P05 repository itself becomes the single `platform-source` Workspace. If a
+larger authorization perimeter is required, pass `-AllowedRoots` explicitly.
 
-By default the outer authorization root is the P05 repository itself. An explicit
-larger authorization perimeter can be supplied with `-AllowedRoots`.
+Bootstrap then performs PreInstall/PostInstall checks, installs the pinned local
+toolchain when necessary, runs `npm ci`, builds the project, generates the Runtime
+profiles, and leaves the Runtime and Operator stopped unless `-SkipCoreStart` is
+omitted (the default starts configured Runtime slots).
 
-Bootstrap begins with a deployment preflight. It checks Windows/x64, PowerShell, Git, repository validity, repo-local write access, allowed-root configuration, `.env.example`, and the actual executability/version of repo-local Node/npm/tunnel-client.
+For a normal deployment, the only values that must be different from another
+machine are the machine-local roots, tunnel identities, connector names and
+credentials.
 
-Preflight result meanings:
+## Daily operation
 
-```text
-PASS        environment is ready for the next step
-REPAIRABLE  managed repo-local tools are missing/broken and Bootstrap can reinstall them
-FAIL        a host/config prerequisite requires user action
-```
-
-With normal Bootstrap, missing or broken managed Node/npm/tunnel-client installations are repaired and then validated again by PostInstall preflight. With `-SkipToolDownload`, the same condition fails closed instead of being silently accepted.
-
-A standalone read-only check is available with:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deployment\preflight.ps1
-```
-
-Bootstrap:
-
-- runs PreInstall and PostInstall environment validation;
-- downloads pinned Node.js and tunnel-client releases when repair is required;
-- verifies SHA-256 checksums from their published checksum manifests;
-- verifies installed Node/tunnel-client versions and confirms npm actually executes;
-- installs them into `.p05/tools`;
-- creates the Git-ignored machine-local `.env`;
-- runs `npm ci` and `npm run build`;
-- writes `P05_RUNTIME_SLOTS` explicitly;
-- creates tunnel profiles and state directories only for configured Runtime slots;
-- does **not** start Operator or either Runtime;
-- does **not** install automatic startup.
-
-## Daily use
-
-Double-click:
+Run:
 
 ```text
 P05-Operator.cmd
 ```
 
-Operator Console starts from the repo-local Node executable and opens:
+The Operator Console is bound to loopback and is started with the repository-local
+Node executable. The GUI is generated from the same committed `src/operator/ui.ts`
+on every host.
 
-```text
-http://127.0.0.1:56301/
+Runtime A and B use the same `dist/index.js` and the same launcher. Each slot has
+independent state, audit, workspace binding, tunnel profile and restart lifecycle.
+
+## Verification
+
+Read-only deployment preflight:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deployment\preflight.ps1
 ```
 
-From the GUI:
+Universal deployment contract check:
 
-- Runtime A controls `@Boonray-A` when A is configured.
-- Runtime B controls `@Boonray-B` when B is configured.
-- Fresh installs default to Runtime A only; dual A+B is optional.
-- Each Runtime has independent start/stop/restart and Workspace binding.
-- Closing Operator does not stop A or B.
-- Restarting A does not affect B, and vice versa.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deployment\test-universal.ps1
+```
 
-Runtime state is persistent under `.p05/runtime-<slot>/state` for configured slots. Workspace bindings survive Runtime restart. An unconfigured slot is reported as `NOT CONFIGURED`, not as a deployment failure.
+Full repository verification:
 
-## Deployment diagnostics
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
 
-- `preflight.ps1`: read-only environment/dependency validation entry point.
-- `preflight-lib.ps1`: shared Preflight functions used by Bootstrap and future Doctor.
-- `test-preflight.ps1`: Windows regression test for Preflight semantics.
+The verification pipeline uses the repository-local Node/npm installed by Bootstrap,
+so a machine does not need a globally installed Node.js toolchain.
 
-## Runtime scripts
+## Connector / Tunnel onboarding
 
-- `launch-runtime.mjs`: one shared P05 launcher; receives slot A or B.
-- `run-runtime-slot.ps1`: starts one repo-local tunnel/runtime.
-- `stop-runtime-slot.ps1`: stops only the selected slot and its child P05 process.
-- `restart-runtime-slot.ps1`: stop + start for one slot.
-- `request-restart-runtime-slot.ps1`: delayed detached restart used by the MCP `runtime_restart` tool.
-- `write-runtime-profiles.ps1`: generates A/B profiles under `.p05/tunnel/profiles`.
-- `run-operator.ps1`: starts Operator directly, without Task Scheduler.
-- `open-operator.ps1`: ensures Operator is running and opens the browser.
-- `restart-operator.ps1`: performs the actual Operator stop/start and records a request-scoped completion state.
-- `request-restart-operator.ps1`: schedules Operator restart in the background and waits only for a short bounded completion window.
+A Tunnel ID is a connection identity, not part of the application source code.
+Each physical computer should normally have its own Tunnel ID(s), even though the
+Runtime implementation is identical.
 
-Optional host-task helpers may still provision `P05-Runtime` and
-`P05-Operator` for manual/on-demand host integration, but current P05 does not
-install or require a RestartBroker task. Runtime restart uses the repo-local
-slot scripts above.
+The control-plane API key is supplied to the runtime through the Git-ignored local
+`.env`. Bootstrap writes tunnel profiles that reference the environment variable
+rather than embedding the secret in the profile.
 
-`uninstall-host-tasks.ps1` also removes the historical
-`P05-RestartBroker` name as upgrade cleanup for older installations.
+The ChatGPT connector name is also external configuration. Set
+`P05_RUNTIME_A_CONNECTOR` and `P05_RUNTIME_B_CONNECTOR` to the actual connector
+names used on that machine. The application code does not contain host-specific
+connector names.
 
-The legacy names `run-runtime.ps1`, `run-runtime-b.ps1` and
-`restart-runtime.ps1` are thin wrappers around the slot scripts.
+## Workspace model
 
-## Secrets
+The platform Workspace is always the repository containing the deployed P05 build.
+Business Workspaces are optional and can be registered from the Operator Console.
 
-`.env` and the complete `.p05/` tree are Git-ignored. The tunnel profiles store
-`env:CONTROL_PLANE_API_KEY`, not the key value itself.
+A Workspace ID is portable; its filesystem path is not. Therefore a fresh machine
+must bind its own local project directory rather than importing another host's
+absolute path.
 
-For fresh installs, `bootstrap.ps1` stores the supplied key in the local
-Git-ignored `.env`. Do not commit or share that file.
+Structured file/Git operations remain inside the active Workspace. Platform
+validation remains bound to the platform Workspace. Reference Roots are separately
+authorized and remain read-only.
 
-## Legacy cleanup
+## Optional applications
 
-Older installations may still have:
+MATLAB / Simulink is an application plugin. Its code and capability contracts are
+shared by all deployments, but the actual MATLAB installation, session and tool
+availability are host-local.
 
-- `D:\Tools\...`
-- `D:\Project_Git\_p05_deploy`
-- tunnel-client profiles under the user profile
-- `P05-Runtime`, `P05-Operator`, or RestartBroker Scheduled Tasks
+The same rule applies to future engineering application plugins: code and policy
+come from Git; application installation and credentials stay on the host.
 
-The repo-local runtime does not require them. Do not delete legacy paths until the
-repo-local A/B and Operator have been validated on that machine. Cleanup is a
-separate host-level action.
+## Legacy helpers
+
+`scripts/start-local.ps1` and optional Scheduled Task helpers are compatibility /
+diagnostic paths. The canonical V2 deployment path is:
+
+```text
+bootstrap.ps1
+    -> repo-local Node + npm + tunnel-client
+    -> generated Runtime profiles
+    -> P05-Operator.cmd
+    -> Runtime A/B
+```
+
+Do not use legacy host-specific deployment directories as part of a fresh install.
+They are not required by the repo-local runtime.

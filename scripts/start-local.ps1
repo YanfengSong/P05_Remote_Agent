@@ -1,16 +1,13 @@
-# P05 Remote Agent - local startup script
+# P05 Remote Agent - local startup compatibility script
 #
-# Checks the toolchain, builds, resolves the tool profile, prints the startup banner
-# and starts the local Streamable HTTP gateway (stdio -> Supergateway -> 127.0.0.1).
+# The canonical V2 deployment path is bootstrap.ps1 + Runtime/Operator scripts.
+# This script remains for local Streamable HTTP gateway diagnostics, but it uses
+# the same repo-local Node/npm/npx toolchain as the deployment path.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1 -Profile readonly
 #   powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1 -Probe
-#
-#   -Profile <name>  override P05_TOOL_PROFILE for this run (discovery|readonly|developer|full)
-#   -Port <n>        gateway port (default 8765)
-#   -Probe           start, wait for /healthz, report, then stop (a pre-tunnel check)
 
 [CmdletBinding()]
 param(
@@ -23,35 +20,48 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
 
+. (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
+
 function Write-Step([string]$Message) { Write-Host "==> $Message" -ForegroundColor Cyan }
 function Fail([string]$Message) {
     Write-Host "FAIL: $Message" -ForegroundColor Red
     exit 1
 }
 
-# --- 1. Node ------------------------------------------------------------------
-Write-Step "checking Node.js"
-$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-if (-not $nodeCommand) { Fail "node was not found on PATH. Install Node.js 22 or newer." }
-$nodeVersion = (& node --version).Trim()
+# --- 1. repo-local toolchain ---------------------------------------------------
+Write-Step "checking repo-local Node.js"
+try {
+    $node = Resolve-P05Node -RepoRoot $RepoRoot
+} catch {
+    Fail $_.Exception.Message
+}
+$nodeVersion = (& $node --version).Trim()
 Write-Host "    node $nodeVersion"
+
+$nodeDir = Split-Path -Parent $node
+$npm = Join-Path $nodeDir "npm.cmd"
+$npx = Join-Path $nodeDir "npx.cmd"
+if (-not (Test-Path -LiteralPath $npm -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $npx -PathType Leaf)) {
+    Fail "Repo-local npm/npx is missing. Run bootstrap.ps1."
+}
 
 # --- 2. dependencies ----------------------------------------------------------
 Write-Step "checking dependencies"
 if (-not (Test-Path (Join-Path $RepoRoot "node_modules"))) {
-    Write-Host "    node_modules missing, running npm install"
-    & npm install
-    if ($LASTEXITCODE -ne 0) { Fail "npm install failed (exit $LASTEXITCODE)" }
+    Write-Host "    node_modules missing, running repo-local npm ci"
+    & $npm ci
+    if ($LASTEXITCODE -ne 0) { Fail "npm ci failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "    node_modules present"
 }
 
 # --- 3. build -----------------------------------------------------------------
 Write-Step "building"
-& npm run build
+& $npm run build
 if ($LASTEXITCODE -ne 0) { Fail "npm run build failed (exit $LASTEXITCODE)" }
 
-# --- 4. tool profile ----------------------------------------------------------
+# --- 4. tool profile -----------------------------------------------------------
 $envFile = Join-Path $RepoRoot ".env"
 $envProfile = $null
 if (Test-Path $envFile) {
@@ -73,7 +83,6 @@ if ($Profile) {
 }
 $env:P05_TOOL_PROFILE = $effectiveProfile
 
-# Validate before starting: the server refuses an unknown value, and so does this banner.
 $knownProfiles = @("discovery", "readonly", "developer", "full")
 if (-not ($knownProfiles -contains $effectiveProfile.ToLower())) {
     Fail "unknown tool profile '$effectiveProfile'. Expected one of: $($knownProfiles -join ', ')"
@@ -81,7 +90,7 @@ if (-not ($knownProfiles -contains $effectiveProfile.ToLower())) {
 $effectiveProfile = $effectiveProfile.ToLower()
 
 # --- 5. identity --------------------------------------------------------------
-$hostName = (& node -e "process.stdout.write(require('os').hostname())").Trim()
+$hostName = (& $node -e "process.stdout.write(require('os').hostname())").Trim()
 $deviceId = "unknown"
 $identityPath = Join-Path $RepoRoot ".p05\device.json"
 if (Test-Path $identityPath) {
@@ -90,12 +99,11 @@ if (Test-Path $identityPath) {
     Write-Host "    .p05\device.json not found; it will be created on first run" -ForegroundColor Yellow
 }
 
+$entry = Join-Path $RepoRoot "dist\index.js"
 $mcpUrl = "http://127.0.0.1:$Port/mcp"
 $healthUrl = "http://127.0.0.1:$Port/healthz"
 
 # --- 6. port availability -----------------------------------------------------
-# Without this the health probe below can be answered by a gateway that was already
-# listening, which would report success for a start that never happened.
 Write-Step "checking port $Port"
 $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
@@ -119,9 +127,10 @@ Write-Host "  Health:"
 Write-Host "    $healthUrl"
 Write-Host ""
 
+$stdioCommand = '"' + $node + '" --env-file-if-exists="' + $envFile + '" "' + $entry + '"'
 $supergatewayArgs = @(
     "-y", "supergateway@4.0.0-rc.1",
-    "--stdio", "node --env-file-if-exists=.env dist/index.js",
+    "--stdio", $stdioCommand,
     "--outputTransport", "streamableHttp",
     "--port", "$Port",
     "--streamableHttpPath", "/mcp",
@@ -130,12 +139,7 @@ $supergatewayArgs = @(
 
 if ($Probe) {
     Write-Step "probe mode: starting gateway and waiting for $healthUrl"
-    # Start-Process cannot launch the npx.cmd shim directly, and this keeps the probe on
-    # exactly the same command line the normal start uses.
-    $quotedArgs = ($supergatewayArgs | ForEach-Object { if ($_ -match '\s') { "'$_'" } else { $_ } }) -join " "
-    $process = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-Command", "npx $quotedArgs") `
-        -PassThru -WindowStyle Hidden
+    $process = Start-Process -FilePath $npx -ArgumentList $supergatewayArgs -PassThru -WindowStyle Hidden
     try {
         $ready = $false
         for ($i = 0; $i -lt 30; $i++) {
@@ -152,13 +156,12 @@ if ($Probe) {
         Write-Host "FAIL: $healthUrl did not become ready within 30s" -ForegroundColor Red
         exit 1
     } finally {
-        # Kill only this process tree; never touch other node processes on the machine.
-        if (-not $process.HasExited) {
+        if ($process -and -not $process.HasExited) {
             & taskkill /PID $process.Id /T /F | Out-Null
         }
     }
 }
 
 Write-Step "starting gateway on port $Port (Ctrl+C to stop)"
-& npx @supergatewayArgs
+& $npx @supergatewayArgs
 exit $LASTEXITCODE

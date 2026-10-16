@@ -88,8 +88,8 @@ Workspace / Plugin / Downstream
 
 当前已实机验证：
 
-- `@Boonray-A` 可连接 Runtime A；
-- `@Boonray-B` 可连接 Runtime B；
+- `@Runtime-A` 可连接 Runtime A；
+- `@Runtime-B` 可连接 Runtime B；
 - 两个 Runtime 可独立启动、停止、重启；
 - 两个 Runtime 可绑定不同 Workspace；
 - 两边拥有独立 state / audit / workspace / plugin runtime；
@@ -279,7 +279,7 @@ P05 当前固定为两个 Runtime Slot：
 ```text
 ChatGPT Chat A
     ↓
-@Boonray-A
+@Runtime-A
     ↓
 Tunnel A
     ↓
@@ -290,7 +290,7 @@ Workspace A
 
 ChatGPT Chat B
     ↓
-@Boonray-B
+@Runtime-B
     ↓
 Tunnel B
     ↓

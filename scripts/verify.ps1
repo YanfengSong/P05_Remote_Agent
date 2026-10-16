@@ -13,6 +13,10 @@ param()
 $ErrorActionPreference = "Continue"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
+. (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
+$Node = Resolve-P05Node -RepoRoot $RepoRoot
+$Npm = Join-Path (Split-Path -Parent $Node) 'npm.cmd'
+if (-not (Test-Path -LiteralPath $Npm -PathType Leaf)) { throw "Repo-local npm is missing: $Npm. Run bootstrap.ps1." }
 
 $results = New-Object System.Collections.ArrayList
 $started = Get-Date
@@ -39,17 +43,18 @@ function Invoke-Step([string]$Name, [scriptblock]$Command, [string]$Marker) {
 
 $allPassed = $true
 
-if (-not (Invoke-Step "npm run check"            { npm run check }            ""))                 { $allPassed = $false }
-if (-not (Invoke-Step "npm run build"            { npm run build }            ""))                 { $allPassed = $false }
-if (-not (Invoke-Step "downstream smoke"          { node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "policy profiles"           { node dist/test/policy-profiles.js }    "POLICY_PROFILES_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "profile exposure"          { node dist/test/profile-exposure.js }   "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "plugin foundation"           { node dist/test/foundation.js }       "FOUNDATION_OK"))       { $allPassed = $false }
-if (-not (Invoke-Step "git mutation guards"        { node dist/test/git-mutations.js }    "GIT_MUTATIONS_OK"))    { $allPassed = $false }
-if (-not (Invoke-Step "operator console"            { node dist/test/operator-console.js } "OPERATOR_CONSOLE_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "output schemas"              { node dist/test/output-schema.js }    "OUTPUT_SCHEMA_OK"))     { $allPassed = $false }
-if (-not (Invoke-Step "plugin framework"            { node dist/test/plugin-framework.js } "PLUGIN_FRAMEWORK_OK")) { $allPassed = $false }
-if (-not (Invoke-Step "plugin API v1"               { node dist/test/plugin-api-v1.js }    "PLUGIN_API_V1_OK"))    { $allPassed = $false }
+if (-not (Invoke-Step "npm run check"            { & $Npm run check }            ""))                 { $allPassed = $false }
+if (-not (Invoke-Step "npm run build"            { & $Npm run build }            ""))                 { $allPassed = $false }
+if (-not (Invoke-Step "downstream smoke"          { & $Node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "policy profiles"           { & $Node dist/test/policy-profiles.js }    "POLICY_PROFILES_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "profile exposure"          { & $Node dist/test/profile-exposure.js }   "PROFILE_EXPOSURE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "plugin foundation"           { & $Node dist/test/foundation.js }       "FOUNDATION_OK"))       { $allPassed = $false }
+if (-not (Invoke-Step "git mutation guards"        { & $Node dist/test/git-mutations.js }    "GIT_MUTATIONS_OK"))    { $allPassed = $false }
+if (-not (Invoke-Step "operator console"            { & $Node dist/test/operator-console.js } "OPERATOR_CONSOLE_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "output schemas"              { & $Node dist/test/output-schema.js }    "OUTPUT_SCHEMA_OK"))     { $allPassed = $false }
+if (-not (Invoke-Step "plugin framework"            { & $Node dist/test/plugin-framework.js } "PLUGIN_FRAMEWORK_OK")) { $allPassed = $false }
+if (-not (Invoke-Step "plugin API v1"               { & $Node dist/test/plugin-api-v1.js }    "PLUGIN_API_V1_OK"))    { $allPassed = $false }
+if (-not (Invoke-Step "universal deployment"        { powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\test-universal.ps1 } "UNIVERSAL_DEPLOYMENT_OK")) { $allPassed = $false }
 
 # Working tree hygiene: a dirty tree after verification usually means generated output
 # leaked into version control.

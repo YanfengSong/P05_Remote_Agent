@@ -1,6 +1,6 @@
 ﻿# Project Status
 
-Updated: 2026-09-29
+Updated: 2026-10-16
 
 ## Baseline
 
@@ -316,6 +316,19 @@ V3 contracts as delivered behavior.
 
 - `docs/architecture/PLUGIN-FRAMEWORK.md`
 - `docs/adr/ADR-0011-plugin-framework.md`
+
+## Universal deployment V2
+
+The V2 deployment path is now machine-neutral for the supported Windows x64 target.
+
+The committed repository is the source of truth for GUI, Core backend logic, Policy/Permission, Runtime lifecycle, Workspace/Reference, Plugin/Downstream behavior, Audit/Recovery and deployment scripts. Active deployment assets contain no Boonray/XiaoiWu host identity or fixed local repository path.
+
+Bootstrap derives paths from the repository location and installs the pinned Node.js/tunnel-client into .p05/tools. .env and .p05 remain machine-local; Device ID, Tunnel IDs, API keys, connector names, application installations and workspace roots are never copied between hosts.
+
+Added scripts/deployment/test-universal.ps1 as a regression gate for this contract. scripts/verify.ps1 now uses the repo-local Node/npm toolchain instead of relying on a globally installed Node.js runtime.
+
+The current portability boundary is intentional: V2 deployment is Windows x64 only. Cross-platform macOS/Linux packaging is not claimed as implemented.
+
 
 ## Target Architecture V3
 
