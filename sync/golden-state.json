@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "source": {
     "agentVersion": "0.3.1",
-    "gitCommit": "4ef87e9de588a00bb7842dd678cea4e0da4a187f"
+    "gitCommit": "9276c3eb5cdfb03a60125587ff9fd273c1de192d"
   },
   "policy": {
     "toolProfile": "developer",
@@ -25,15 +25,21 @@
     "activeId": "platform",
     "entries": [
       {
-        "id": "p01_smartchassis",
+        "id": "boonray_vcu_platform",
         "kind": "git-project",
-        "label": "P01_SmartChassis",
+        "label": "BoonRay_VCU_Platform",
         "rootBinding": "local"
       },
       {
         "id": "p02_vmodel",
         "kind": "git-project",
         "label": "P02_Vmodel",
+        "rootBinding": "local"
+      },
+      {
+        "id": "p03_vaes",
+        "kind": "git-project",
+        "label": "P03_VAES",
         "rootBinding": "local"
       },
       {
@@ -50,18 +56,7 @@
       }
     ]
   },
-  "references": [
-    {
-      "id": "ref-p04_vehicle_dynamic",
-      "label": "P04_Vehicle_Dynamic",
-      "rootBinding": "local"
-    },
-    {
-      "id": "ref-project_001_dynamicmodel_identify",
-      "label": "Project_001_DynamicModel_Identify",
-      "rootBinding": "local"
-    }
-  ],
+  "references": [],
   "plugins": [
     {
       "id": "example",
@@ -130,6 +125,6 @@
     ],
     "catalogSha256": "91b42f260fc22b5463c55588b500051be9824685cd72721f3a59715bd828bfe7"
   },
-  "generatedAt": "2026-10-16T07:05:33.673Z",
-  "revision": "4b6a6c364879b647370ce1f9d825260091857f5204b0915e627861f4bf33b0a7"
+  "generatedAt": "2026-10-16T07:14:39.681Z",
+  "revision": "77b16f97d273b4a8bb008a3ad4972c71ccda53e31a5d3e20c7d74510d9ee7aff"
 }
