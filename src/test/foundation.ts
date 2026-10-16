@@ -66,7 +66,12 @@ await fs.mkdir(DYNAMIC_OUTSIDE, { recursive: true });
 
 try {
   check("state: default directory is anchored to the P05 repository", defaultP05StateDir() === path.join(REPO, ".p05"), defaultP05StateDir());
-  check("state: explicit P05_STATE_DIR override is honored", p05StateDir(EXPLICIT_STATE) === path.resolve(EXPLICIT_STATE), p05StateDir(EXPLICIT_STATE));
+  check("state: explicit P05_STATE_DIR override remains repo-contained", p05StateDir(EXPLICIT_STATE) === path.resolve(EXPLICIT_STATE), p05StateDir(EXPLICIT_STATE));
+  throws(
+    "state: external P05_STATE_DIR override is refused",
+    () => p05StateDir(path.join(path.dirname(REPO), "_p05_external_state")),
+    "inside the P05 repository"
+  );
 
   const raw = JSON.stringify([
     { id: "a", root: WS_A, kind: "platform-source", label: "Platform Workspace" },
