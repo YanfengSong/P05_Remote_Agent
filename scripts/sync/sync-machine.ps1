@@ -67,6 +67,9 @@ if (-not $SkipPull) {
 $after = (git rev-parse HEAD).Trim()
 Write-Host "    Git: $before -> $after"
 
+Step "checking P05 path containment"
+Run-Native "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\deployment\path-audit.ps1"))
+
 if (-not (Test-Path -LiteralPath $Manifest)) {
     Fail "sync/golden-state.json is missing from the current Git revision. Publish Golden State on Boonray first."
 }
