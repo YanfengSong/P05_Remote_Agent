@@ -26,6 +26,9 @@ $TunnelDir = Join-Path $P05Root 'tools\tunnel-client'
 $NodeExe = Join-Path $NodeDir 'node.exe'
 $NpmCli = Join-Path $NodeDir 'node_modules\npm\bin\npm-cli.js'
 $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
+$MatlabToolkitDir = Join-Path $P05Root 'tools\matlab\agentic-toolkits'
+$MatlabToolkitExe = Join-Path $MatlabToolkitDir 'bin\matlab-mcp-server.exe'
+$NpmCacheDir = Join-Path $P05Root 'npm-cache'
 $EnvFile = Join-Path $RepoRoot '.env'
 . (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
 . (Join-Path $RepoRoot 'scripts\deployment\preflight-lib.ps1')
@@ -216,6 +219,8 @@ Write-P05PreflightReport -Report $preflight
 Assert-P05Preflight -Report $preflight
 
 New-Item -ItemType Directory -Path $P05Root -Force | Out-Null
+New-Item -ItemType Directory -Path $NpmCacheDir -Force | Out-Null
+$env:NPM_CONFIG_CACHE = $NpmCacheDir
 
 if (-not $SkipToolDownload) {
     $nodeCheck = $preflight.checks | Where-Object { $_.id -eq 'node' } | Select-Object -First 1
@@ -250,6 +255,10 @@ $managed = [ordered]@{
     P05_OPERATOR_PORT = '56301'
     P05_NODE_PATH = $NodeExe
     P05_OPERATOR_TUNNEL_CLIENT = $TunnelExe
+    P05_STATE_DIR = $P05Root
+    NPM_CONFIG_CACHE = $NpmCacheDir
+    MATLAB_AGENTIC_TOOLKIT_ROOT = $MatlabToolkitDir
+    MATLAB_MCP_COMMAND = $MatlabToolkitExe
     P05_NETWORK_MODE = [string]$script:P05NetworkSelection.configuredMode
     P05_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
     CONTROL_PLANE_HTTP_PROXY = $(if ($script:P05NetworkSelection.selectedPath -eq 'proxy') { [string]$script:P05NetworkSelection.proxy } else { '' })
@@ -268,9 +277,11 @@ foreach ($name in $managed.Keys) {
     Set-DotEnvValue $EnvFile $name ([string]$managed[$name])
 }
 
-$matlabToolkit = Join-Path $env:USERPROFILE '.matlab\agentic-toolkits\bin\matlab-mcp-server.exe'
+$matlabToolkit = $MatlabToolkitExe
 if (Test-Path -LiteralPath $matlabToolkit -PathType Leaf) {
     Set-DotEnvValue $EnvFile 'MATLAB_MCP_ENABLED' 'true'
+} else {
+    Set-DotEnvValue $EnvFile 'MATLAB_MCP_ENABLED' 'false'
 }
 
 foreach ($slot in $slots) {
