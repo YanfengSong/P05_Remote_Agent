@@ -329,6 +329,16 @@ Added scripts/deployment/test-universal.ps1 as a regression gate for this contra
 
 The current portability boundary is intentional: V2 deployment is Windows x64 only. Cross-platform macOS/Linux packaging is not claimed as implemented.
 
+## V2 Universal Edition acceptance
+
+Clean-room validation has been completed from a fresh Git clone with repository-local Node/npm, fresh dependencies, fresh build output and fresh .p05 state. Universal deployment checks and the complete V2 verification suite pass.
+
+HTTP Reviewer is now profile-aware. Its default remains readonly; developer/full profiles require explicit P05_TOOL_PROFILE configuration, and write/Shell/Git mutation paths remain behind Workspace guards and the Permission Broker.
+
+Host-specific names and paths remain only in historical handoff documentation and the universal regression guard that intentionally searches for forbidden identities. They are not runtime bindings or shipped machine state.
+
+The remaining unverified item is physical two-host Tunnel/Connector interoperability. This does not block code-level universal deployment acceptance, but it remains required before claiming multi-host network acceptance.
+
 
 ## Target Architecture V3
 

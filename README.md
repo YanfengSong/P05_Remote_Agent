@@ -43,9 +43,9 @@ Native Streamable HTTP MCP Reviewer
 
 4. **Native Streamable HTTP MCP Reviewer**
    - 新增 `127.0.0.1:8765/mcp` 标准 HTTP MCP 入口；
-   - 固定绑定 Runtime B + `readonly`；
+   - 默认绑定 Runtime B + `readonly`；可通过 `P05_TOOL_PROFILE` 显式选择更高权限 profile；
    - 自动跟随 B 的当前 Workspace；
-   - 外部客户端不能调用写入、Shell、Workspace rebind 或 MATLAB。
+   - 默认只读；显式提升 profile 后可获得写入 / Shell 等能力，但不能 Workspace rebind 或调用 MATLAB。
 
 5. **OAuth Reviewer**
    - 增加 OAuth Protected Resource Metadata；
@@ -183,7 +183,7 @@ D:\Project_Git\P02_Vmodel
     └─ MATLAB ✅
 
 Reference Roots
-D:\Project_Git\P05_Remote_Agent
+<P05_REPO_ROOT>
 D:\Documents\Specs
 D:\Project_Git\OtherProject
     ├─ Read   ✅
@@ -448,7 +448,7 @@ HTTP Reviewer
    ↓
 Runtime B state
    ↓
-Profile = readonly
+Profile = readonly (default; configurable via P05_TOOL_PROFILE)
    ↓
 Current Runtime B Workspace
 ```
@@ -466,7 +466,7 @@ Reviewer 每次请求重新读取 Runtime B 的 active Workspace state。
 
 ## 6. 外部 Reviewer / Gemini 接入
 
-HTTP Reviewer 设计为外部只读审查入口，可以供标准 MCP Client 使用。
+HTTP Reviewer 默认作为外部只读审查入口，也支持通过 `P05_TOOL_PROFILE` 显式启用更高权限 profile；写入、Git mutation、Shell 等能力仍受 P05 Permission Broker 与 Workspace guard 约束。
 
 当前已真实验证 Gemini 自定义 MCP Connected App。
 
@@ -977,7 +977,7 @@ PLUGIN_API_V1_OK
 - MATLAB lazy connect；
 - MATLAB Workspace binding；
 - HTTP Streamable MCP；
-- HTTP Reviewer readonly surface；
+- HTTP Reviewer profile surface；
 - OAuth Authorization Code + PKCE；
 - Refresh Token；
 - Public HTTPS Quick Tunnel；

@@ -14,8 +14,14 @@ import { config, readOwnEnv } from "../config.js";
 import { LiveActivityStore } from "../monitor/live-activity.js";
 import { ReferenceManager } from "../reference/manager.js";
 import { createExposer } from "../policy/expose.js";
+import { ToolPermissionBroker } from "../policy/permission-broker.js";
+import {
+  resolveToolProfile,
+  type ToolProfile
+} from "../policy/tool-profile.js";
 import { ExecutionRuntime } from "../runtime/execution.js";
 import { registerDeviceTools } from "../tools/device.js";
+import { registerExecutionTools } from "../tools/register-execution.js";
 import { registerFsTools } from "../tools/register-fs.js";
 import { registerGitTools } from "../tools/register-git.js";
 import { registerReferenceTools } from "../tools/register-reference.js";
@@ -66,7 +72,7 @@ export type ReviewerHttpServer = {
   host: string;
   port: number;
   url: string;
-  profile: "readonly";
+  profile: ToolProfile;
   slot: "A" | "B";
   stateDir: string;
   tokenFile: string;
@@ -458,6 +464,9 @@ export async function startReviewerHttpServer(
       path.join(process.cwd(), ".p05", `runtime-${slot.toLowerCase()}`, "state")
   );
   const host = options.host ?? "127.0.0.1";
+  const { profile, profileSource } = resolveToolProfile(
+    readOwnEnv("P05_TOOL_PROFILE")
+  );
   const requestedPort = options.port ?? Number(
     readOwnEnv("P05_HTTP_REVIEWER_PORT") ?? "8765"
   );
@@ -519,15 +528,20 @@ export async function startReviewerHttpServer(
         version: config.version
       },
       {
-        instructions: [
-          "You are connected to P05 HTTP Reviewer, a strictly read-only engineering review surface.",
-          "Before answering any question about the current repository, workspace, Git branch, files, diffs, or review status, call review_context and treat that result as the fresh source of truth.",
-          "Do not reuse workspace, branch, file-status or repository-state facts from conversation history when a fresh tool call is available.",
-          "workspace_list and workspace_current are read-only inspection tools. They cannot switch, bind, authorize, or modify a workspace.",
-          "You cannot stop, start, restart, or otherwise control Runtime A or Runtime B.",
-          "You cannot write files, execute shell commands, mutate Git, authorize Reference Roots, switch workspaces, or invoke downstream/MATLAB tools.",
-          "If asked to perform an unavailable control or mutation, state that the Reviewer does not have that capability instead of implying that it was performed."
-        ].join("\n")
+        instructions: profile === "full"
+          ? [
+              "You are connected to the P05 HTTP Reviewer with the full tool profile.",
+              "Before answering any question about the current repository, workspace, Git branch, files, diffs, or review status, call review_context and treat that result as the fresh source of truth.",
+              "Do not reuse workspace, branch, file-status or repository-state facts from conversation history when a fresh tool call is available.",
+              "Workspace writes, Git mutations, approved runtime actions, and shell execution are available only through the tools advertised by tools/list and remain subject to workspace guards and the P05 Permission Broker.",
+              "workspace_list and workspace_current inspect the active binding; they do not switch or authorize workspaces.",
+              "Downstream/MATLAB tools are not registered on this HTTP surface."
+            ].join("\n")
+          : [
+              `You are connected to the P05 HTTP Reviewer with the ${profile} tool profile.`,
+              "Before answering any question about the current repository, workspace, Git branch, files, diffs, or review status, call review_context and treat that result as the fresh source of truth.",
+              "Only use tools advertised by tools/list; unavailable mutations or controls must not be implied."
+            ].join("\n")
       }
     );
     const runtime = new ExecutionRuntime(
@@ -542,20 +556,34 @@ export async function startReviewerHttpServer(
         principal: "p05-reviewer"
       }
     );
+    const permissionBroker = new ToolPermissionBroker({
+      stateDir,
+      runtimeSlot: slot,
+      workspaceManager,
+      capabilityCatalog: catalog
+    });
     const exposer = createExposer(
       server,
-      "readonly",
-      "env",
+      profile,
+      profileSource,
       runtime,
-      catalog
+      catalog,
+      permissionBroker
     );
 
     registerDeviceTools(exposer);
     registerWorkspaceReadTools(exposer, workspaceManager);
-    registerReviewContextTool(exposer, workspaceManager, referenceManager, slot);
+    registerReviewContextTool(
+      exposer,
+      workspaceManager,
+      referenceManager,
+      slot,
+      profile
+    );
     registerFsTools(exposer, workspaceManager);
     registerGitTools(exposer, workspaceManager);
     registerReferenceTools(exposer, referenceManager);
+    registerExecutionTools(exposer, workspaceManager);
 
     return server;
   });
@@ -621,7 +649,7 @@ export async function startReviewerHttpServer(
           status: "ok",
           name: "p05-http-reviewer",
           slot,
-          profile: "readonly",
+          profile,
           workspace: workspaceManager.current().id,
           oauth: true
         });
@@ -834,7 +862,7 @@ export async function startReviewerHttpServer(
     host,
     port: address.port,
     url,
-    profile: "readonly",
+    profile,
     slot,
     stateDir,
     tokenFile,

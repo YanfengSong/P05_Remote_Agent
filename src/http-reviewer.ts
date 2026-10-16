@@ -14,7 +14,7 @@ const stateDir = path.resolve(
 // device/identity.ts binds P05_STATE_DIR at module load time, so set it before
 // dynamically importing the reviewer runtime.
 process.env.P05_STATE_DIR = stateDir;
-process.env.P05_TOOL_PROFILE = "readonly";
+process.env.P05_TOOL_PROFILE ??= "readonly";
 
 const { startReviewerHttpServer } = await import("./http/reviewer.js");
 const reviewer = await startReviewerHttpServer({ slot, stateDir });

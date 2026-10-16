@@ -43,6 +43,11 @@ const reviewerEnvNames = [
 ].sort();
 
 check(
+  "http reviewer: default profile remains readonly",
+  reviewerConfigSources.includes('process.env.P05_TOOL_PROFILE ??= "readonly";')
+);
+
+check(
   "http reviewer: every implemented environment variable is documented in .env.example",
   reviewerEnvNames.length > 0 &&
     reviewerEnvNames.every((name) => envExample.includes(name + "=")),
@@ -138,6 +143,7 @@ env.P05_HTTP_REVIEWER_PORT = "0";
 env.P05_HTTP_REVIEWER_TOKEN = token;
 env.P05_HTTP_REVIEWER_OAUTH_CLIENT_ID = oauthClientId;
 env.P05_HTTP_REVIEWER_OAUTH_CLIENT_SECRET = oauthClientSecret;
+env.P05_TOOL_PROFILE = "full";
 
 const child = spawn(process.execPath, [entry], {
   cwd: repo,
@@ -303,7 +309,17 @@ try {
       "git_diff_stat",
       "reference_list",
       "reference_read",
-      "reference_list_directory"
+      "reference_list_directory",
+      "fs_write",
+      "apply_patch",
+      "git_add",
+      "git_commit",
+      "git_branch",
+      "git_push",
+      "command_run",
+      "runtime_restart",
+      "remote_read",
+      "shell_run"
     ]) {
       check(
         `http reviewer: exposes ${expected}`,
@@ -312,27 +328,39 @@ try {
       );
     }
 
+    const readOnlyTools = new Set([
+      "device_info",
+      "ping",
+      "workspace_list",
+      "workspace_current",
+      "review_context",
+      "fs_read",
+      "fs_list",
+      "git_status",
+      "git_diff",
+      "git_diff_stat",
+      "reference_list",
+      "reference_read",
+      "reference_list_directory",
+      "remote_read"
+    ]);
+    const openWorldTools = new Set(["git_push", "remote_read"]);
     for (const tool of tools) {
+      const readOnly = readOnlyTools.has(tool.name);
       check(
-        `http reviewer: ${tool.name} declares read-only MCP annotations`,
-        tool.annotations?.readOnlyHint === true &&
-          tool.annotations?.destructiveHint === false &&
-          tool.annotations?.idempotentHint === true &&
-          tool.annotations?.openWorldHint === false,
+        `http reviewer: ${tool.name} declares profile-appropriate MCP annotations`,
+        tool.annotations?.readOnlyHint === readOnly &&
+          tool.annotations?.destructiveHint === !readOnly &&
+          tool.annotations?.idempotentHint === readOnly &&
+          tool.annotations?.openWorldHint === openWorldTools.has(tool.name),
         JSON.stringify(tool.annotations ?? null)
       );
     }
 
     for (const forbidden of [
-      "fs_write",
-      "apply_patch",
-      "shell_run",
-      "command_run",
       "workspace_switch",
       "matlab.call_tool",
-      "mcp_call_tool",
-      "git_commit",
-      "git_push"
+      "mcp_call_tool"
     ]) {
       check(
         `http reviewer: suppresses ${forbidden}`,
@@ -371,11 +399,11 @@ try {
       JSON.stringify(reviewData)
     );
     check(
-      "http reviewer: review_context declares immutable reviewer authority",
+      "http reviewer: review_context declares full local tool authority",
       reviewData?.authority?.canSwitchWorkspace === false &&
-        reviewData?.authority?.canControlRuntime === false &&
-        reviewData?.authority?.canWrite === false &&
-        reviewData?.authority?.canExecuteShell === false,
+        reviewData?.authority?.canControlRuntime === true &&
+        reviewData?.authority?.canWrite === true &&
+        reviewData?.authority?.canExecuteShell === true,
       JSON.stringify(reviewData?.authority)
     );
 
@@ -419,21 +447,17 @@ try {
       JSON.stringify(reboundContextData)
     );
 
-    let refused = false;
-    try {
-      await client.callTool({
-        name: "fs_write",
-        arguments: { path: "must-not-land.txt", content: "x" }
-      });
-    } catch {
-      refused = true;
-    }
-    check("http reviewer: unexposed writes are uncallable", refused);
+    const write = await client.callTool({
+      name: "fs_write",
+      arguments: { path: "full-profile-write.txt", content: "x" }
+    });
+    const writeData = write.structuredContent as { bytes?: number };
+    check("http reviewer: full profile can write", writeData?.bytes === 1);
     check(
-      "http reviewer: rejected write created no file",
-      await fs.access(path.join(workspace, "must-not-land.txt"))
-        .then(() => false)
-        .catch(() => true)
+      "http reviewer: full-profile write targets the rebound workspace",
+      await fs.readFile(path.join(workspace2, "full-profile-write.txt"), "utf8")
+        .then((value) => value === "x")
+        .catch(() => false)
     );
 
     const reviewerAudit = JSON.parse(

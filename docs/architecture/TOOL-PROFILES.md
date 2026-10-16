@@ -78,9 +78,9 @@ Initial V2.x preview contract:
 - OAuth client identity: fixed Reviewer client id/secret stored in the selected Runtime state directory;
 - OAuth scope: only `p05.review`; clients cannot request a stronger P05 profile;
 - default Runtime binding: slot B;
-- fixed tool profile: `readonly`;
+- default tool profile: `readonly`; set `P05_TOOL_PROFILE` explicitly to select `readonly`, `developer`, or `full`;
 - active Workspace authority is reloaded from the selected Runtime state on each MCP request;
-- the remote client cannot switch Workspace, grant Reference Roots, write files, execute Shell, mutate Git, or invoke MATLAB/downstream tools;
+- the remote client cannot switch Workspace, grant Reference Roots, or invoke MATLAB/downstream tools; write files, execute Shell, and Git mutations are exposed only when the configured profile permits them and remain subject to Workspace guards and the Permission Broker;
 - a development Quick Tunnel may expose the local endpoint over temporary HTTPS for interoperability tests. Quick Tunnel URLs are ephemeral and are not a production deployment mechanism.
 
 The HTTP transport is a Core transport surface, not a Gemini-specific plugin. Gemini or another MCP client may consume it; client-specific review orchestration can remain a plugin/provider concern.
