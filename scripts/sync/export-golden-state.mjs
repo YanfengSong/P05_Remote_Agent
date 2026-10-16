@@ -3,7 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const runtimeArg = process.argv.find((arg) => arg.startsWith("--runtime="))?.slice("--runtime=".length)?.trim().toUpperCase();
+const args = process.argv.slice(2);
+const runtimeArg = args.find((arg) => arg.startsWith("--runtime="))?.slice("--runtime=".length)?.trim().toUpperCase();
 
 if (runtimeArg === "A" || runtimeArg === "B") {
   process.env.P05_SYNC_STATE_DIR = path.join(root, ".p05", "runtime-" + runtimeArg.toLowerCase(), "state");
@@ -16,8 +17,7 @@ if (runtimeArg === "A" || runtimeArg === "B") {
 
 const { collectGoldenState } = await import("../../dist/sync/collector.js");
 
-const output = process.argv.find((arg) => !arg.startsWith("--") && arg !== process.argv[1])
-  || "sync/golden-state.json";
+const output = args.find((arg) => !arg.startsWith("--")) || "sync/golden-state.json";
 const target = path.resolve(root, output);
 
 if (target !== root && !target.startsWith(root + path.sep)) {
