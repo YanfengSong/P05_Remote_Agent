@@ -115,3 +115,14 @@ Supporting implementation guides are:
 
     scripts/deployment/README.md
     scripts/sync/README.md
+
+
+## Repo-root containment
+
+P05 V2 adopts **Repo-Root Contained Runtime** as a deployment invariant. Persistent P05 state, managed binaries, npm cache, generated Runtime profiles, Runtime state, health files and logs must resolve inside the Git repository.
+
+The application must not use USERPROFILE, APPDATA, LOCALAPPDATA or PROGRAMDATA as a P05 storage root. Explicit state/toolkit path overrides are accepted only when they remain inside the repository.
+
+External Workspace/Reference roots and the installed MATLAB application are host dependencies/data, not P05-generated runtime files. OS temporary directories may be used only for transient installer downloads and must be cleaned after use.
+
+The invariant is enforced by runtime path guards and the `npm run path:audit` deployment audit.
