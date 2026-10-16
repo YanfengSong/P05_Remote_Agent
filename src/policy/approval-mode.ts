@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { defaultP05StateDir } from "../state.js";
+import { assertP05RepoPath, defaultP05StateDir } from "../state.js";
 
 export type ApprovalMode = "standard" | "trusted";
 
@@ -21,7 +21,7 @@ function parseApprovalMode(value: unknown): ApprovalMode | undefined {
 export function approvalModeStatePath(): string {
   const override = process.env.P05_APPROVAL_MODE_STATE_FILE?.trim();
   return override
-    ? path.resolve(override)
+    ? assertP05RepoPath(override, "P05_APPROVAL_MODE_STATE_FILE")
     : path.join(defaultP05StateDir(), "approval-mode.json");
 }
 
