@@ -118,7 +118,7 @@ Configure only this computer's values:
 - REMOTE_AGENT_ALLOWED_ROOTS;
 - optional network/proxy settings.
 
-The current validated toolchain is Node.js 22.23.1 and tunnel-client 0.0.14. Bootstrap verifies and installs these into .p05/tools. MATLAB Agentic Toolkit, when enabled, is expected under .p05/tools/matlab/agentic-toolkits.
+The current validated toolchain is Node.js 22.23.1 and tunnel-client 0.0.14. Bootstrap verifies and installs these into .p05/tools. MATLAB Agentic Toolkit, when enabled, is expected under .p05/tools/matlab/agentic-toolkits. If an older P05 host still has the toolkit under %USERPROFILE%\.matlab\agentic-toolkits, run `P05-Migrate-MATLAB.cmd` once, verify the plugin, then rerun it with `-RemoveLegacy` to remove the old copy.
 
 ## 5. Workspace and Reference binding
 
