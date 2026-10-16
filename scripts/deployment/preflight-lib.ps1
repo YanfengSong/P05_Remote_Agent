@@ -102,7 +102,7 @@ function Invoke-P05Preflight {
     $repo = [IO.Path]::GetFullPath($RepoRoot)
     $p05 = Join-Path $repo '.p05'
     $node = Join-Path $p05 'tools\node\node.exe'
-    $npm = Join-Path $p05 'tools\node\npm.cmd'
+    $npmCli = Join-Path $p05 'tools\node\node_modules\npm\bin\npm-cli.js'
     $tunnel = Join-Path $p05 'tools\tunnel-client\tunnel-client.exe'
     $checks = New-Object System.Collections.ArrayList
 
@@ -149,9 +149,13 @@ function Invoke-P05Preflight {
         [void]$checks.Add((New-P05PreflightCheck 'node' 'Repo-local Node' $(if($managedBlocking){'FAIL'}else{'MISSING'}) 'Repo-local Node is not installed.' $managedBlocking (-not $managedBlocking)))
     }
 
-    if (Test-Path -LiteralPath $npm -PathType Leaf) {
-        $npmVersion = Invoke-P05VersionCommand -Command $npm
-        [void]$checks.Add((New-P05PreflightCheck 'npm' 'Repo-local npm' $(if($npmVersion.ok){'PASS'}else{'FAIL'}) $(if($npmVersion.ok){("npm " + $npmVersion.output)}else{'Repo-local npm exists but could not execute.'}) $(if($npmVersion.ok){$false}else{$managedBlocking}) $(if($npmVersion.ok){$false}else{-not $managedBlocking})))
+    if (Test-Path -LiteralPath $npmCli -PathType Leaf) {
+        if (Test-Path -LiteralPath $node -PathType Leaf) {
+            $npmVersion = Invoke-P05VersionCommand -Command $node -Arguments @($npmCli, '--version')
+            [void]$checks.Add((New-P05PreflightCheck 'npm' 'Repo-local npm' $(if($npmVersion.ok){'PASS'}else{'FAIL'}) $(if($npmVersion.ok){("npm " + $npmVersion.output)}else{'Repo-local npm exists but could not execute.'}) $(if($npmVersion.ok){$false}else{$managedBlocking}) $(if($npmVersion.ok){$false}else{-not $managedBlocking})))
+        } else {
+            [void]$checks.Add((New-P05PreflightCheck 'npm' 'Repo-local npm' 'FAIL' 'Repo-local Node is required to execute npm.' $managedBlocking))
+        }
     } else {
         [void]$checks.Add((New-P05PreflightCheck 'npm' 'Repo-local npm' $(if($managedBlocking){'FAIL'}else{'MISSING'}) 'Repo-local npm is not installed.' $managedBlocking (-not $managedBlocking)))
     }

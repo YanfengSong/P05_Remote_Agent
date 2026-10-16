@@ -43,8 +43,8 @@ function Invoke-Step([string]$Name, [scriptblock]$Command, [string]$Marker) {
 
 $allPassed = $true
 
-if (-not (Invoke-Step "npm run check"            { & $Npm run check }            ""))                 { $allPassed = $false }
-if (-not (Invoke-Step "npm run build"            { & $Npm run build }            ""))                 { $allPassed = $false }
+if (-not (Invoke-Step "npm run check"            { & $Node $NpmCli run check }            ""))                 { $allPassed = $false }
+if (-not (Invoke-Step "npm run build"            { & $Node $NpmCli run build }            ""))                 { $allPassed = $false }
 if (-not (Invoke-Step "downstream smoke"          { & $Node dist/test/downstream-smoke.js }  "DOWNSTREAM_SMOKE_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "policy profiles"           { & $Node dist/test/policy-profiles.js }    "POLICY_PROFILES_OK")) { $allPassed = $false }
 if (-not (Invoke-Step "profile exposure"          { & $Node dist/test/profile-exposure.js }   "PROFILE_EXPOSURE_OK")) { $allPassed = $false }

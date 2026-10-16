@@ -106,6 +106,15 @@ function Resolve-P05Node {
     throw 'Repo-local Node.js is missing. Run bootstrap.ps1.'
 }
 
+function Resolve-P05NpmCli {
+    param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\node\node_modules\npm\bin\npm-cli.js'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
+    throw 'Repo-local npm is missing. Run bootstrap.ps1.'
+}
+
 function Resolve-P05TunnelClient {
     param([string]$RepoRoot)
     $local = Join-Path $RepoRoot '.p05\tools\tunnel-client\tunnel-client.exe'

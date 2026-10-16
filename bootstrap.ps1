@@ -24,7 +24,7 @@ $TunnelVersion = '0.0.14'
 $NodeDir = Join-Path $P05Root 'tools\node'
 $TunnelDir = Join-Path $P05Root 'tools\tunnel-client'
 $NodeExe = Join-Path $NodeDir 'node.exe'
-$NpmCmd = Join-Path $NodeDir 'npm.cmd'
+$NpmCli = Join-Path $NodeDir 'node_modules\npm\bin\npm-cli.js'
 $TunnelExe = Join-Path $TunnelDir 'tunnel-client.exe'
 $EnvFile = Join-Path $RepoRoot '.env'
 . (Join-Path $RepoRoot 'scripts\deployment\common.ps1')
@@ -93,7 +93,7 @@ function Assert-Checksum(
 function Install-Node {
     param([switch]$Force)
     if (-not $Force -and (Test-Path -LiteralPath $NodeExe -PathType Leaf) -and
-        (Test-Path -LiteralPath $NpmCmd -PathType Leaf)) {
+        (Test-Path -LiteralPath $NpmCli -PathType Leaf)) {
         Write-Host "Repo-local Node already installed."
         return
     }
@@ -282,9 +282,9 @@ foreach ($slot in $slots) {
 if (-not $SkipBuild) {
     Push-Location $RepoRoot
     try {
-        & $NpmCmd ci
+        & $NodeExe $NpmCli ci
         if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE." }
-        & $NpmCmd run build
+        & $NodeExe $NpmCli run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed with exit code $LASTEXITCODE." }
     } finally {
         Pop-Location

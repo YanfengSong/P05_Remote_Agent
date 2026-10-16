@@ -38,19 +38,13 @@ try {
 $nodeVersion = (& $node --version).Trim()
 Write-Host "    node $nodeVersion"
 
-$nodeDir = Split-Path -Parent $node
-$npm = Join-Path $nodeDir "npm.cmd"
-$npx = Join-Path $nodeDir "npx.cmd"
-if (-not (Test-Path -LiteralPath $npm -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $npx -PathType Leaf)) {
-    Fail "Repo-local npm/npx is missing. Run bootstrap.ps1."
-}
+$npmCli = Resolve-P05NpmCli -RepoRoot $RepoRoot
 
 # --- 2. dependencies ----------------------------------------------------------
 Write-Step "checking dependencies"
 if (-not (Test-Path (Join-Path $RepoRoot "node_modules"))) {
     Write-Host "    node_modules missing, running repo-local npm ci"
-    & $npm ci
+    & $node $npmCli ci
     if ($LASTEXITCODE -ne 0) { Fail "npm ci failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "    node_modules present"
@@ -128,18 +122,22 @@ Write-Host "    $healthUrl"
 Write-Host ""
 
 $stdioCommand = '"' + $node + '" --env-file-if-exists="' + $envFile + '" "' + $entry + '"'
-$supergatewayArgs = @(
-    "-y", "supergateway@4.0.0-rc.1",
+$npmExecArgs = @(
+    $npmCli,
+    "exec",
+    "--yes",
+    "--package=supergateway@4.0.0-rc.1",
+    "--",
+    "supergateway",
     "--stdio", $stdioCommand,
     "--outputTransport", "streamableHttp",
     "--port", "$Port",
     "--streamableHttpPath", "/mcp",
     "--healthEndpoint", "/healthz"
 )
-
 if ($Probe) {
     Write-Step "probe mode: starting gateway and waiting for $healthUrl"
-    $process = Start-Process -FilePath $npx -ArgumentList $supergatewayArgs -PassThru -WindowStyle Hidden
+    $process = Start-Process -FilePath $node -ArgumentList $npmExecArgs -PassThru -WindowStyle Hidden
     try {
         $ready = $false
         for ($i = 0; $i -lt 30; $i++) {
@@ -163,5 +161,5 @@ if ($Probe) {
 }
 
 Write-Step "starting gateway on port $Port (Ctrl+C to stop)"
-& $npx @supergatewayArgs
+& $node @npmExecArgs
 exit $LASTEXITCODE
