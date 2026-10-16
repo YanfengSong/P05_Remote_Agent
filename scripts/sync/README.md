@@ -1,5 +1,7 @@
 # P05 State Synchronization
 
+Canonical deployment guide: `docs/deployment/P05_V2_UNIVERSAL_DEPLOYMENT.md`
+
 Git is the distribution and synchronization channel for P05.
 
 Boonray is the development machine, but it is not a runtime dependency. Other

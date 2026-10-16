@@ -1069,6 +1069,8 @@ External Resources
 - [Context Component Runtime](docs/architecture/CONTEXT-COMPONENT-RUNTIME.md)
 - [Agent / Skill / Asset Contracts](docs/architecture/AGENT-SKILL-ASSET-CONTRACTS.md)
 - [Repo-local Deployment](scripts/deployment/README.md)
+- [V2 Universal Deployment & Git State Sync](docs/deployment/P05_V2_UNIVERSAL_DEPLOYMENT.md)
+- [ADR-0021: Git-Based Universal State Synchronization](docs/adr/ADR-0021-git-based-universal-state-synchronization.md)
 
 ---
 

@@ -321,6 +321,8 @@ V3 contracts as delivered behavior.
 
 The V2 deployment path is now machine-neutral for the supported Windows x64 target.
 
+Canonical deployment and state-sync guide: `docs/deployment/P05_V2_UNIVERSAL_DEPLOYMENT.md`. Git/V2 is the distribution source for application code and the portable Golden State manifest; Boonray is not a runtime dependency.
+
 The committed repository is the source of truth for GUI, Core backend logic, Policy/Permission, Runtime lifecycle, Workspace/Reference, Plugin/Downstream behavior, Audit/Recovery and deployment scripts. Active deployment assets contain no Boonray/XiaoiWu host identity or fixed local repository path.
 
 Bootstrap derives paths from the repository location and installs the pinned Node.js/tunnel-client into .p05/tools. .env and .p05 remain machine-local; Device ID, Tunnel IDs, API keys, connector names, application installations and workspace roots are never copied between hosts.
