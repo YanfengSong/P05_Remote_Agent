@@ -273,6 +273,11 @@ $managed = [ordered]@{
     P05_TUNNEL_B_ID = $(if ($slots -contains 'B') { $TunnelB } else { '' })
     CONTROL_PLANE_API_KEY = $ApiKey
 }
+$reviewerSlot = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_HTTP_REVIEWER_SLOT'
+if (-not $reviewerSlot) { $reviewerSlot = 'B' }
+$reviewerStateDir = Join-Path $P05Root ("runtime-" + $reviewerSlot.ToLowerInvariant() + "\state")
+$managed.P05_HTTP_REVIEWER_STATE_DIR = $reviewerStateDir
+
 foreach ($name in $managed.Keys) {
     Set-DotEnvValue $EnvFile $name ([string]$managed[$name])
 }
