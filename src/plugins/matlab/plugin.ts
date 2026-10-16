@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import * as z from "zod/v4";
 import {
@@ -13,6 +12,7 @@ import {
   type PluginContext
 } from "../../plugin/api.js";
 import { MatlabSkillCatalog } from "./skills.js";
+import { assertP05RepoPath, defaultP05StateDir } from "../../state.js";
 
 export type MatlabToolkitDiscovery = {
   root: string;
@@ -64,9 +64,9 @@ function existingFile(candidate: string): string | undefined {
 
 export function discoverMatlabAgenticToolkit(
   toolkitRoot = process.env.MATLAB_AGENTIC_TOOLKIT_ROOT?.trim() ||
-    path.join(os.homedir(), ".matlab", "agentic-toolkits")
+    path.join(defaultP05StateDir(), "tools", "matlab", "agentic-toolkits")
 ): MatlabToolkitDiscovery {
-  const root = path.resolve(toolkitRoot);
+  const root = assertP05RepoPath(toolkitRoot, "MATLAB_AGENTIC_TOOLKIT_ROOT");
   const bin = path.join(root, "bin");
   const commandCandidates = process.platform === "win32"
     ? [
