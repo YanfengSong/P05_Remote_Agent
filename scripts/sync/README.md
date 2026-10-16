@@ -82,3 +82,10 @@ Runtime state remain local.
 Phase 2 is controlled Git-based reconciliation, not direct Boonray-to-machine
 synchronization. The next layer can add automatic polling or a scheduled task, but
 the source of truth remains the Git branch plus committed Golden State artifact.
+
+
+## Repo-root containment
+
+State Sync assumes the **Repo-Root Contained Runtime** layout. P05-generated persistent state and managed caches stay below `.p05\`; generated build output and dependencies stay beside the source under the repository root.
+
+Do not configure P05 state, Reviewer state, MATLAB toolkit root, managed executable paths or npm cache to a user-profile/global application-data directory. Run `npm run path:audit` after Bootstrap or any deployment-script change.
