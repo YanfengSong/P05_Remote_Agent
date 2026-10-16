@@ -321,6 +321,8 @@ V3 contracts as delivered behavior.
 
 The V2 deployment path is now machine-neutral for the supported Windows x64 target.
 
+P05 V2 also enforces a Repo-Root Contained Runtime invariant: persistent P05 state, managed caches and generated runtime assets remain under the Git repository. `npm run path:audit` is the deployment path audit.
+
 Canonical deployment and state-sync guide: `docs/deployment/P05_V2_UNIVERSAL_DEPLOYMENT.md`. Git/V2 is the distribution source for application code and the portable Golden State manifest; Boonray is not a runtime dependency.
 
 The committed repository is the source of truth for GUI, Core backend logic, Policy/Permission, Runtime lifecycle, Workspace/Reference, Plugin/Downstream behavior, Audit/Recovery and deployment scripts. Active deployment assets contain no Boonray/XiaoiWu host identity or fixed local repository path.
