@@ -12,7 +12,7 @@
     "test:policy": "npm run build && node dist/test/policy-profiles.js",
     "test:exposure": "npm run build && node dist/test/profile-exposure.js",
     "test": "npm run build && npm run test:compiled",
-    "verify": "npm run check && npm run build && npm run test:compiled",
+    "verify": "npm run check && npm run build && npm run test:compiled && npm run test:sync",
     "verify:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1",
     "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local.ps1",
     "inspect": "npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js",
@@ -22,7 +22,11 @@
     "verify:matlab": "npm run check && npm run test:matlab-live",
     "test:compiled": "node dist/test/policy-profiles.js && node dist/test/profile-exposure.js && node dist/test/http-reviewer.js && node dist/test/foundation.js && node dist/test/git-mutations.js && node dist/test/operator-console.js && node dist/test/output-schema.js && node dist/test/plugin-framework.js && node dist/test/plugin-api-v1.js && node dist/test/downstream-smoke.js",
     "start:http-reviewer": "npm run build && node --env-file-if-exists=.env dist/http-reviewer.js",
-    "test:http-reviewer": "npm run build && node dist/test/http-reviewer.js"
+    "test:http-reviewer": "npm run build && node dist/test/http-reviewer.js",
+    "sync:export": "npm run build && node --env-file-if-exists=.env scripts/sync/export-golden-state.mjs",
+    "sync:drift": "npm run build && node --env-file-if-exists=.env scripts/sync/check-drift.mjs",
+    "test:sync": "npm run build && node dist/test/state-sync.js",
+    "test:sync": "npm run build && node dist/test/state-sync.js"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
