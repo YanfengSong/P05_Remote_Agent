@@ -52,7 +52,7 @@ if (-not (Test-Path (Join-Path $RepoRoot "node_modules"))) {
 
 # --- 3. build -----------------------------------------------------------------
 Write-Step "building"
-& $npm run build
+& $node $npmCli run build
 if ($LASTEXITCODE -ne 0) { Fail "npm run build failed (exit $LASTEXITCODE)" }
 
 # --- 4. tool profile -----------------------------------------------------------
