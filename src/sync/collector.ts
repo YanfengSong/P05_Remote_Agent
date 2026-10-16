@@ -22,8 +22,31 @@ function git(args: string[]): string {
   }).trim();
 }
 
+function readDotEnv(): Map<string, string> {
+  const values = new Map<string, string>();
+  const filePath = path.join(repoRoot, ".env");
+  if (!fs.existsSync(filePath)) return values;
+  for (const line of fs.readFileSync(filePath, "utf8").replace(/^\\uFEFF/, "").split(/\\r?\\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const index = trimmed.indexOf("=");
+    if (index <= 0) continue;
+    values.set(trimmed.slice(0, index).trim(), trimmed.slice(index + 1));
+  }
+  return values;
+}
+
+const dotEnv = readDotEnv();
+
+function syncEnv(name: string): string | undefined {
+  const processValue = readOwnEnv(name)?.trim();
+  if (processValue) return processValue;
+  const fileValue = dotEnv.get(name)?.trim();
+  return fileValue || undefined;
+}
+
 function stateDir(): string {
-  const configured = readOwnEnv("P05_STATE_DIR")?.trim();
+  const configured = syncEnv("P05_STATE_DIR");
   return path.resolve(configured || path.join(repoRoot, ".p05"));
 }
 
@@ -61,7 +84,7 @@ function normalizeWorkspaceEntry(value: unknown, source: string): GoldenWorkspac
 
 function collectWorkspaces(): { activeId: string; entries: GoldenWorkspace[] } {
   const entries: GoldenWorkspace[] = [];
-  const configuredRaw = readOwnEnv("P05_WORKSPACES_JSON")?.trim();
+  const configuredRaw = syncEnv("P05_WORKSPACES_JSON")?.trim();
 
   if (configuredRaw) {
     const parsed = JSON.parse(configuredRaw) as unknown;
@@ -91,7 +114,7 @@ function collectWorkspaces(): { activeId: string; entries: GoldenWorkspace[] } {
   }
 
   entries.sort((a, b) => a.id.localeCompare(b.id));
-  const requested = readOwnEnv("P05_ACTIVE_WORKSPACE_ID")?.trim();
+  const requested = syncEnv("P05_ACTIVE_WORKSPACE_ID")?.trim();
   const activeId = requested ||
     entries.find((entry) => entry.kind === "platform-source")?.id ||
     entries[0]?.id;
@@ -149,7 +172,7 @@ function collectPlugins(): { plugins: GoldenPlugin[]; downstream: GoldenDownstre
 }
 
 export function collectGoldenState(): GoldenState {
-  const toolProfile = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE")).profile;
+  const toolProfile = resolveToolProfile(syncEnv("P05_TOOL_PROFILE")).profile;
   const workspace = collectWorkspaces();
   const { plugins, downstream } = collectPlugins();
 
@@ -166,15 +189,21 @@ export function collectGoldenState(): GoldenState {
       approvalMode: readApprovalMode().mode
     },
     runtime: {
-      slots: (readOwnEnv("P05_RUNTIME_SLOTS")?.trim() || "")
-        .split(",")
+      slots: (() => {
+        const explicit = syncEnv("P05_RUNTIME_SLOTS")?.trim();
+        if (explicit) return explicit.split(",");
+        const inferred: string[] = [];
+        if (/^tunnel_[A-Za-z0-9]+$/.test(syncEnv("P05_TUNNEL_A_ID") || "")) inferred.push("A");
+        if (/^tunnel_[A-Za-z0-9]+$/.test(syncEnv("P05_TUNNEL_B_ID") || "")) inferred.push("B");
+        return inferred;
+      })()
         .map((value) => value.trim().toUpperCase())
         .filter((value): value is "A" | "B" => value === "A" || value === "B")
         .map((id) => ({
           id,
           profileName: id === "A"
-            ? readOwnEnv("P05_RUNTIME_A_PROFILE")?.trim() || "p05-a"
-            : readOwnEnv("P05_RUNTIME_B_PROFILE")?.trim() || "p05-b"
+            ? syncEnv("P05_RUNTIME_A_PROFILE")?.trim() || "p05-a"
+            : syncEnv("P05_RUNTIME_B_PROFILE")?.trim() || "p05-b"
         }))
         .sort((a, b) => a.id.localeCompare(b.id))
     },
@@ -196,6 +225,11 @@ export function collectGoldenState(): GoldenState {
 }
 
 export function goldenStateComparable(state: GoldenState): unknown {
-  const { generatedAt: _generatedAt, revision: _revision, ...comparable } = state;
-  return comparable;
+  const {
+    generatedAt: _generatedAt,
+    revision: _revision,
+    source: { gitCommit: _gitCommit, ...source },
+    ...rest
+  } = state;
+  return { ...rest, source };
 }

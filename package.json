@@ -26,7 +26,9 @@
     "sync:export": "npm run build && node --env-file-if-exists=.env scripts/sync/export-golden-state.mjs",
     "sync:drift": "npm run build && node --env-file-if-exists=.env scripts/sync/check-drift.mjs",
     "test:sync": "npm run build && node dist/test/state-sync.js",
-    "test:sync": "npm run build && node dist/test/state-sync.js"
+    "sync:apply": "npm run build && node --env-file-if-exists=.env scripts/sync/apply-golden-state.mjs",
+    "sync:machine": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync/sync-machine.ps1",
+    "sync:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync/publish-golden-state.ps1"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",

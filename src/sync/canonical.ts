@@ -25,5 +25,13 @@ export function sha256(value: unknown): string {
 }
 
 export function stateRevision(state: Omit<GoldenState, "revision" | "generatedAt">): string {
-  return sha256(state);
+  const comparable = {
+    ...state,
+    source: {
+      ...state.source,
+      gitCommit: undefined
+    }
+  };
+  delete (comparable.source as { gitCommit?: string }).gitCommit;
+  return sha256(comparable);
 }
