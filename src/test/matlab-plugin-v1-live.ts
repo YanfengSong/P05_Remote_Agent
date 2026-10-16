@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -13,7 +12,7 @@ const stateDir = path.join(fixture, ".state");
 const serverEntry = path.resolve(here, "..", "index.js");
 const toolkitRoot =
   process.env.MATLAB_AGENTIC_TOOLKIT_ROOT?.trim() ||
-  path.join(os.homedir(), ".matlab", "agentic-toolkits");
+  path.join(repo, ".p05", "tools", "matlab", "agentic-toolkits");
 const matlabMcp = path.join(toolkitRoot, "bin", "matlab-mcp-server.exe");
 
 let checks = 0;
