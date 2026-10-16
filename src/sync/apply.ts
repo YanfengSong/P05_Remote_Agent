@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { GoldenState } from "./types.js";
-import { writeApprovalMode } from "../policy/approval-mode.js";
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 type LocalWorkspace = {
   id: string;
@@ -131,24 +131,41 @@ function isInside(candidate: string, roots: string[]): boolean {
   });
 }
 
+function runtimeStateDirs(desired: GoldenState): string[] {
+  if (desired.runtime.slots.length > 0) {
+    return desired.runtime.slots.map((slot) =>
+      path.join(repoRoot, ".p05", "runtime-" + slot.id.toLowerCase(), "state")
+    );
+  }
+  return [path.join(repoRoot, ".p05")];
+}
+
+function localWorkspaceSources(envValues: Map<string, string>, stateDirs: string[]): LocalWorkspace[] {
+  const sources = parseWorkspaceRegistry(envValues.get("P05_WORKSPACES_JSON"));
+  for (const stateDir of stateDirs) {
+    const parsed = readJson(path.join(stateDir, "workspaces.json"));
+    if (parsed?.version === 1 && Array.isArray(parsed.workspaces)) {
+      sources.push(...parseWorkspaceRegistry(JSON.stringify(parsed.workspaces)));
+    }
+  }
+  return sources;
+}
+
+function localReferenceSources(stateDirs: string[]): LocalReference[] {
+  const sources: LocalReference[] = [];
+  for (const stateDir of stateDirs) {
+    sources.push(...parseReferenceRegistry(path.join(stateDir, "references.json")));
+  }
+  return sources;
+}
+
 function applyWorkspaces(
   desired: GoldenState,
   envValues: Map<string, string>,
+  stateDirs: string[],
   mapPath: string
 ): { configuredJson: string; persistentJson: string } {
-  const current = parseWorkspaceRegistry(envValues.get("P05_WORKSPACES_JSON"));
-  const persistentPath = path.join(repoRoot, ".p05", "workspaces.json");
-  const persistent = parseWorkspaceRegistry(
-    (() => {
-      const parsed = readJson(persistentPath);
-      if (!parsed) return undefined;
-      if (parsed.version !== 1 || !Array.isArray(parsed.workspaces)) {
-        throw new Error("Local persistent workspace registry must use version 1.");
-      }
-      return JSON.stringify(parsed.workspaces);
-    })()
-  );
-  const allCurrent = [...current, ...persistent];
+  const current = localWorkspaceSources(envValues, stateDirs);
   const map = loadRootMap(mapPath);
   const allowedRoots = (envValues.get("REMOTE_AGENT_ALLOWED_ROOTS") || "")
     .split(";")
@@ -160,11 +177,16 @@ function applyWorkspaces(
     throw new Error("REMOTE_AGENT_ALLOWED_ROOTS must be configured before State Sync can apply Workspace bindings.");
   }
 
+  const used = new Set<string>();
   const result = desired.workspace.entries.map((entry) => {
-    const currentMatch = allCurrent.find((item) => item.id.toLowerCase() === entry.id.toLowerCase());
+    const key = entry.id.toLowerCase();
+    if (used.has(key)) throw new Error("Golden State contains duplicate Workspace id: " + entry.id);
+    used.add(key);
+
+    const currentMatch = current.find((item) => item.id.toLowerCase() === key);
     const root = entry.kind === "platform-source"
       ? repoRoot
-      : currentMatch?.root || map[entry.id.toLowerCase()];
+      : currentMatch?.root || map[key];
 
     if (!root) {
       throw new Error(
@@ -173,7 +195,6 @@ function applyWorkspaces(
         " with a mapping for \"" + entry.id + "\"."
       );
     }
-
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
       throw new Error("Workspace \"" + entry.id + "\" local root does not exist: " + root);
     }
@@ -196,25 +217,18 @@ function applyWorkspaces(
   }
 
   const platform = result.filter((entry) => entry.kind === "platform-source");
-  const business = result
-    .filter((entry) => entry.kind !== "platform-source")
-    .map((entry) => ({
-      id: entry.id,
-      root: entry.root,
-      kind: entry.kind,
-      ...(entry.label ? { label: entry.label } : {}),
-      ...(entry.plugins?.length ? { plugins: entry.plugins } : {})
-    }));
-
+  const business = result.filter((entry) => entry.kind !== "platform-source");
   return {
     configuredJson: JSON.stringify(platform, null, 2),
     persistentJson: JSON.stringify({ version: 1, workspaces: business }, null, 2)
   };
 }
 
-function applyReferences(desired: GoldenState, stateDir: string): boolean {
-  const filePath = path.join(stateDir, "references.json");
-  const current = parseReferenceRegistry(filePath);
+function applyReferences(desired: GoldenState, stateDirs: string[]): string[] {
+  if (desired.references.length === 0) return [];
+  const current = localReferenceSources(stateDirs);
+  const changed: string[] = [];
+
   const result = desired.references.map((entry) => {
     const match = current.find((item) => item.id.toLowerCase() === entry.id.toLowerCase());
     if (!match) {
@@ -229,17 +243,45 @@ function applyReferences(desired: GoldenState, stateDir: string): boolean {
     return { id: entry.id, label: entry.label, root: match.root };
   });
 
-  const before = fs.existsSync(filePath) ? readUtf8(filePath) : "";
-  const after = JSON.stringify({ version: 1, references: result }, null, 2) + "\n";
-  if (before === after) return false;
-  writeAtomic(filePath, after);
-  return true;
+  for (const stateDir of stateDirs) {
+    const filePath = path.join(stateDir, "references.json");
+    const before = fs.existsSync(filePath) ? readUtf8(filePath) : "";
+    const after = JSON.stringify({ version: 1, references: result }, null, 2) + "\n";
+    if (before !== after) {
+      writeAtomic(filePath, after);
+      changed.push(path.relative(repoRoot, filePath));
+    }
+  }
+  return changed;
+}
+
+function applyApprovalMode(desired: GoldenState, stateDirs: string[]): string[] {
+  const changed: string[] = [];
+  for (const stateDir of stateDirs) {
+    const filePath = path.join(stateDir, "approval-mode.json");
+    let current: string | undefined;
+    if (fs.existsSync(filePath)) {
+      try {
+        const parsed = JSON.parse(readUtf8(filePath)) as { mode?: unknown };
+        if (typeof parsed.mode === "string") current = parsed.mode;
+      } catch {}
+    }
+    if (current !== desired.policy.approvalMode) {
+      writeAtomic(filePath, JSON.stringify({
+        mode: desired.policy.approvalMode,
+        updatedAt: new Date().toISOString()
+      }, null, 2) + "\n");
+      changed.push(path.relative(repoRoot, filePath));
+    }
+  }
+  return changed;
 }
 
 export function applyGoldenState(desired: GoldenState): {
   changed: string[];
   workspaceCount: number;
   referenceCount: number;
+  runtimeStateCount: number;
 } {
   if (desired.kind !== "p05-golden-state" || desired.schemaVersion !== 1) {
     throw new Error("Unsupported Golden State schema.");
@@ -250,15 +292,16 @@ export function applyGoldenState(desired: GoldenState): {
     throw new Error(".env is missing. Run the machine bootstrap before State Sync.");
   }
 
-  const stateDir = path.join(repoRoot, ".p05");
   const envBefore = readUtf8(envPath);
   const envValues = parseEnv(envBefore);
+  const stateDirs = runtimeStateDirs(desired);
   const changed: string[] = [];
 
   const workspaceState = applyWorkspaces(
     desired,
     envValues,
-    path.join(stateDir, "sync-workspace-map.json")
+    stateDirs,
+    path.join(repoRoot, ".p05", "sync-workspace-map.json")
   );
 
   let envAfter = envBefore;
@@ -274,33 +317,23 @@ export function applyGoldenState(desired: GoldenState): {
     changed.push(".env");
   }
 
-  const workspacePath = path.join(stateDir, "workspaces.json");
-  const workspaceBefore = fs.existsSync(workspacePath) ? readUtf8(workspacePath) : "";
-  const workspaceAfter = workspaceState.persistentJson + "\n";
-  if (workspaceBefore !== workspaceAfter) {
-    writeAtomic(workspacePath, workspaceAfter);
-    changed.push(".p05/workspaces.json");
+  for (const stateDir of stateDirs) {
+    const workspacePath = path.join(stateDir, "workspaces.json");
+    const before = fs.existsSync(workspacePath) ? readUtf8(workspacePath) : "";
+    const after = workspaceState.persistentJson + "\n";
+    if (before !== after) {
+      writeAtomic(workspacePath, after);
+      changed.push(path.relative(repoRoot, workspacePath));
+    }
   }
 
-  const approvalPath = path.join(stateDir, "approval-mode.json");
-  const approvalBefore = fs.existsSync(approvalPath) ? readUtf8(approvalPath) : "";
-  let currentApproval: string | undefined;
-  if (approvalBefore) {
-    try {
-      const parsed = JSON.parse(approvalBefore) as { mode?: unknown };
-      if (typeof parsed.mode === "string") currentApproval = parsed.mode;
-    } catch {}
-  }
-  if (currentApproval !== desired.policy.approvalMode) {
-    writeApprovalMode(desired.policy.approvalMode as "standard" | "trusted");
-    changed.push(".p05/approval-mode.json");
-  }
-
-  if (applyReferences(desired, stateDir)) changed.push(".p05/references.json");
+  changed.push(...applyApprovalMode(desired, stateDirs));
+  changed.push(...applyReferences(desired, stateDirs));
 
   return {
     changed,
     workspaceCount: desired.workspace.entries.length,
-    referenceCount: desired.references.length
+    referenceCount: desired.references.length,
+    runtimeStateCount: stateDirs.length
   };
 }

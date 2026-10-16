@@ -113,11 +113,23 @@ Step "regenerating local Runtime profiles"
 if ($LASTEXITCODE -ne 0) { throw "Runtime profile generation failed with exit code $LASTEXITCODE." }
 
 Step "verifying local state"
-$driftOutput = & $Node "--env-file-if-exists=$EnvFile" (Join-Path $RepoRoot "scripts\sync\check-drift.mjs") "sync/golden-state.json"
-$driftExit = $LASTEXITCODE
-$driftOutput | ForEach-Object { Write-Host $_ }
-if ($driftExit -ne 0) {
-    Fail "State Sync completed with unresolved drift. Runtime restart was skipped."
+$desiredSlots = @($desired.runtime.slots | ForEach-Object { [string]$_.id })
+if ($desiredSlots.Count -eq 0) {
+    $driftOutput = & $Node "--env-file-if-exists=$EnvFile" (Join-Path $RepoRoot "scripts\sync\check-drift.mjs") "sync/golden-state.json"
+    $driftExit = $LASTEXITCODE
+    $driftOutput | ForEach-Object { Write-Host $_ }
+    if ($driftExit -ne 0) {
+        Fail "State Sync completed with unresolved drift. Runtime restart was skipped."
+    }
+} else {
+    foreach ($slot in $desiredSlots) {
+        $driftOutput = & $Node "--env-file-if-exists=$EnvFile" (Join-Path $RepoRoot "scripts\sync\check-drift.mjs") "sync/golden-state.json" "--runtime=$slot"
+        $driftExit = $LASTEXITCODE
+        $driftOutput | ForEach-Object { Write-Host $_ }
+        if ($driftExit -ne 0) {
+            Fail "State Sync completed with unresolved drift in Runtime $slot. Runtime restart was skipped."
+        }
+    }
 }
 
 if (-not $SkipRestart) {

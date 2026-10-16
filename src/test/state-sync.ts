@@ -31,6 +31,13 @@ try {
   const state = collectGoldenState();
   check("schema version", state.schemaVersion === 1);
   check("revision is stable", state.revision === sha256(goldenStateComparable(state)));
+
+  const sourceOnlyChange = JSON.parse(JSON.stringify(state));
+  sourceOnlyChange.source.gitCommit = "0".repeat(40);
+  check(
+    "source commit is not configuration drift",
+    checkGoldenStateDrift(state, sourceOnlyChange).status === "in_sync"
+  );
   check("workspace root is never exported", !JSON.stringify(state).includes(fixture));
   check("workspace active id is exported", state.workspace.activeId === "project-a");
   check("plugin version is exported", state.plugins.some((entry) => entry.id === "matlab"));

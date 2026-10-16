@@ -46,7 +46,8 @@ function syncEnv(name: string): string | undefined {
 }
 
 function stateDir(): string {
-  const configured = syncEnv("P05_STATE_DIR");
+  const syncOverride = readOwnEnv("P05_SYNC_STATE_DIR")?.trim();
+  const configured = syncOverride || syncEnv("P05_STATE_DIR");
   return path.resolve(configured || path.join(repoRoot, ".p05"));
 }
 
