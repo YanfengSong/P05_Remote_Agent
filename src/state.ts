@@ -5,12 +5,32 @@ import { fileURLToPath } from "node:url";
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "..");
 
+function normalizeForCompare(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
 export function defaultP05StateDir(): string {
   return path.join(repoRoot, ".p05");
 }
 
+export function assertP05RepoPath(raw: string, label = "P05 path"): string {
+  const resolved = path.resolve(raw);
+  const root = normalizeForCompare(repoRoot);
+  const candidate = normalizeForCompare(resolved);
+  if (candidate !== root && !candidate.startsWith(root + path.sep)) {
+    throw new Error(
+      `${label} must remain inside the P05 repository (${repoRoot}); got ${resolved}.`
+    );
+  }
+  return resolved;
+}
+
 export function p05StateDir(raw = process.env.P05_STATE_DIR): string {
-  return path.resolve(raw?.trim() || defaultP05StateDir());
+  return assertP05RepoPath(
+    raw?.trim() || defaultP05StateDir(),
+    "P05_STATE_DIR"
+  );
 }
 
 export function ensureP05StateDir(): string {
