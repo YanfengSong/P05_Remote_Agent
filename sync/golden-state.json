@@ -1,0 +1,135 @@
+{
+  "kind": "p05-golden-state",
+  "schemaVersion": 1,
+  "source": {
+    "agentVersion": "0.3.1",
+    "gitCommit": "4ef87e9de588a00bb7842dd678cea4e0da4a187f"
+  },
+  "policy": {
+    "toolProfile": "developer",
+    "approvalMode": "trusted"
+  },
+  "runtime": {
+    "slots": [
+      {
+        "id": "A",
+        "profileName": "p05-a"
+      },
+      {
+        "id": "B",
+        "profileName": "p05-b"
+      }
+    ]
+  },
+  "workspace": {
+    "activeId": "platform",
+    "entries": [
+      {
+        "id": "p01_smartchassis",
+        "kind": "git-project",
+        "label": "P01_SmartChassis",
+        "rootBinding": "local"
+      },
+      {
+        "id": "p02_vmodel",
+        "kind": "git-project",
+        "label": "P02_Vmodel",
+        "rootBinding": "local"
+      },
+      {
+        "id": "p04_vehicle_dynamic",
+        "kind": "git-project",
+        "label": "P04_Vehicle_Dynamic",
+        "rootBinding": "local"
+      },
+      {
+        "id": "platform",
+        "kind": "platform-source",
+        "label": "P05 platform workspace",
+        "rootBinding": "local"
+      }
+    ]
+  },
+  "references": [
+    {
+      "id": "ref-p04_vehicle_dynamic",
+      "label": "P04_Vehicle_Dynamic",
+      "rootBinding": "local"
+    },
+    {
+      "id": "ref-project_001_dynamicmodel_identify",
+      "label": "Project_001_DynamicModel_Identify",
+      "rootBinding": "local"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "example",
+      "label": "Example Plugin",
+      "version": "1.0.0",
+      "apiVersion": "1",
+      "enabled": false,
+      "permissions": {
+        "workspace": "active",
+        "hostEffects": "none"
+      },
+      "dependencies": []
+    },
+    {
+      "id": "matlab",
+      "label": "MATLAB / Simulink",
+      "version": "2.2.0",
+      "apiVersion": "1",
+      "enabled": true,
+      "permissions": {
+        "workspace": "active",
+        "hostEffects": "none"
+      },
+      "dependencies": []
+    }
+  ],
+  "downstream": [
+    {
+      "id": "matlab",
+      "label": "MathWorks MATLAB MCP Server",
+      "enabled": true,
+      "workspaceBinding": "active",
+      "requestTimeoutMs": 600000
+    }
+  ],
+  "capabilities": {
+    "names": [
+      "activity_recent",
+      "apply_patch",
+      "command_run",
+      "device_info",
+      "fs_list",
+      "fs_read",
+      "fs_write",
+      "git_add",
+      "git_branch",
+      "git_commit",
+      "git_diff",
+      "git_diff_stat",
+      "git_push",
+      "git_status",
+      "mcp_call_tool",
+      "mcp_list_tools",
+      "mcp_status",
+      "ping",
+      "plugin_list",
+      "recovery_status",
+      "reference_list",
+      "reference_list_directory",
+      "reference_read",
+      "remote_read",
+      "runtime_restart",
+      "shell_run",
+      "workspace_current",
+      "workspace_list"
+    ],
+    "catalogSha256": "91b42f260fc22b5463c55588b500051be9824685cd72721f3a59715bd828bfe7"
+  },
+  "generatedAt": "2026-10-16T07:05:33.673Z",
+  "revision": "4b6a6c364879b647370ce1f9d825260091857f5204b0915e627861f4bf33b0a7"
+}
