@@ -41,6 +41,35 @@ sync/golden-state.json provides parity for portable shared configuration:
 - Plugin/downstream metadata derived from the same source tree;
 - Capability catalog identity.
 
+## 2.5 Repo-root containment
+
+P05 V2 follows a strict **Repo-Root Contained Runtime** invariant. Persistent files created or managed by P05 stay under the cloned Git repository; the normal runtime does not use the Windows user profile or global application-data directories as a P05 storage location.
+
+The managed tree is:
+
+    <repo>\
+      .env
+      .npmrc
+      node_modules\
+      dist\
+      .p05\
+        tools\
+          node\
+          tunnel-client\
+          matlab\
+            agentic-toolkits\
+        npm-cache\
+        runtime-a\state\
+        runtime-b\state\
+
+Temporary installer downloads may use the operating-system temporary directory and are deleted after installation. Workspace and Reference roots remain external by design because they are user/project data, not P05 runtime files.
+
+Run the path audit with:
+
+    npm run path:audit
+
+The audit fails if executable P05 code reintroduces user-profile/global-app-data persistence or if repo-local P05 path settings in .env point outside the repository.
+
 ## 3. What remains machine-local
 
 The following values must not be copied from Boonray to another computer:
@@ -79,7 +108,7 @@ Run Bootstrap once:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
-Bootstrap installs the pinned repo-local toolchain, creates machine-local .env and .p05 state, creates Runtime state directories, generates Runtime profiles and can start the selected Runtime slots.
+Bootstrap installs the pinned repo-local toolchain, creates machine-local .env and .p05 state, keeps the npm cache under .p05, uses the repo-local MATLAB toolkit location when available, creates Runtime state directories, generates Runtime profiles and can start the selected Runtime slots.
 
 Configure only this computer's values:
 
@@ -89,7 +118,7 @@ Configure only this computer's values:
 - REMOTE_AGENT_ALLOWED_ROOTS;
 - optional network/proxy settings.
 
-The current validated toolchain is Node.js 22.23.1 and tunnel-client 0.0.14. Bootstrap verifies and installs these into .p05/tools.
+The current validated toolchain is Node.js 22.23.1 and tunnel-client 0.0.14. Bootstrap verifies and installs these into .p05/tools. MATLAB Agentic Toolkit, when enabled, is expected under .p05/tools/matlab/agentic-toolkits.
 
 ## 5. Workspace and Reference binding
 
