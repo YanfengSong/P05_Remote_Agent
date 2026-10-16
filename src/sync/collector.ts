@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERSION } from "../version.js";
 import { readOwnEnv } from "../env.js";
+import { assertP05RepoPath } from "../state.js";
 import { readApprovalMode } from "../policy/approval-mode.js";
 import { resolveToolProfile } from "../policy/tool-profile.js";
 import { CAPABILITIES } from "../capability/registry.js";
@@ -48,7 +49,10 @@ function syncEnv(name: string): string | undefined {
 function stateDir(): string {
   const syncOverride = readOwnEnv("P05_SYNC_STATE_DIR")?.trim();
   const configured = syncOverride || syncEnv("P05_STATE_DIR");
-  return path.resolve(configured || path.join(repoRoot, ".p05"));
+  return assertP05RepoPath(
+    configured || path.join(repoRoot, ".p05"),
+    "P05_SYNC_STATE_DIR"
+  );
 }
 
 function readJson(filePath: string): unknown {
