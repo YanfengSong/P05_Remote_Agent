@@ -49,6 +49,8 @@ function parseEnv(text: string): Map<string, string> {
 }
 
 function setEnvValue(text: string, name: string, value: string): string {
+  const newline = text.includes("\r\n") ? "\r\n" : "\n";
+  const hadTrailingNewline = text.endsWith("\r\n") || text.endsWith("\n");
   const lines = text.split(/\r?\n/);
   let found = false;
   for (let i = 0; i < lines.length; i += 1) {
@@ -63,8 +65,10 @@ function setEnvValue(text: string, name: string, value: string): string {
   if (!found) {
     while (lines.length && lines[lines.length - 1] === "") lines.pop();
     lines.push(name + "=" + value);
+    return lines.join(newline) + newline;
   }
-  return lines.join("\r\n") + "\r\n";
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.join(newline) + (hadTrailingNewline ? newline : "");
 }
 
 function parseWorkspaceRegistry(raw: string | undefined): LocalWorkspace[] {
