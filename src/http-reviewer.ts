@@ -1,4 +1,5 @@
 import path from "node:path";
+import { assertP05RepoPath } from "./state.js";
 
 const slotRaw = (process.env.P05_HTTP_REVIEWER_SLOT ?? "B").trim().toUpperCase();
 if (slotRaw !== "A" && slotRaw !== "B") {
@@ -6,9 +7,10 @@ if (slotRaw !== "A" && slotRaw !== "B") {
 }
 const slot = slotRaw as "A" | "B";
 
-const stateDir = path.resolve(
+const stateDir = assertP05RepoPath(
   process.env.P05_HTTP_REVIEWER_STATE_DIR?.trim() ||
-    path.join(process.cwd(), ".p05", `runtime-${slot.toLowerCase()}`, "state")
+    path.join(process.cwd(), ".p05", `runtime-${slot.toLowerCase()}`, "state"),
+  "P05_HTTP_REVIEWER_STATE_DIR"
 );
 
 // device/identity.ts binds P05_STATE_DIR at module load time, so set it before
