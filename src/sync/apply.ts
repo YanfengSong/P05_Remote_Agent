@@ -198,8 +198,8 @@ function applyWorkspaces(
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
       throw new Error("Workspace \"" + entry.id + "\" local root does not exist: " + root);
     }
-    if (!isInside(root, allowedRoots)) {
-      throw new Error("Workspace \"" + entry.id + "\" local root is outside REMOTE_AGENT_ALLOWED_ROOTS: " + root);
+    if (!currentMatch && !isInside(root, allowedRoots)) {
+      throw new Error("Workspace \"" + entry.id + "\" mapped root is outside REMOTE_AGENT_ALLOWED_ROOTS: " + root);
     }
 
     return {
@@ -219,13 +219,12 @@ function applyWorkspaces(
   const platform = result.filter((entry) => entry.kind === "platform-source");
   const business = result.filter((entry) => entry.kind !== "platform-source");
   return {
-    configuredJson: JSON.stringify(platform, null, 2),
+    configuredJson: JSON.stringify(platform),
     persistentJson: JSON.stringify({ version: 1, workspaces: business }, null, 2)
   };
 }
 
 function applyReferences(desired: GoldenState, stateDirs: string[]): string[] {
-  if (desired.references.length === 0) return [];
   const current = localReferenceSources(stateDirs);
   const changed: string[] = [];
 
