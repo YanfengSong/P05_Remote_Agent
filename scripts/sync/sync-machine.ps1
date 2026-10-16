@@ -26,6 +26,9 @@ $Node = Join-Path $RepoRoot ".p05\tools\node\node.exe"
 $NpmCli = Join-Path $RepoRoot ".p05\tools\node\node_modules\npm\bin\npm-cli.js"
 $EnvFile = Join-Path $RepoRoot ".env"
 $Manifest = Join-Path $RepoRoot "sync\golden-state.json"
+$NpmCacheDir = Join-Path $RepoRoot ".p05\npm-cache"
+New-Item -ItemType Directory -Path $NpmCacheDir -Force | Out-Null
+$env:NPM_CONFIG_CACHE = $NpmCacheDir
 
 if (-not (Test-Path -LiteralPath $Node)) { Fail "Repo-local Node.js is missing. Run the deployment bootstrap first." }
 if (-not (Test-Path -LiteralPath $NpmCli)) { Fail "Repo-local npm is missing. Run the deployment bootstrap first." }
