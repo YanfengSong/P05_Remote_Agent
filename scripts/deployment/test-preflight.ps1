@@ -26,6 +26,9 @@ try {
 
     $slots = ConvertTo-P05RuntimeSlots -Raw 'A,B'
     Check 'slot helper remains available beside preflight' (($slots -join ',') -eq 'A,B') ($slots -join ',')
+    Check '32-character lowercase tunnel ID is accepted' (Test-P05TunnelId -Value 'tunnel_0123456789abcdef0123456789abcdef')
+    Check 'placeholder tunnel ID is rejected' (-not (Test-P05TunnelId -Value 'tunnel_TESTA'))
+    Check 'uppercase tunnel ID is rejected' (-not (Test-P05TunnelId -Value 'tunnel_0123456789ABCDEF0123456789ABCDEF'))
 
     $pre = Invoke-P05Preflight -RepoRoot $fixture -AllowedRoots $fixture -Stage PreInstall
     Check 'missing managed tools are repairable before install' ($pre.overall -eq 'REPAIRABLE') $pre.overall
