@@ -37,8 +37,13 @@ import {
   type PersistentWorkspaceEntry
 } from "./workspace/persistence.js";
 
+const profileSourceOverride =
+  readOwnEnv("P05_TOOL_PROFILE_SOURCE")?.trim().toLowerCase() === "runtime-state"
+    ? "runtime-state"
+    : undefined;
 const { profile, profileSource } = resolveToolProfile(
-  readOwnEnv("P05_TOOL_PROFILE")
+  readOwnEnv("P05_TOOL_PROFILE"),
+  profileSourceOverride
 );
 
 const runtimeSlotValue = readOwnEnv("P05_RUNTIME_SLOT")?.trim().toUpperCase();
