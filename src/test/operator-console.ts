@@ -77,6 +77,10 @@ const envExampleSource = await fs.readFile(
   path.join(REPO, ".env.example"),
   "utf8"
 );
+const launchRuntimeSource = await fs.readFile(
+  path.join(REPO, "scripts", "deployment", "launch-runtime.mjs"),
+  "utf8"
+);
 check(
   "operator: server exposes only slot-scoped runtime/workspace mutation routes",
   !operatorServerSource.includes('url.pathname === "/api/action/connect"') &&
@@ -104,6 +108,26 @@ check(
   operatorServerSource.includes('url.pathname === "/api/approval-mode"') &&
     operatorServerSource.includes("readApprovalMode()") &&
     operatorServerSource.includes("writeApprovalMode(mode)")
+);
+check(
+  "operator: tool profile mutation is slot-scoped and restarts the selected Runtime",
+  operatorServerSource.includes("/tool-profile") &&
+    operatorServerSource.includes("writeRuntimeSlotToolProfile(slot, body.profile)") &&
+    operatorServerSource.includes("restartRuntimeSlot(slot)")
+);
+check(
+  "operator: GUI exposes all four tool profiles and separates configured from active",
+  renderedPage.includes("slotAToolProfileButtons") &&
+    renderedPage.includes("slotBToolProfileButtons") &&
+    renderedPage.includes("slotAToolProfileConfigured") &&
+    renderedPage.includes("slotAToolProfileActual") &&
+    ["discovery", "readonly", "developer", "full"].every((profile) => renderedPage.includes(profile))
+);
+check(
+  "operator: runtime launcher applies per-slot profile state before loading MCP",
+  launchRuntimeSource.includes("tool-profile.json") &&
+    launchRuntimeSource.includes('process.env.P05_TOOL_PROFILE = profile') &&
+    launchRuntimeSource.includes('process.env.P05_TOOL_PROFILE_SOURCE = "runtime-state"')
 );
 check(
   "operator: restart request is detached and bounded instead of waiting on a long shell lifecycle",
