@@ -26,6 +26,7 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
 .toast{position:fixed;right:18px;bottom:18px;background:#111b2f;border:1px solid var(--line);padding:11px 14px;border-radius:8px;display:none;max-width:520px;z-index:20}
 .detail{color:#c5d1e6;max-width:620px;overflow-wrap:anywhere}.workspaceCard{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:7px;background:#0c1525}.workspaceCard.current{border-color:#6887df}.empty{color:var(--muted);font-size:12px;padding:8px 0}
 .approvalModeGroup{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:9px;padding:4px 6px;background:#0b1424}.approvalModeBadge{font-size:10px;font-weight:700;padding:0 4px}.approvalModeBadge.trusted{color:var(--warn)}.approvalModeBadge.standard{color:var(--good)}
+.toolProfileButtons{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}.toolProfileButtons button{padding:6px 9px;font-size:11px}.toolProfileButtons button.configured{border-color:var(--accent);background:#24385d}.toolProfileButtons button.effective{box-shadow:inset 0 0 0 1px var(--good)}.toolProfileButtons button.configured.effective{background:#254b3c;border-color:var(--good)}
 .approvalGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.approvalColumn{min-width:0;border:1px solid var(--line);border-radius:9px;padding:10px;background:#0c1525}.approvalColumnHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.approvalColumnHeader strong{font-size:13px}.approvalCount{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;color:var(--muted)}.approvalCount.pending{border-color:#8e6d27;color:var(--warn)}.approvalIdLine{font-size:14px;font-weight:700;color:var(--warn);letter-spacing:.02em;margin-top:3px}
 @media(max-width:1100px){.span3,.span4{grid-column:span 6}.span5,.span6,.span7,.span8{grid-column:span 12}}
 @media(max-width:900px){.approvalGrid{grid-template-columns:1fr}}
@@ -69,6 +70,11 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="row"><span>启动绑定</span><span id="slotABoundWorkspace" class="value mono small">-</span></div>
     <div class="row"><span>路径</span><span id="slotAWorkspaceRoot" class="value mono small">-</span></div>
     <div style="display:flex;gap:8px;margin-top:8px"><button id="slotAToggle" class="primary">启动 A</button><button id="slotARestart" class="warning">重启 A</button></div>
+    <h3>权限档位切换</h3>
+    <div id="slotAToolProfileButtons" class="toolProfileButtons"></div>
+    <div class="row"><span>配置档位</span><strong id="slotAToolProfileConfigured">-</strong></div>
+    <div class="row"><span>实际生效</span><strong id="slotAToolProfileActual" class="value muted">-</strong></div>
+    <div id="slotAToolProfileHint" class="small muted" style="margin-top:6px">切换后会重启 Runtime A；工具清单以实际暴露结果为准。</div>
     <h3>绑定 Workspace</h3>
     <div style="display:flex;gap:8px"><select id="slotAWorkspaceSelect"></select><button id="slotASwitchWorkspace" class="primary">切换</button></div>
     <div style="display:flex;gap:8px;margin-top:8px"><input id="slotARootInput" class="mono" placeholder="选择或输入要授权给该 Runtime 的工作目录" /><button id="slotAPickWorkspace">选择文件夹</button><button id="slotASetWorkspace" class="primary">设为工作区</button></div>
@@ -87,6 +93,11 @@ pre{background:#080f1a;border:1px solid var(--line);border-radius:8px;padding:10
     <div class="row"><span>启动绑定</span><span id="slotBBoundWorkspace" class="value mono small">-</span></div>
     <div class="row"><span>路径</span><span id="slotBWorkspaceRoot" class="value mono small">-</span></div>
     <div style="display:flex;gap:8px;margin-top:8px"><button id="slotBToggle" class="primary">启动 B</button><button id="slotBRestart" class="warning">重启 B</button></div>
+    <h3>权限档位切换</h3>
+    <div id="slotBToolProfileButtons" class="toolProfileButtons"></div>
+    <div class="row"><span>配置档位</span><strong id="slotBToolProfileConfigured">-</strong></div>
+    <div class="row"><span>实际生效</span><strong id="slotBToolProfileActual" class="value muted">-</strong></div>
+    <div id="slotBToolProfileHint" class="small muted" style="margin-top:6px">切换后会重启 Runtime B；工具清单以实际暴露结果为准。</div>
     <h3>绑定 Workspace</h3>
     <div style="display:flex;gap:8px"><select id="slotBWorkspaceSelect"></select><button id="slotBSwitchWorkspace" class="primary">切换</button></div>
     <div style="display:flex;gap:8px;margin-top:8px"><input id="slotBRootInput" class="mono" placeholder="选择或输入要授权给该 Runtime 的工作目录" /><button id="slotBPickWorkspace">选择文件夹</button><button id="slotBSetWorkspace" class="primary">设为工作区</button></div>
@@ -268,6 +279,13 @@ function buttons(){
     document.querySelectorAll("[data-reference-action]").forEach(btn=>{btn.disabled=busy});
     document.querySelectorAll("[data-approval-action]").forEach(btn=>{btn.disabled=busy});
     document.querySelectorAll("[data-process-action]").forEach(btn=>{btn.disabled=busy});
+     document.querySelectorAll("[data-tool-profile]").forEach(btn=>{
+       const slot=btn.dataset.slot,runtime=latest?.slots?.[slot]||{};
+       const profile=btn.dataset.toolProfile;
+       const configuredProfile=runtime?.toolProfileConfig?.profile||"discovery";
+       const activeProfile=runtime?.mcp?.profile;
+       btn.disabled=busy||runtime?.configured===false||(profile===configuredProfile&&profile===activeProfile);
+     });
   }
 }
 async function action(name){if(busy)return;busy=true;buttons();try{await api("/api/action/"+name,{method:"POST",body:"{}"});await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}}
@@ -278,6 +296,31 @@ async function setApprovalMode(mode){
   try{
     await api("/api/approval-mode",{method:"POST",body:JSON.stringify({mode})});
     toast(mode==="trusted"?"TRUSTED 已启用：普通审批已关闭。":"STANDARD 已启用：恢复正常审批。");
+    await refresh();
+  }catch(e){toast(e.message,true)}
+  finally{busy=false;buttons()}
+}
+async function setToolProfile(slot,profile){
+  if(busy)return;
+  const allowed=["discovery","readonly","developer","full"];
+  if(!allowed.includes(profile)||!(slot==="A"||slot==="B"))return;
+  const runtime=latest?.slots?.[slot]||{};
+  const configuredProfile=runtime?.toolProfileConfig?.profile||"discovery";
+  const activeProfile=runtime?.mcp?.profile||"";
+  if(profile===configuredProfile&&profile===activeProfile)return;
+  const rank={discovery:0,readonly:1,developer:2,full:3};
+  const current=activeProfile||configuredProfile;
+  const newline=String.fromCharCode(10);
+  const message="确认将 Runtime "+slot+" 的权限档位切换为 "+profile+"？"+
+    newline+newline+"配置档位："+configuredProfile+
+    newline+"实际生效："+(activeProfile||"未知")+
+    newline+newline+"切换会保存该 Slot 的档位并重启 Runtime。"+
+    (rank[profile]>rank[current]?newline+newline+"注意：这会扩大该 Runtime 可调用的工具范围。":"");
+  if(!confirm(message))return;
+  busy=true;buttons();
+  try{
+    await api("/api/slot/"+slot+"/tool-profile",{method:"POST",body:JSON.stringify({profile})});
+    toast("Runtime "+slot+" 权限档位已切换为 "+profile+"；Runtime 已重启。");
     await refresh();
   }catch(e){toast(e.message,true)}
   finally{busy=false;buttons()}
@@ -354,6 +397,32 @@ async function toolApproval(slot,id,actionName){
 }
 function renderAction(op){const a=op?.action,e=$("actionBanner");if(!a){e.style.display="none";return}e.style.display="block";const map={connect:"连接",disconnect:"断开",restart:"重启"};let cls="warnText",txt=(map[a.action]||a.action)+"：";if(a.state==="waiting"){txt+="进行中…";cls="warnText"}else if(a.state==="succeeded"){txt+=a.message||"完成";cls="goodText"}else{txt+=a.error||"失败";cls="badText"}e.className=cls;e.textContent=txt+"  "+dateTime(a.requestedAt)}
 function metric(label,value,cls){return '<div class="metric"><span class="label">'+esc(label)+'</span><strong class="'+(cls||"")+'">'+esc(value)+'</strong></div>'}
+function renderToolProfileControls(slot,data){
+  const config=data?.toolProfileConfig||{};
+  const configuredProfile=config.profile||"discovery";
+  const activeProfile=typeof data?.mcp?.profile==="string"?data.mcp.profile:"";
+  const sourceLabels={"runtime-state":"Slot 状态文件","env":".env / 环境变量","default":"默认值"};
+  $("slot"+slot+"ToolProfileButtons").innerHTML=[
+    ["discovery","发现 / Discovery"],
+    ["readonly","只读 / Readonly"],
+    ["developer","开发 / Developer"],
+    ["full","完全 / Full"]
+  ].map(([profile,label])=>{
+    const classes=["toolProfileButton"];
+    if(profile===configuredProfile)classes.push("configured");
+    if(profile===activeProfile)classes.push("effective");
+    return '<button type="button" class="'+classes.join(" ")+'" data-tool-profile="'+profile+'" data-slot="'+slot+'" title="配置档位与实际生效档位分别核对">'+label+'</button>';
+  }).join("");
+  $("slot"+slot+"ToolProfileConfigured").textContent=configuredProfile+" · "+(sourceLabels[config.source]||"来源未知");
+  const actual=$("slot"+slot+"ToolProfileActual");
+  actual.textContent=activeProfile||(data?.bridge?.online?"未报告":"OFFLINE / 未确认");
+  actual.className="value "+(activeProfile===configuredProfile?"goodText":activeProfile?"warnText":"muted");
+  $("slot"+slot+"ToolProfileHint").textContent=config.error
+    ? "配置读取异常："+config.error
+    : activeProfile&&activeProfile!==configuredProfile
+      ? "配置档位与实际运行档位不一致；可再次点击目标档位触发重启。"
+      : "切换会重启该 Runtime；下方 Tool Surface 显示实际暴露 / Suppressed 的工具。";
+}
 function renderSlot(slot,data){
   data=data||{};
   const configured=data?.configured!==false,online=configured&&!!data?.bridge?.online,health=data?.health||{},current=data?.workspace?.current||{},workspaces=configured?(data?.workspace?.all||[]):[],device=data?.device||{};
@@ -364,6 +433,7 @@ function renderSlot(slot,data){
   $("slot"+slot+"Workspace").textContent=configured?(current.label||current.id||"-"):"-";
   $("slot"+slot+"BoundWorkspace").textContent=configured?(data.boundWorkspaceId||"-"):"-";
   $("slot"+slot+"WorkspaceRoot").textContent=configured?(current.root||"-"):"-";
+  renderToolProfileControls(slot,data);
   const references=configured?(data.references||[]):[];
   $("slot"+slot+"ReferenceList").innerHTML=!configured?'<div class="empty">Runtime 未配置</div>':references.length?references.map(r=>'<div class="row"><span><strong>'+esc(r.label||r.id)+'</strong><div class="small muted mono">'+esc(r.root||"")+'</div></span><button class="danger" data-reference-action="true" onclick="referenceRemove(\\''+slot+'\\',\\''+esc(r.id)+'\\')">移除</button></div>').join(""):'<div class="empty">暂无参考目录</div>';
   const select=$("slot"+slot+"WorkspaceSelect"),pending=slotSelectionDirty[slot]?select.value:"";
@@ -537,6 +607,10 @@ function bindSlot(slot){
     await runSlotAction(actionName);
   };
   $("slot"+slot+"Restart").onclick=()=>runSlotAction("restart");
+  $("slot"+slot+"ToolProfileButtons").onclick=event=>{
+    const profile=event.target?.dataset?.toolProfile;
+    if(profile)void setToolProfile(slot,profile);
+  };
   $("slot"+slot+"WorkspaceSelect").onchange=()=>{slotSelectionDirty[slot]=true};
   $("slot"+slot+"SwitchWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const id=$("slot"+slot+"WorkspaceSelect").value;await api("/api/slot/"+slot+"/workspace/select",{method:"POST",body:JSON.stringify({id:id})});slotSelectionDirty[slot]=false;toast("Runtime "+slot+" Workspace 已切换为 "+id);await refresh()}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
   $("slot"+slot+"PickWorkspace").onclick=async()=>{if(busy)return;busy=true;buttons();try{const result=await api("/api/slot/"+slot+"/workspace/pick",{method:"POST",body:"{}"});if(result.selected&&result.path){$("slot"+slot+"RootInput").value=result.path;toast("Runtime "+slot+" 已选择目录")}else{toast("已取消选择")}}catch(e){toast(e.message,true)}finally{busy=false;buttons()}};
