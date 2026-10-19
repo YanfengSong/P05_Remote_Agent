@@ -77,7 +77,37 @@ foreach ($needle in @(
     'tools\tunnel-client',
     'REMOTE_AGENT_ALLOWED_ROOTS = $AllowedRoots',
     'CONTROL_PLANE_API_KEY = $ApiKey',
-    "^tunnel_[a-z0-9]{32}\$"
+    '^tunnel_[a-z0-9]{32}
+)) {
+    if ($bootstrap -notlike "*$needle*") {
+        throw "Bootstrap is missing the machine-local deployment contract: $needle"
+    }
+}
+
+$launcher = Get-Content -LiteralPath (Join-Path $RepoRoot 'scripts\deployment\launch-runtime.mjs') -Raw
+if ($launcher -notmatch 'fileURLToPath\(import\.meta\.url\)' -or
+    $launcher -notmatch 'path\.resolve\(here, "\.\.", "\.\."' -or
+    $launcher -notmatch 'rawSlot !== "A" && rawSlot !== "B"') {
+    throw 'Runtime launcher must derive its repository root from its own location and support A/B slots.'
+}
+
+$operatorCmd = Get-Content -LiteralPath (Join-Path $RepoRoot 'P05-Operator.cmd') -Raw
+if ($operatorCmd -notmatch '%~dp0') {
+    throw 'Operator launcher must resolve deployment scripts relative to its own repository location.'
+}
+
+$trackedMachineState = @(& git -C $RepoRoot ls-files -- .env .p05 dist node_modules)
+if ($trackedMachineState.Count -gt 0) {
+    throw ('Machine-local/generated state is tracked by Git: ' + ($trackedMachineState -join ', '))
+}
+
+$activeTracked = @(& git -C $RepoRoot ls-files)
+if ($LASTEXITCODE -ne 0 -or $activeTracked.Count -lt 20) {
+    throw 'Git repository does not contain the expected committed P05 source/deployment assets.'
+}
+
+Write-Host 'UNIVERSAL_DEPLOYMENT_OK' -ForegroundColor Green
+
 )) {
     if ($bootstrap -notlike "*$needle*") {
         throw "Bootstrap is missing the machine-local deployment contract: $needle"
