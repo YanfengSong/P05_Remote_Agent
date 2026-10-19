@@ -61,7 +61,7 @@ function ConvertTo-P05RuntimeSlots {
 
 function Test-P05TunnelId {
     param([string]$Value)
-    return [bool]($Value -and $Value -match '^tunnel_[a-z0-9]{32}
+    return [bool]($Value -and $Value -match '^tunnel_[a-z0-9]{32}$')
 }
 
 function Get-P05ConfiguredSlots {
