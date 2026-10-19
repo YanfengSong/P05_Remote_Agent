@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 $repo = Get-P05RepoRoot -ScriptRoot $PSScriptRoot
 Import-P05DotEnv -RepoRoot $repo
 Set-P05RuntimeNetworkFromEnvironment | Out-Null
+$tunnelId = if ($Slot -eq 'A') { $env:P05_TUNNEL_A_ID } else { $env:P05_TUNNEL_B_ID }
+if (-not (Test-P05TunnelId -Value $tunnelId)) {
+    throw "Runtime $Slot has an invalid Tunnel ID. Expected tunnel_ followed by exactly 32 lowercase letters or digits issued by the Control Plane. Update .env and regenerate the Runtime profile."
+}
 if (-not (Test-P05SlotConfigured -Slot $Slot)) {
     throw "Runtime $Slot is not configured. Add $Slot to P05_RUNTIME_SLOTS and run bootstrap.ps1 again."
 }
