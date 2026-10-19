@@ -76,8 +76,7 @@ foreach ($needle in @(
     'tools\node',
     'tools\tunnel-client',
     'REMOTE_AGENT_ALLOWED_ROOTS = $AllowedRoots',
-    'CONTROL_PLANE_API_KEY = $ApiKey',
-    '^tunnel_[a-z0-9]{32}
+    'CONTROL_PLANE_API_KEY = $ApiKey'
 )) {
     if ($bootstrap -notlike "*$needle*") {
         throw "Bootstrap is missing the machine-local deployment contract: $needle"
