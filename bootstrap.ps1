@@ -45,7 +45,7 @@ function Read-SecretPlainText([string]$Prompt) {
 }
 
 function Assert-TunnelId([string]$Name,[string]$Value) {
-    if (-not $Value -or $Value -notmatch '^tunnel_[a-z0-9]{32}
+    if (-not $Value -or $Value -notmatch '^tunnel_[a-z0-9]{32}$') {
         throw "$Name must match tunnel_ followed by exactly 32 lowercase letters or digits, as issued by the Control Plane."
     }
 }
