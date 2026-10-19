@@ -112,7 +112,7 @@ Bootstrap installs the pinned repo-local toolchain, creates machine-local .env a
 
 Configure only this computer's values:
 
-- Runtime A/B Tunnel ID(s);
+- Runtime A/B Tunnel ID(s); Each ID must be issued by the Control Plane and match `tunnel_` plus exactly 32 lowercase letters or digits; placeholders such as `tunnel_TESTA` are invalid.
 - Runtime A/B connector name(s);
 - OpenAI Control Plane API key;
 - REMOTE_AGENT_ALLOWED_ROOTS;
