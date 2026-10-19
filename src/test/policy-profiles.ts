@@ -86,6 +86,10 @@ check("profile: unset records the default source", resolveToolProfile(undefined)
 check("profile: empty string falls back to discovery", resolveToolProfile("").profile === "discovery");
 check("profile: value is trimmed and case-folded", resolveToolProfile("  READONLY ").profile === "readonly");
 check("profile: env source recorded", resolveToolProfile("full").profileSource === "env");
+check(
+  "profile: per-runtime state source recorded",
+  resolveToolProfile("full", "runtime-state").profileSource === "runtime-state"
+);
 throws("profile: unknown value is rejected", () => resolveToolProfile("safe"), "Unknown P05_TOOL_PROFILE");
 throws("profile: old invented value is rejected", () => resolveToolProfile("dev"), "Unknown P05_TOOL_PROFILE");
 
