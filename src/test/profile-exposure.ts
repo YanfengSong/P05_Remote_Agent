@@ -667,7 +667,8 @@ for (const scenario of scenarios) {
   }));
   const outsideTarget = path.join(OUTSIDE_FIXTURES, "_p05_full_junction_target");
   const outlink = path.join(ROOT, "_p05_full_junction_probe");
-  const planted = path.join(outsideTarget, "planted.txt");
+  const planted = path.join(outlink, "planted.txt");
+  const plantedTarget = path.join(outsideTarget, "planted.txt");
   const protectedHook = path.join(PROBE_DIR, ".git", "hooks", "pre-commit");
   const unlink = () => {
     try {
@@ -698,7 +699,7 @@ for (const scenario of scenarios) {
       content: "must-not-land"
     }));
     check("full path: write outside Workspace through Junction is refused",
-      writeOut.failed && !(await pathExists(planted)), writeOut.message.slice(0, 240));
+      writeOut.failed && !(await pathExists(plantedTarget)), writeOut.message.slice(0, 240));
 
     const gitWrite = await outcome(() => callToolWithApproval(session, "fs_write", {
       path: protectedHook,
