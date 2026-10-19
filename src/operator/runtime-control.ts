@@ -5,6 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { readOwnEnv } from "../env.js";
+import {
+  resolveToolProfile,
+  TOOL_PROFILE_NAMES,
+  type ToolProfile
+} from "../policy/tool-profile.js";
 import { defaultP05StateDir, p05StateDir } from "../state.js";
 
 const execFileAsync = promisify(execFile);
@@ -114,6 +119,76 @@ function runtimeSlotConfig(slot: RuntimeSlotId): RuntimeSlotConfig {
 
 export function runtimeSlotStateDir(slot: RuntimeSlotId): string {
   return runtimeSlotConfig(slot).stateDir;
+}
+
+export type RuntimeToolProfileConfig = {
+  profile: ToolProfile;
+  source: "runtime-state" | "env" | "default";
+  updatedAt?: string;
+  error?: string;
+};
+
+export function runtimeSlotToolProfile(slot: RuntimeSlotId): RuntimeToolProfileConfig {
+  const fallback = resolveToolProfile(readOwnEnv("P05_TOOL_PROFILE"));
+  const fallbackView: RuntimeToolProfileConfig = {
+    profile: fallback.profile,
+    source: fallback.profileSource
+  };
+  const target = path.join(runtimeSlotConfig(slot).stateDir, "tool-profile.json");
+  if (!fs.existsSync(target)) return fallbackView;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as {
+      profile?: unknown;
+      updatedAt?: unknown;
+    };
+    const profile =
+      typeof parsed.profile === "string" ? parsed.profile.trim().toLowerCase() : "";
+    if (!(TOOL_PROFILE_NAMES as readonly string[]).includes(profile)) {
+      throw new Error(
+        `Invalid stored tool profile for Runtime ${slot}. Expected one of: ${TOOL_PROFILE_NAMES.join(", ")}.`
+      );
+    }
+    return {
+      profile: profile as ToolProfile,
+      source: "runtime-state",
+      ...(typeof parsed.updatedAt === "string" ? { updatedAt: parsed.updatedAt } : {})
+    };
+  } catch (error) {
+    return {
+      ...fallbackView,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+export function writeRuntimeSlotToolProfile(
+  slot: RuntimeSlotId,
+  rawProfile: unknown
+): RuntimeToolProfileConfig {
+  assertRuntimeSlotConfigured(slot);
+  if (typeof rawProfile !== "string") {
+    throw new Error("Tool profile must be a string.");
+  }
+  const profile = rawProfile.trim().toLowerCase();
+  if (!(TOOL_PROFILE_NAMES as readonly string[]).includes(profile)) {
+    throw new Error(
+      `Tool profile must be one of: ${TOOL_PROFILE_NAMES.join(", ")}.`
+    );
+  }
+
+  const stateDir = runtimeSlotConfig(slot).stateDir;
+  fs.mkdirSync(stateDir, { recursive: true });
+  const target = path.join(stateDir, "tool-profile.json");
+  const state = {
+    profile: profile as ToolProfile,
+    updatedAt: new Date().toISOString()
+  };
+  const temp = target + ".tmp-" + process.pid;
+  fs.writeFileSync(temp, JSON.stringify(state, null, 2) + "\n", "utf8");
+  fs.rmSync(target, { force: true });
+  fs.renameSync(temp, target);
+  return { ...state, source: "runtime-state" };
 }
 
 const ACTIVE_WORKSPACE_BINDING_FILE = "active-workspace.txt";
@@ -617,12 +692,15 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
     configurationError = error instanceof Error ? error.message : String(error);
   }
 
+  const toolProfileConfig = runtimeSlotToolProfile(slot);
+
   if (!configured) {
     return {
       id: config.id,
       connector: config.connector,
       configured: false,
       tunnelAlias: config.profileName,
+      toolProfileConfig,
       connected: false,
       health: {
         urlFile: config.healthUrlFile,
@@ -671,6 +749,7 @@ export async function runtimeSlotOverview(slot: RuntimeSlotId) {
     connector: config.connector,
     configured: true,
     tunnelAlias: config.profileName,
+    toolProfileConfig,
     boundWorkspaceId: runtimeSlotWorkspaceBinding(slot),
     connected: Boolean(health.ready && bridge.online),
     health,
