@@ -12,7 +12,8 @@ import {
   persistRuntimeSlotWorkspace,
   requestOperatorRestart,
   restartRuntimeSlot,
-  runtimeSlotStateDir
+  runtimeSlotStateDir,
+  writeRuntimeSlotToolProfile
 } from "./runtime-control.js";
 import { operatorPage } from "./ui.js";
 
@@ -176,6 +177,22 @@ const server = http.createServer(async (request, response) => {
             ? await disconnectRuntimeSlot(slot)
             : await restartRuntimeSlot(slot);
       json(response, 200, result);
+      return;
+    }
+
+    const slotToolProfileMatch = url.pathname.match(
+      /^\/api\/slot\/(A|B)\/tool-profile$/
+    );
+    if (request.method === "POST" && slotToolProfileMatch) {
+      const slot = slotToolProfileMatch[1] as "A" | "B";
+      const body = await bodyJson(request);
+      const toolProfileConfig = writeRuntimeSlotToolProfile(slot, body.profile);
+      const result = await restartRuntimeSlot(slot);
+      json(response, 200, {
+        ...result,
+        toolProfileConfig,
+        message: `Runtime ${slot} tool profile set to "${toolProfileConfig.profile}" and restarted.`
+      });
       return;
     }
 
