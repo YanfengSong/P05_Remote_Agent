@@ -45,10 +45,11 @@ export function assertToolDeclared(
   return catalog.descriptor(toolName);
 }
 
-export type ProfileSource = "env" | "default";
+export type ProfileSource = "env" | "default" | "runtime-state";
 
 export function resolveToolProfile(
-  raw: string | undefined
+  raw: string | undefined,
+  sourceOverride?: ProfileSource
 ): { profile: ToolProfile; profileSource: ProfileSource } {
   const trimmed = raw?.trim();
   if (!trimmed) return { profile: DEFAULT_TOOL_PROFILE, profileSource: "default" };
@@ -60,7 +61,7 @@ export function resolveToolProfile(
         "Refusing to start with an undefined tool policy."
     );
   }
-  return { profile: lowered as ToolProfile, profileSource: "env" };
+  return { profile: lowered as ToolProfile, profileSource: sourceOverride ?? "env" };
 }
 
 export function isToolAllowed(
