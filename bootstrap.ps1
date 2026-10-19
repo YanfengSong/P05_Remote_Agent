@@ -175,6 +175,11 @@ $slots = @(ConvertTo-P05RuntimeSlots -Raw $RuntimeSlots)
 if ($slots.Count -eq 0) { throw 'At least one runtime slot must be configured.' }
 $RuntimeSlots = ($slots -join ',')
 
+# Reuse this machine's existing .env values before prompting. Explicit command-line
+# parameters still take precedence; secrets are never copied from another machine.
+$existingTunnelA = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_TUNNEL_A_ID'
+$existingTunnelB = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_TUNNEL_B_ID'
+$existingApiKey = Get-P05DotEnvValue -Path $EnvFile -Name 'CONTROL_PLANE_API_KEY'
 $existingConnectorA = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_RUNTIME_A_CONNECTOR'
 $existingConnectorB = Get-P05DotEnvValue -Path $EnvFile -Name 'P05_RUNTIME_B_CONNECTOR'
 if (-not $ConnectorA) {
@@ -185,18 +190,24 @@ if (-not $ConnectorB) {
 }
 
 if ($slots -contains 'A') {
-    if (-not $TunnelA) { $TunnelA = Read-Host 'Tunnel ID for Runtime A' }
+    if (-not $TunnelA) {
+        $TunnelA = if ($existingTunnelA) { $existingTunnelA } elseif ($env:P05_TUNNEL_A_ID) { $env:P05_TUNNEL_A_ID } else { Read-Host 'Tunnel ID for Runtime A' }
+    }
     Assert-TunnelId 'TunnelA' $TunnelA
 }
 if ($slots -contains 'B') {
-    if (-not $TunnelB) { $TunnelB = Read-Host 'Tunnel ID for Runtime B' }
+    if (-not $TunnelB) {
+        $TunnelB = if ($existingTunnelB) { $existingTunnelB } elseif ($env:P05_TUNNEL_B_ID) { $env:P05_TUNNEL_B_ID } else { Read-Host 'Tunnel ID for Runtime B' }
+    }
     Assert-TunnelId 'TunnelB' $TunnelB
 }
 if (($slots -contains 'A') -and ($slots -contains 'B') -and $TunnelA -eq $TunnelB) {
     throw 'Tunnel A and Tunnel B must be different.'
 }
 
-if (-not $ApiKey) { $ApiKey = Read-SecretPlainText 'OpenAI Control Plane API Key' }
+if (-not $ApiKey) {
+    $ApiKey = if ($existingApiKey) { $existingApiKey } elseif ($env:CONTROL_PLANE_API_KEY) { $env:CONTROL_PLANE_API_KEY } else { Read-SecretPlainText 'OpenAI Control Plane API Key' }
+}
 if (-not $ApiKey) { throw 'API key is required.' }
 
 if (-not $AllowedRoots) { $AllowedRoots = $RepoRoot }
