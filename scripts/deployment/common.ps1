@@ -61,7 +61,113 @@ function ConvertTo-P05RuntimeSlots {
 
 function Test-P05TunnelId {
     param([string]$Value)
-    return [bool]($Value -and $Value -match '^tunnel_[A-Za-z0-9]+$')
+    return [bool]($Value -and $Value -match '^tunnel_[a-z0-9]{32}
+}
+
+function Get-P05ConfiguredSlots {
+    param([string]$Raw = $env:P05_RUNTIME_SLOTS)
+
+    if ($Raw -and $Raw.Trim()) {
+        return @(ConvertTo-P05RuntimeSlots -Raw $Raw)
+    }
+
+    # Backward-compatible inference for installs created before P05_RUNTIME_SLOTS.
+    $slots = @()
+    if (Test-P05TunnelId -Value $env:P05_TUNNEL_A_ID) { $slots += 'A' }
+    if (Test-P05TunnelId -Value $env:P05_TUNNEL_B_ID) { $slots += 'B' }
+    return $slots
+}
+
+function Test-P05SlotConfigured {
+    param(
+        [ValidateSet('A','B')][string]$Slot,
+        [string]$Raw = $env:P05_RUNTIME_SLOTS
+    )
+    return @((Get-P05ConfiguredSlots -Raw $Raw)) -contains $Slot
+}
+
+function Get-P05SlotProfileName {
+    param([ValidateSet('A','B')][string]$Slot)
+    if ($Slot -eq 'A') {
+        return $(if ($env:P05_RUNTIME_A_PROFILE) { $env:P05_RUNTIME_A_PROFILE } else { 'p05-a' })
+    }
+    return $(if ($env:P05_RUNTIME_B_PROFILE) { $env:P05_RUNTIME_B_PROFILE } else { 'p05-b' })
+}
+
+function Resolve-P05Node {
+    param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\node\node.exe'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
+    if ($env:P05_NODE_PATH -and (Test-Path -LiteralPath $env:P05_NODE_PATH -PathType Leaf)) {
+        return (Resolve-Path $env:P05_NODE_PATH).Path
+    }
+    throw 'Repo-local Node.js is missing. Run bootstrap.ps1.'
+}
+
+function Resolve-P05NpmCli {
+    param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\node\node_modules\npm\bin\npm-cli.js'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
+    throw 'Repo-local npm is missing. Run bootstrap.ps1.'
+}
+
+function Resolve-P05TunnelClient {
+    param([string]$RepoRoot)
+    $local = Join-Path $RepoRoot '.p05\tools\tunnel-client\tunnel-client.exe'
+    if (Test-Path -LiteralPath $local -PathType Leaf) {
+        return (Resolve-Path $local).Path
+    }
+    if ($env:P05_OPERATOR_TUNNEL_CLIENT -and (Test-Path -LiteralPath $env:P05_OPERATOR_TUNNEL_CLIENT -PathType Leaf)) {
+        return (Resolve-Path $env:P05_OPERATOR_TUNNEL_CLIENT).Path
+    }
+    throw 'Repo-local tunnel-client is missing. Run bootstrap.ps1.'
+}
+
+function Get-P05SlotContext {
+    param(
+        [string]$ScriptRoot,
+        [ValidateSet('A','B')][string]$Slot
+    )
+    $repo = Get-P05RepoRoot -ScriptRoot $ScriptRoot
+    Import-P05DotEnv -RepoRoot $repo
+    $node = Resolve-P05Node -RepoRoot $repo
+    $tunnel = Resolve-P05TunnelClient -RepoRoot $repo
+    $slotLower = $Slot.ToLowerInvariant()
+    $profileName = Get-P05SlotProfileName -Slot $Slot
+    if ($profileName -notmatch '^[A-Za-z0-9._-]{1,64}$') {
+        throw "Invalid runtime profile name: $profileName"
+    }
+
+    $p05 = Join-Path $repo '.p05'
+    $profileDir = Join-Path $p05 'tunnel\profiles'
+    $healthDir = Join-Path $p05 'tunnel\health'
+    $logDir = Join-Path $p05 'tunnel\logs'
+    $stateDir = Join-Path $p05 ("runtime-$slotLower\state")
+    foreach ($dir in @($profileDir,$healthDir,$logDir,$stateDir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    return [pscustomobject]@{
+        Slot = $Slot
+        RepoRoot = $repo
+        Node = $node
+        TunnelClient = $tunnel
+        ProfileName = $profileName
+        ProfileDir = $profileDir
+        ProfilePath = Join-Path $profileDir ($profileName + '.yaml')
+        HealthUrlFile = Join-Path $healthDir ($profileName + '.url')
+        TunnelLog = Join-Path $logDir ($profileName + '.log')
+        StateDir = $stateDir
+        Launcher = Join-Path $repo 'scripts\deployment\launch-runtime.mjs'
+        McpEntry = Join-Path $repo 'dist\index.js'
+        EnvFile = Join-Path $repo '.env'
+    }
+}
+)
 }
 
 function Get-P05ConfiguredSlots {
