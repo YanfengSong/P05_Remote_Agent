@@ -22,4 +22,19 @@ if (fs.existsSync(bindingFile)) {
   if (workspaceId) process.env.P05_ACTIVE_WORKSPACE_ID = workspaceId;
 }
 
+const profileStatePath = path.join(stateDir, "tool-profile.json");
+delete process.env.P05_TOOL_PROFILE_SOURCE;
+if (fs.existsSync(profileStatePath)) {
+  const parsed = JSON.parse(fs.readFileSync(profileStatePath, "utf8"));
+  const profile = typeof parsed?.profile === "string" ? parsed.profile.trim().toLowerCase() : "";
+  const knownProfiles = new Set(["discovery", "readonly", "developer", "full"]);
+  if (!knownProfiles.has(profile)) {
+    throw new Error(
+      `Invalid Runtime ${rawSlot} tool profile in ${profileStatePath}. Expected one of: discovery, readonly, developer, full.`
+    );
+  }
+  process.env.P05_TOOL_PROFILE = profile;
+  process.env.P05_TOOL_PROFILE_SOURCE = "runtime-state";
+}
+
 await import(pathToFileURL(path.join(repoRoot, "dist", "index.js")).href);
