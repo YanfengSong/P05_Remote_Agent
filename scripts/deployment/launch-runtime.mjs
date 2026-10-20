@@ -15,6 +15,23 @@ fs.mkdirSync(stateDir, { recursive: true });
 
 process.env.P05_RUNTIME_SLOT = rawSlot;
 process.env.P05_STATE_DIR = stateDir;
+// Keep Runtime A isolated from MATLAB sessions owned by other runtimes.
+// Runtime B retains the configured/default session mode.
+if (rawSlot === "A") {
+  const rawMatlabArgs = process.env.MATLAB_MCP_ARGS_JSON?.trim();
+  const parsedMatlabArgs = rawMatlabArgs ? JSON.parse(rawMatlabArgs) : [];
+  if (
+    !Array.isArray(parsedMatlabArgs) ||
+    !parsedMatlabArgs.every((arg) => typeof arg === "string")
+  ) {
+    throw new Error("MATLAB_MCP_ARGS_JSON must be a JSON array of strings.");
+  }
+  const matlabArgs = parsedMatlabArgs.filter(
+    (arg) => !arg.startsWith("--matlab-session-mode=")
+  );
+  matlabArgs.push("--matlab-session-mode=new");
+  process.env.MATLAB_MCP_ARGS_JSON = JSON.stringify(matlabArgs);
+}
 
 const bindingFile = path.join(stateDir, "active-workspace.txt");
 if (fs.existsSync(bindingFile)) {

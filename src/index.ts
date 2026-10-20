@@ -3,6 +3,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { AuditStore } from "./audit/store.js";
 import { CAPABILITIES, CapabilityCatalog } from "./capability/registry.js";
 import { config, readOwnEnv } from "./config.js";
+import { installStdioTrace } from "./diagnostics/stdio-trace.js";
 import { DownstreamRegistry } from "./downstream/registry.js";
 import { LiveActivityStore } from "./monitor/live-activity.js";
 import { ReferenceManager } from "./reference/manager.js";
@@ -226,3 +227,6 @@ serveStdio(() => {
 
   return server;
 });
+
+// Install after serveStdio has attached its own stdin listener.
+installStdioTrace(runtimeSlot);
