@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "source": {
     "agentVersion": "0.3.1",
-    "gitCommit": "c153a4e5b9c263b0e4019ca57f22f932c8a22e17"
+    "gitCommit": "61d03dec30be3846995f37b604b8f79e4ac72ef5"
   },
   "policy": {
     "toolProfile": "developer",
@@ -25,21 +25,9 @@
     "activeId": "platform",
     "entries": [
       {
-        "id": "boonray_vcu_platform",
-        "kind": "git-project",
-        "label": "BoonRay_VCU_Platform",
-        "rootBinding": "local"
-      },
-      {
-        "id": "p02_vmodel",
-        "kind": "git-project",
-        "label": "P02_Vmodel",
-        "rootBinding": "local"
-      },
-      {
-        "id": "p03_vaes",
-        "kind": "git-project",
-        "label": "P03_VAES",
+        "id": "brk",
+        "kind": "generic",
+        "label": "BRK",
         "rootBinding": "local"
       },
       {
@@ -56,7 +44,13 @@
       }
     ]
   },
-  "references": [],
+  "references": [
+    {
+      "id": "ref-brk",
+      "label": "BRK",
+      "rootBinding": "local"
+    }
+  ],
   "plugins": [
     {
       "id": "example",
@@ -96,11 +90,15 @@
     "names": [
       "activity_recent",
       "apply_patch",
+      "apply_patch_many",
       "command_run",
       "device_info",
       "fs_list",
       "fs_read",
+      "fs_read_many",
+      "fs_search",
       "fs_write",
+      "fs_write_many",
       "git_add",
       "git_branch",
       "git_commit",
@@ -108,11 +106,13 @@
       "git_diff_stat",
       "git_push",
       "git_status",
+      "git_workspace_audit",
       "mcp_call_tool",
       "mcp_list_tools",
       "mcp_status",
       "ping",
       "plugin_list",
+      "project_validate",
       "recovery_status",
       "reference_list",
       "reference_list_directory",
@@ -123,8 +123,8 @@
       "workspace_current",
       "workspace_list"
     ],
-    "catalogSha256": "91b42f260fc22b5463c55588b500051be9824685cd72721f3a59715bd828bfe7"
+    "catalogSha256": "478699a4b5cfada61ad03f98b67008257ca7f674b8a6894c01000b0154cf11fc"
   },
-  "generatedAt": "2026-10-16T07:21:38.711Z",
-  "revision": "77b16f97d273b4a8bb008a3ad4972c71ccda53e31a5d3e20c7d74510d9ee7aff"
+  "generatedAt": "2026-10-26T08:12:28.995Z",
+  "revision": "7d417e343bfba1f19da668d9270b3cb3f30211ceb706ecb4c95af323de2913b5"
 }
