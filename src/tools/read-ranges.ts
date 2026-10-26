@@ -1,0 +1,609 @@
+import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { config } from "../config.js";
+import { assertAccessiblePath } from "../security.js";
+import {
+  FILE_CONTRACT_VERSION,
+  READ_LIMITS,
+  type Outcome,
+  type ReadBatch,
+  type ReadErrorCode,
+  type ReadItem,
+  type ReadRequest,
+  type ReadSlice
+} from "./file-contracts.js";
+import { toolResultBytes } from "./result-budget.js";
+
+export class ReadRangeError extends Error {
+  readonly code: ReadErrorCode;
+  readonly sha256?: string;
+  readonly totalLines?: number;
+
+  constructor(
+    code: ReadErrorCode,
+    message: string,
+    details: { sha256?: string; totalLines?: number } = {}
+  ) {
+    super(message);
+    this.name = "ReadRangeError";
+    this.code = code;
+    if (details.sha256 !== undefined) this.sha256 = details.sha256;
+    if (details.totalLines !== undefined) this.totalLines = details.totalLines;
+  }
+}
+
+export type ReadManyResult = {
+  result: ReadBatch;
+  contentText: string;
+};
+
+/**
+ * The configured limit may be smaller than the contract hard cap, never larger.
+ * Invalid local limits fail closed instead of degrading to an unbounded read.
+ */
+export function resolveReadLimit(configured: number = config.maxReadBytes): number {
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    throw new ReadRangeError(
+      "READ_LIMIT_INVALID",
+      "The server read limit is invalid; reading is disabled."
+    );
+  }
+  return Math.min(configured, READ_LIMITS.maxFileBytes);
+}
+
+/**
+ * Split on LF while preserving CRLF exactly. A trailing newline terminates the last
+ * line and does not create an extra empty line; an empty file has no lines.
+ */
+export function splitLines(text: string): string[] {
+  return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
+function appearsBinary(buffer: Buffer): boolean {
+  let suspicious = 0;
+  for (const byte of buffer) {
+    if (byte === 0) return true;
+    if (byte < 0x09 || (byte > 0x0d && byte < 0x20) || byte === 0x7f) suspicious += 1;
+  }
+  return buffer.length > 0 && suspicious > 8 && suspicious / buffer.length > 0.01;
+}
+
+function decodeUtf8Strict(buffer: Buffer): string {
+  if (appearsBinary(buffer)) {
+    throw new ReadRangeError("BINARY_FILE", "File appears to be binary.");
+  }
+
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+  } catch {
+    throw new ReadRangeError("INVALID_UTF8", "File is not valid UTF-8 text.");
+  }
+
+  // The BOM remains part of the hashed raw bytes but is not displayed as content.
+  return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
+function mapFileSystemError(error: unknown): ReadRangeError {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  switch (code) {
+    case "ENOENT":
+    case "ENOTDIR":
+      return new ReadRangeError("NOT_FOUND", "File not found.");
+    case "EISDIR":
+      return new ReadRangeError("IS_DIRECTORY", "Path is a directory, not a file.");
+    case "EACCES":
+    case "EPERM":
+      return new ReadRangeError("ACCESS_DENIED", "Access denied.");
+    default:
+      return new ReadRangeError("READ_FAILED", "Could not read the file.");
+  }
+}
+
+async function readSnapshot(safePath: string, limit: number): Promise<Buffer> {
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    handle = await fs.open(safePath, "r");
+  } catch (error) {
+    throw mapFileSystemError(error);
+  }
+
+  try {
+    const before = await handle.stat();
+    if (!before.isFile()) {
+      throw before.isDirectory()
+        ? new ReadRangeError("IS_DIRECTORY", "Path is a directory, not a file.")
+        : new ReadRangeError("NOT_FILE", "Path is not a regular file.");
+    }
+    if (before.size > limit) {
+      throw new ReadRangeError(
+        "READ_TOO_LARGE",
+        `File exceeds the read limit of ${limit} bytes.`
+      );
+    }
+
+    const buffer = Buffer.allocUnsafe(before.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+
+    if (offset !== buffer.length) {
+      throw new ReadRangeError(
+        "READ_UNSTABLE",
+        "File changed while it was being read; retry."
+      );
+    }
+
+    const after = await handle.stat();
+    if (after.size !== before.size) {
+      throw new ReadRangeError(
+        "READ_UNSTABLE",
+        "File changed while it was being read; retry."
+      );
+    }
+
+    return buffer;
+  } catch (error) {
+    throw error instanceof ReadRangeError ? error : mapFileSystemError(error);
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Read one line range from a raw-byte snapshot. The hash, decoded text and line
+ * count all come from the same bounded buffer; expected_sha256 is compared before
+ * decoding so a changed binary file is still reported as a version conflict.
+ */
+export async function readRange(root: string, request: ReadRequest): Promise<ReadSlice> {
+  const limit = resolveReadLimit();
+
+  let safePath: string;
+  try {
+    // Reuse the existing workspace/protected-path/link policy. Its documented
+    // hard-link and TOCTOU limitations are unchanged by this read contract.
+    safePath = await assertAccessiblePath(request.path, "read", root, root);
+  } catch {
+    throw new ReadRangeError("PATH_REFUSED", "Path is not allowed for reading.");
+  }
+
+  const buffer = await readSnapshot(safePath, limit);
+  const digest = createHash("sha256").update(buffer).digest("hex");
+  if (
+    request.expected_sha256 !== undefined &&
+    digest.toLowerCase() !== request.expected_sha256.toLowerCase()
+  ) {
+    throw new ReadRangeError(
+      "STALE_REVISION",
+      "File changed since review; re-read before retrying.",
+      { sha256: digest }
+    );
+  }
+
+  const text = decodeUtf8Strict(buffer);
+  const lines = splitLines(text);
+  const totalLines = lines.length;
+
+  if (request.offset > totalLines) {
+    throw new ReadRangeError(
+      "OFFSET_OUT_OF_RANGE",
+      "offset is past the end of the file.",
+      { sha256: digest, totalLines }
+    );
+  }
+
+  const end = Math.min(request.offset + request.limit, totalLines);
+  const selected = lines.slice(request.offset, end);
+  const rangeText = selected.join("");
+  const complete = end >= totalLines;
+
+  return {
+    path: request.path,
+    sha256: digest,
+    totalLines,
+    offset: request.offset,
+    returnedLines: selected.length,
+    lineStart: request.offset + 1,
+    lineEnd: request.offset + selected.length,
+    text: rangeText,
+    complete,
+    ...(complete ? {} : { nextOffset: end })
+  };
+}
+
+function successItem(index: number, request: ReadRequest, slice: ReadSlice): ReadItem {
+  return {
+    index,
+    path: request.path,
+    ok: true,
+    bytes: Buffer.byteLength(slice.text, "utf8"),
+    sha256: slice.sha256,
+    totalLines: slice.totalLines,
+    offset: slice.offset,
+    returnedLines: slice.returnedLines,
+    ...(slice.returnedLines > 0
+      ? { lineStart: slice.lineStart, lineEnd: slice.lineEnd }
+      : {}),
+    text: slice.text,
+    complete: slice.complete,
+    ...(slice.nextOffset !== undefined ? { nextOffset: slice.nextOffset } : {})
+  };
+}
+
+function errorItem(index: number, filePath: string, error: unknown): ReadItem {
+  const known = error instanceof ReadRangeError ? error : undefined;
+  return {
+    index,
+    path: filePath,
+    ok: false,
+    bytes: 0,
+    ...(known?.sha256 ? { sha256: known.sha256 } : {}),
+    ...(known?.totalLines !== undefined ? { totalLines: known.totalLines } : {}),
+    errorCode: known?.code ?? "READ_FAILED",
+    error: known?.message ?? "Could not read the file."
+  };
+}
+
+function lineTooLargeItem(item: ReadItem): ReadItem {
+  const {
+    text: _text,
+    returnedLines: _returnedLines,
+    lineStart: _lineStart,
+    lineEnd: _lineEnd,
+    complete: _complete,
+    nextOffset: _nextOffset,
+    ...metadata
+  } = item;
+
+  return {
+    ...metadata,
+    ok: false,
+    bytes: 0,
+    errorCode: "LINE_TOO_LARGE",
+    error:
+      "The requested line does not fit within max_bytes; request a smaller range or use a dedicated large-file tool."
+  };
+}
+
+function truncatedItem(
+  item: ReadItem,
+  slice: ReadSlice,
+  lines: readonly string[],
+  count: number
+): ReadItem {
+  const text = lines.slice(0, count).join("");
+  return {
+    ...item,
+    bytes: Buffer.byteLength(text, "utf8"),
+    returnedLines: count,
+    lineStart: slice.offset + 1,
+    lineEnd: slice.offset + count,
+    text,
+    complete: false,
+    nextOffset: slice.offset + count
+  };
+}
+
+function outcomeFor(items: readonly ReadItem[], pendingIndexes: readonly number[]): Outcome {
+  const successCount = items.reduce((total, item) => total + (item.ok ? 1 : 0), 0);
+  const failures = items.filter((item) => !item.ok);
+
+  if (pendingIndexes.length > 0) {
+    return {
+      status: "partial",
+      effectState: "none",
+      retry: "safe",
+      code: "READ_TRUNCATED",
+      nextAction: "Continue with nextOffset or pendingIndexes."
+    };
+  }
+
+  if (failures.length === 0) {
+    if (items.some((item) => item.ok && item.complete === false)) {
+      return {
+        status: "partial",
+        effectState: "none",
+        retry: "safe",
+        code: "READ_TRUNCATED",
+        nextAction: "Continue with nextOffset or pendingIndexes."
+      };
+    }
+    return {
+      status: "completed",
+      effectState: "none",
+      retry: "safe",
+      code: "READ_COMPLETE",
+      nextAction: "Use the returned sha256 with a follow-up file request or patch."
+    };
+  }
+
+  if (successCount > 0) {
+    return {
+      status: "partial",
+      effectState: "none",
+      retry: "safe",
+      code: "READ_PARTIAL",
+      nextAction: "Retry the failed indexes after correcting the reported error."
+    };
+  }
+
+  if (failures.some((item) => item.errorCode === "STALE_REVISION")) {
+    return {
+      status: "conflict",
+      effectState: "none",
+      retry: "after_refresh",
+      code: "STALE_REVISION",
+      nextAction: "Re-read the file and rebuild the request."
+    };
+  }
+
+  if (failures.length === 1 && failures[0]?.errorCode === "LINE_TOO_LARGE") {
+    return {
+      status: "error",
+      effectState: "none",
+      retry: "safe",
+      code: "LINE_TOO_LARGE",
+      nextAction: "Request a smaller range or use a dedicated large-file tool."
+    };
+  }
+
+  return {
+    status: "error",
+    effectState: "none",
+    retry: "safe",
+    code: "READ_FAILED",
+    nextAction: "Correct the request or choose another file."
+  };
+}
+
+function renderReadContent(result: ReadBatch): string {
+  const parts: string[] = [
+    "V2 fs_read_many: " +
+      result.outcome.status +
+      " (" +
+      result.outcome.code +
+      "), returned=" +
+      result.successCount +
+      ", failed=" +
+      result.failureCount +
+      ", pending=" +
+      result.pendingIndexes.length +
+      ", max_bytes=" +
+      result.max_bytes +
+      "."
+  ];
+
+  for (const item of result.files) {
+    if (item.ok) {
+      const range =
+        item.returnedLines !== undefined && item.returnedLines > 0
+          ? "lines " + item.lineStart + "-" + item.lineEnd + " of " + item.totalLines
+          : "no lines (totalLines=" + item.totalLines + ")";
+      parts.push(
+        "--- " +
+          item.path +
+          " | " +
+          range +
+          " | offset=" +
+          item.offset +
+          " | returned=" +
+          item.returnedLines +
+          " | complete=" +
+          item.complete +
+          " | sha256=" +
+          item.sha256 +
+          (item.nextOffset !== undefined ? " | nextOffset=" + item.nextOffset : "") +
+          " ---"
+      );
+      if (item.text !== undefined && item.text.length > 0) parts.push(item.text);
+    } else {
+      parts.push(
+        "--- " +
+          item.path +
+          " | ERROR " +
+          (item.errorCode ?? "READ_FAILED") +
+          (item.sha256 ? " | sha256=" + item.sha256 : "") +
+          " ---"
+      );
+      parts.push(item.error ?? "Could not read the file.");
+      if (item.totalLines !== undefined) parts.push("totalLines=" + item.totalLines);
+    }
+  }
+
+  if (result.pendingIndexes.length > 0) {
+    parts.push("pendingIndexes: [" + result.pendingIndexes.join(", ") + "]");
+  }
+  parts.push(
+    "outcome: " +
+      result.outcome.status +
+      "/" +
+      result.outcome.effectState +
+      "/" +
+      result.outcome.retry +
+      " " +
+      result.outcome.code +
+      ". " +
+      result.outcome.nextAction
+  );
+
+  return parts.join("\n");
+}
+
+function buildReadResult(
+  items: readonly ReadItem[],
+  pendingIndexes: readonly number[],
+  maxBytes: number
+): ReadManyResult {
+  const successCount = items.reduce((total, item) => total + (item.ok ? 1 : 0), 0);
+  const failureCount = items.length - successCount;
+  const totalBytes = items.reduce(
+    (total, item) => total + (item.ok ? item.bytes : 0),
+    0
+  );
+  const result: ReadBatch = {
+    contract_version: FILE_CONTRACT_VERSION,
+    outcome: outcomeFor(items, pendingIndexes),
+    max_bytes: maxBytes,
+    files: [...items],
+    pendingIndexes: [...pendingIndexes],
+    totalBytes,
+    successCount,
+    failureCount
+  };
+  return { result, contentText: renderReadContent(result) };
+}
+
+function fits(result: ReadManyResult, maxBytes: number): boolean {
+  return toolResultBytes(result.result, result.contentText) <= maxBytes;
+}
+
+function fitByLines(
+  baseItems: readonly ReadItem[],
+  item: ReadItem,
+  slice: ReadSlice,
+  pendingIndexes: readonly number[],
+  maxBytes: number
+): ReadItem | undefined {
+  const lines = splitLines(slice.text);
+  if (lines.length <= 1) return undefined;
+
+  let low = 1;
+  let high = lines.length - 1;
+  let best = 0;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = truncatedItem(item, slice, lines, middle);
+    if (fits(buildReadResult([...baseItems, candidate], pendingIndexes, maxBytes), maxBytes)) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  return best > 0 ? truncatedItem(item, slice, lines, best) : undefined;
+}
+
+function tailIndexes(total: number, start: number): number[] {
+  return Array.from({ length: Math.max(0, total - start) }, (_, offset) => start + offset);
+}
+
+function budgetFailure(maxBytes: number, requestCount: number): ReadManyResult {
+  const pendingIndexes = tailIndexes(requestCount, 0);
+  const result: ReadBatch = {
+    contract_version: FILE_CONTRACT_VERSION,
+    outcome: {
+      status: "rejected",
+      effectState: "none",
+      retry: "safe",
+      code: "RESULT_BUDGET_TOO_SMALL",
+      nextAction: "Reduce request count or path length, or increase max_bytes."
+    },
+    max_bytes: maxBytes,
+    files: [],
+    pendingIndexes,
+    totalBytes: 0,
+    successCount: 0,
+    failureCount: 0
+  };
+  const contentText =
+    "V2 fs_read_many rejected: RESULT_BUDGET_TOO_SMALL; no request metadata fits within max_bytes=" +
+    maxBytes +
+    ". pendingIndexes: [" +
+    pendingIndexes.join(", ") +
+    "].";
+  const response: ReadManyResult = { result, contentText };
+  if (!fits(response, maxBytes)) {
+    throw new ReadRangeError(
+      "RESULT_BUDGET_TOO_SMALL",
+      "The response budget is too small for the error envelope."
+    );
+  }
+  return response;
+}
+
+/**
+ * Read independent ranges in request order. A per-file failure never throws; it becomes
+ * one item and later files are still attempted. Once the response budget is exhausted,
+ * the current request is either trimmed by whole lines (with nextOffset) or left in
+ * pendingIndexes, so every truncation has a real way forward.
+ */
+export async function readManyRanges(
+  root: string,
+  requests: readonly ReadRequest[],
+  maxBytes: number
+): Promise<ReadManyResult> {
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < READ_LIMITS.minMaxBytes ||
+    maxBytes > READ_LIMITS.maxMaxBytes
+  ) {
+    throw new ReadRangeError(
+      "READ_LIMIT_INVALID",
+      "max_bytes is outside the supported range."
+    );
+  }
+
+  const files: ReadItem[] = [];
+  const pendingIndexes: number[] = [];
+
+  for (let index = 0; index < requests.length; index += 1) {
+    const request = requests[index]!;
+    let item: ReadItem;
+    let slice: ReadSlice | undefined;
+
+    try {
+      slice = await readRange(root, request);
+      item = successItem(index, request, slice);
+    } catch (error) {
+      item = errorItem(index, request.path, error);
+    }
+
+    if (!item.ok) {
+      const candidate = buildReadResult([...files, item], [], maxBytes);
+      if (fits(candidate, maxBytes)) {
+        files.push(item);
+        continue;
+      }
+      if (files.length === 0) return budgetFailure(maxBytes, requests.length);
+      pendingIndexes.push(...tailIndexes(requests.length, index));
+      break;
+    }
+
+    const full = buildReadResult([...files, item], [], maxBytes);
+    if (fits(full, maxBytes)) {
+      files.push(item);
+      continue;
+    }
+
+    const later = tailIndexes(requests.length, index + 1);
+    const trimmed = slice
+      ? fitByLines(files, item, slice, later, maxBytes)
+      : undefined;
+    if (trimmed) {
+      files.push(trimmed);
+      pendingIndexes.push(...later);
+      break;
+    }
+
+    if (files.length === 0) {
+      if ((item.returnedLines ?? 0) > 0) {
+        const lineError = lineTooLargeItem(item);
+        const errorCandidate = buildReadResult([lineError], [], maxBytes);
+        if (fits(errorCandidate, maxBytes)) {
+          files.push(lineError);
+          continue;
+        }
+      }
+      return budgetFailure(maxBytes, requests.length);
+    }
+
+    pendingIndexes.push(...tailIndexes(requests.length, index));
+    break;
+  }
+
+  return buildReadResult(files, pendingIndexes, maxBytes);
+}

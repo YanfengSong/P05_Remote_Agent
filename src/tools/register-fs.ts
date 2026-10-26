@@ -2,6 +2,8 @@ import * as z from "zod/v4";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { listDirectory, patchTextFile, patchTextFilesBatch, readTextFile, searchTextFiles, writeTextFile, writeTextFilesBatch } from "./files.js";
+import { fsReadManyInputSchema, fsReadManyOutputSchema, READ_LIMITS } from "./file-contracts.js";
+import { readManyRanges } from "./read-ranges.js";
 import { structuredResult } from "./result.js";
 import { assertWorkspaceWriteTarget } from "./write-target.js";
 
@@ -15,30 +17,24 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
     return structuredResult({ text }, text);
   });
 
-  const MAX_BATCH_READ_FILES = 20;
   const MAX_BATCH_READ_BYTES = 1024 * 1024;
 
   exposer.expose("fs_read_many", {
     description:
-      "Read multiple independent UTF-8 text files in one call. Prefer this over repeated fs_read calls when paths are independent. Accepts 1 to 20 paths; each file is checked against the active workspace policy, failures are reported per path, and returned file contents are capped at 1 MiB total.",
-    inputSchema: z.object({
-      paths: z.array(z.string().min(1)).min(1).max(MAX_BATCH_READ_FILES)
-    }),
-    outputSchema: z.object({
-      files: z.array(z.object({
-        path: z.string(),
-        ok: z.boolean(),
-        bytes: z.number().int().nonnegative(),
-        text: z.string().optional(),
-        error: z.string().optional()
-      })),
-      totalBytes: z.number().int().nonnegative(),
-      successCount: z.number().int().nonnegative(),
-      failureCount: z.number().int().nonnegative()
-    })
-  }, async ({ paths }) => {
+      "Read UTF-8 text files in one call. Legacy form {paths} reads 1-20 whole files with per-path errors and a 1 MiB total content limit. V2 form {contract_version:2, requests:[{path,offset,limit,expected_sha256?}], max_bytes?} returns versioned line ranges with raw-byte sha256, totalLines, text, complete, nextOffset and pendingIndexes; the whole MCP result is bounded by max_bytes (default 64 KiB, maximum 256 KiB).",
+    inputSchema: fsReadManyInputSchema,
+    outputSchema: fsReadManyOutputSchema
+  }, async (input) => {
     // Snapshot the active root once so all paths in this batch use the same workspace.
     const workspaceRoot = workspaceManager.currentRoot();
+
+    if (input.requests !== undefined) {
+      const maxBytes = input.max_bytes ?? READ_LIMITS.defaultMaxBytes;
+      const bounded = await readManyRanges(workspaceRoot, input.requests, maxBytes);
+      return structuredResult(bounded.result, bounded.contentText);
+    }
+
+    const paths = input.paths!;
     const files: Array<{
       path: string;
       ok: boolean;

@@ -1,8 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { CAPABILITIES } from "../capability/registry.js";
+import { serializedBytes } from "../tools/result-budget.js";
 import { VERSION } from "../version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +36,20 @@ function structuredOf(result: unknown): Record<string, unknown> | undefined {
     ? structured as Record<string, unknown>
     : undefined;
 }
+
+function textOf(result: unknown): string {
+  const content = (result as { content?: { type: string; text?: string }[] })?.content ?? [];
+  return content.map((block) => block.text ?? "").join("\n");
+}
+
+const V2_FIXTURE = path.join(REPO, "_p05_output_schema_v2_fixture.txt");
+const V2_LINES = Array.from(
+  { length: 1200 },
+  (_, index) => `line-${String(index + 1).padStart(4, "0")} ${"y".repeat(30)}\n`
+);
+const V2_TEXT = V2_LINES.join("");
+await fs.writeFile(V2_FIXTURE, V2_TEXT, "utf8");
+const V2_SHA = createHash("sha256").update(Buffer.from(V2_TEXT, "utf8")).digest("hex");
 
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
@@ -97,6 +114,22 @@ try {
     );
   }
 
+  const readManyTool = listed.tools.find((tool) => tool.name === "fs_read_many");
+  const readManyInput = readManyTool?.inputSchema as {
+    type?: unknown;
+    properties?: Record<string, unknown>;
+  } | undefined;
+  check(
+    "input-schema: fs_read_many has an object root",
+    readManyInput?.type === "object",
+    JSON.stringify(readManyInput).slice(0, 400)
+  );
+  check(
+    "input-schema: fs_read_many advertises legacy paths and V2 requests",
+    Boolean(readManyInput?.properties?.paths) && Boolean(readManyInput?.properties?.requests),
+    JSON.stringify(readManyInput?.properties ?? {})
+  );
+
   // Runtime-confirmed tools are covered by permission tests. These samples validate
   // structuredContent only for calls that are expected to execute without confirmation.
   const samples: Array<[string, Record<string, unknown>]> = [
@@ -124,7 +157,159 @@ try {
     check(`structured-content: ${name} returns an object`, Boolean(structured), JSON.stringify(result).slice(0, 400));
   }
 
+  const fixtureName = path.basename(V2_FIXTURE);
+  const limited = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [{ path: fixtureName, offset: 0, limit: 50 }],
+      max_bytes: 4096
+    }
+  });
+  const limitedStructured = structuredOf(limited);
+  check("v2: contract_version is explicit", limitedStructured?.contract_version === 2, JSON.stringify(limitedStructured).slice(0, 300));
+  const limitedFiles = Array.isArray(limitedStructured?.files)
+    ? limitedStructured.files as Array<Record<string, unknown>>
+    : [];
+  const limitedFirst = limitedFiles[0] ?? {};
+  check("v2: file item succeeds", limitedFirst.ok === true, JSON.stringify(limitedFirst));
+  check("v2: raw-byte sha256 returned", limitedFirst.sha256 === V2_SHA, String(limitedFirst.sha256));
+  check("v2: totalLines returned", limitedFirst.totalLines === V2_LINES.length, String(limitedFirst.totalLines));
+  check(
+    "v2: truncated file range has nextOffset",
+    limitedFirst.complete === false && typeof limitedFirst.nextOffset === "number" && limitedFirst.nextOffset > 0,
+    JSON.stringify(limitedFirst)
+  );
+  check(
+    "v2: batch pendingIndexes is empty when one request was handled",
+    Array.isArray(limitedStructured?.pendingIndexes) && limitedStructured.pendingIndexes.length === 0,
+    JSON.stringify(limitedStructured?.pendingIndexes)
+  );
+  check(
+    "v2: actual MCP client result respects max_bytes",
+    serializedBytes(limited) <= 4096,
+    `${serializedBytes(limited)} bytes`
+  );
+  check(
+    "v2: plain-text content exposes the file body",
+    textOf(limited).includes(V2_LINES[0]!.trimEnd()),
+    textOf(limited).slice(0, 300)
+  );
+  check("v2: plain-text content exposes the version", textOf(limited).includes(V2_SHA));
+  check(
+    "v2: plain-text content exposes continuation",
+    textOf(limited).includes(`nextOffset=${limitedFirst.nextOffset}`)
+  );
+
+  const continuationOffset = limitedFirst.nextOffset as number;
+  const continued = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [{
+        path: fixtureName,
+        offset: continuationOffset,
+        limit: 50,
+        expected_sha256: V2_SHA
+      }],
+      max_bytes: 4096
+    }
+  });
+  const continuedStructured = structuredOf(continued);
+  const continuedFirst = Array.isArray(continuedStructured?.files)
+    ? (continuedStructured.files as Array<Record<string, unknown>>)[0] ?? {}
+    : {};
+  check("v2: continuation item succeeds", continuedFirst.ok === true, JSON.stringify(continuedFirst));
+  check(
+    "v2: continuation starts at the exact next line",
+    typeof continuedFirst.text === "string" && continuedFirst.text.startsWith(V2_LINES[continuationOffset]!),
+    String(continuedFirst.text).slice(0, 120)
+  );
+  check("v2: continuation version is stable", continuedFirst.sha256 === V2_SHA);
+
+  const defaultBudget = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [{ path: fixtureName, offset: 0, limit: 1200 }]
+    }
+  });
+  const defaultStructured = structuredOf(defaultBudget);
+  const defaultFirst = Array.isArray(defaultStructured?.files)
+    ? (defaultStructured.files as Array<Record<string, unknown>>)[0] ?? {}
+    : {};
+  check(
+    "v2: default max_bytes limits the actual MCP client result",
+    serializedBytes(defaultBudget) <= 65536,
+    `${serializedBytes(defaultBudget)} bytes`
+  );
+  check(
+    "v2: default budget trims and provides a forward cursor",
+    defaultFirst.complete === false && typeof defaultFirst.nextOffset === "number" && defaultFirst.nextOffset > 0,
+    JSON.stringify(defaultFirst)
+  );
+
+  const maximumBudget = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [{ path: fixtureName, offset: 0, limit: 1200 }],
+      max_bytes: 262144
+    }
+  });
+  const maximumStructured = structuredOf(maximumBudget);
+  const maximumFirst = Array.isArray(maximumStructured?.files)
+    ? (maximumStructured.files as Array<Record<string, unknown>>)[0] ?? {}
+    : {};
+  check(
+    "v2: maximum max_bytes limits the actual MCP client result",
+    serializedBytes(maximumBudget) <= 262144,
+    `${serializedBytes(maximumBudget)} bytes`
+  );
+  check(
+    "v2: maximum budget returns the full requested range",
+    maximumFirst.returnedLines === 1200 && maximumFirst.complete === true,
+    JSON.stringify(maximumFirst)
+  );
+
+  let mixedRejected = false;
+  try {
+    const mixed = await client.callTool({
+      name: "fs_read_many",
+      arguments: {
+        contract_version: 2,
+        paths: [fixtureName],
+        requests: [{ path: fixtureName, offset: 0, limit: 1 }]
+      }
+    });
+    mixedRejected = Boolean((mixed as { isError?: boolean }).isError);
+  } catch {
+    mixedRejected = true;
+  }
+  check("v2: paths and requests are rejected at the protocol boundary", mixedRejected);
+
+  const legacy = await client.callTool({
+    name: "fs_read_many",
+    arguments: { paths: ["README.md"] }
+  });
+  const legacyStructured = structuredOf(legacy);
+  check(
+    "legacy: success fields and per-file text are unchanged",
+    legacyStructured?.successCount === 1 &&
+      legacyStructured?.contract_version === undefined &&
+      Array.isArray(legacyStructured?.files) &&
+      (legacyStructured.files as Array<Record<string, unknown>>)[0]?.ok === true &&
+      typeof (legacyStructured.files as Array<Record<string, unknown>>)[0]?.text === "string",
+    JSON.stringify(legacyStructured).slice(0, 300)
+  );
+  check(
+    "legacy: text content remains a compact summary, not a body copy",
+    !textOf(legacy).includes("P05 Remote Agent"),
+    textOf(legacy).slice(0, 200)
+  );
+
   console.log(`OUTPUT_SCHEMA_OK (${checks} checks)`);
 } finally {
   await client.close().catch(() => undefined);
+  await fs.rm(V2_FIXTURE, { force: true });
 }

@@ -21,7 +21,7 @@
 ## 2. 当前项目事实
 
 - 已有 `fs_read_many`、`fs_write_many`、`apply_patch_many`、`fs_search`、`git_workspace_audit`、`project_validate`。
-- `fs_read_many` 当前只有整文件路径输入，返回文本但没有供补丁直接使用的版本字段。
+- `fs_read_many` 的 legacy 整文件路径输入保持兼容；A1 已加入显式 V2 范围读取，返回原始字节 SHA-256、totalLines、nextOffset、pendingIndexes 和有界 MCP 结果预算。A2—A4 仍未实施。
 - `apply_patch_many` 当前每文件一处唯一文本替换；有预检和普通错误回滚，但不提供跨文件崩溃原子性。
 - `project_validate` 当前验证 P05 平台目录，不等同于验证任意当前业务工作区。
 - `ExecutionRuntime` / `AuditStore` 记录一次工具调用，不能代替异步任务的持久化生命周期。

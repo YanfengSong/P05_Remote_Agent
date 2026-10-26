@@ -20,7 +20,7 @@
     "test:plugin": "npm run build && node dist/test/plugin-framework.js && node dist/test/plugin-api-v1.js",
     "test:matlab-live": "npm run build && node --env-file-if-exists=.env dist/test/matlab-plugin-v1-live.js",
     "verify:matlab": "npm run check && npm run test:matlab-live",
-    "test:compiled": "node dist/test/policy-profiles.js && node dist/test/profile-exposure.js && node dist/test/http-reviewer.js && node dist/test/foundation.js && node dist/test/git-mutations.js && node dist/test/operator-console.js && node dist/test/output-schema.js && node dist/test/plugin-framework.js && node dist/test/plugin-api-v1.js && node dist/test/downstream-smoke.js",
+    "test:compiled": "node dist/test/policy-profiles.js && node dist/test/profile-exposure.js && node dist/test/http-reviewer.js && node dist/test/foundation.js && node dist/test/file-contracts.js && node dist/test/git-mutations.js && node dist/test/operator-console.js && node dist/test/output-schema.js && node dist/test/plugin-framework.js && node dist/test/plugin-api-v1.js && node dist/test/downstream-smoke.js",
     "start:http-reviewer": "npm run build && node --env-file-if-exists=.env dist/http-reviewer.js",
     "test:http-reviewer": "npm run build && node dist/test/http-reviewer.js",
     "sync:export": "npm run build && node --env-file-if-exists=.env scripts/sync/export-golden-state.mjs",

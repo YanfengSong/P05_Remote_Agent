@@ -348,6 +348,26 @@ for (const scenario of scenarios) {
       readOne.successCount === 1 && Array.isArray(readOne.files) &&
         (readOne.files as Array<{ text?: string }>)[0]?.text === "one-file-read-ok");
 
+    const readRange = structuredOf(await session.client.callTool({
+      name: "fs_read_many",
+      arguments: {
+        contract_version: 2,
+        requests: [{ path: singlePath, offset: 0, limit: 1 }],
+        max_bytes: 4096
+      }
+    }));
+    const rangeFiles = Array.isArray(readRange.files)
+      ? readRange.files as Array<Record<string, unknown>>
+      : [];
+    check(
+      "readonly: V2 range read is exposed without widening write permissions",
+      readRange.contract_version === 2 &&
+        rangeFiles[0]?.ok === true &&
+        rangeFiles[0]?.text === "one-file-read-ok" &&
+        typeof rangeFiles[0]?.sha256 === "string" &&
+        rangeFiles[0]?.complete === true
+    );
+
     const legacyCall = await outcome(() => session.client.callTool({
       name: "fs_read",
       arguments: { path: singlePath }

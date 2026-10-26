@@ -66,7 +66,7 @@ export function serializedBytes(value: unknown): number;
 ```
 Outcome 使用规格第 6 节的完整定义；单文件失败映射成带 code 的结果项，不把一个文件失败变成整批未读。
 
-- [ ] 新增实际断言：CRLF、空文件、尾换行、BOM、中文、非法 UTF-8、二进制、8 MiB 上限；两次分页间修改文件时 expected_sha256 冲突。
+- [x] 新增实际断言：CRLF、空文件、尾换行、BOM、中文、非法 UTF-8、二进制、8 MiB 上限；两次分页间修改文件时 expected_sha256 冲突。
 ```ts
 import assert from "node:assert/strict";
 import { splitLines } from "../tools/read-ranges.js";
@@ -76,8 +76,8 @@ assert.deepEqual(splitLines(""), []);
 assert.deepEqual(splitLines("a\n"), ["a\n"]);
 assert.equal(serializedBytes({ text: "中" }), Buffer.byteLength('{"text":"中"}'));
 ```
-- [ ] 运行统一编译/测试命令，确认新模块缺失或对应断言失败；记录失败原因，不能把环境错误当预期红灯。
-- [ ] 实现最小纯函数与读取层；原始 buffer 先 hash，再严格解码；读取的 descriptor 与结果来自同一数据源；沿用实际路径授权检查。
+- [x] 运行统一编译/测试命令，确认新模块缺失或对应断言失败；记录失败原因，不能把环境错误当预期红灯。
+- [x] 实现最小纯函数与读取层；原始 buffer 先 hash，再严格解码；读取的 descriptor 与结果来自同一数据源；沿用实际路径授权检查。
 ```ts
 export function splitLines(text: string): string[] {
   return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
@@ -86,9 +86,17 @@ export function serializedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 ```
-- [ ] 接入顶层 object Zod schema：paths 和 requests 互斥；requests 必须带 contract_version:2。新结果返回未完成范围、pendingIndexes 和每文件错误；旧 paths 路径原样执行。预算器对最终 content+structuredContent 测量，回退整行直到满足预算；不能无限返回相同 nextOffset。
-- [ ] 跑读取/预算测试和 output-schema：默认正文在 text 客户端可见；两个中文转义/大单行/20 个长路径案例均不超 max_bytes；超过上限的 metadata 返回固定有界错误。
-- [ ] 提交：`rtk git commit -m "feat: add versioned range reads with bounded MCP results"`，只暂存本任务列出的文件。
+- [x] 接入顶层 object Zod schema：paths 和 requests 互斥；requests 必须带 contract_version:2。新结果返回未完成范围、pendingIndexes 和每文件错误；旧 paths 路径原样执行。预算器对最终 content+structuredContent 测量，回退整行直到满足预算；不能无限返回相同 nextOffset。
+- [x] 跑读取/预算测试和 output-schema：默认正文在 text 客户端可见；两个中文转义/大单行/20 个长路径案例均不超 max_bytes；超过上限的 metadata 返回固定有界错误。
+- [x] 提交：`rtk git commit -m "feat: add versioned range reads with bounded MCP results"`，只暂存本任务列出的文件。
+
+**A1 实施记录（2026-10-26）：**
+- 新增 `src/tools/file-contracts.ts`、`src/tools/read-ranges.ts`、`src/tools/result-budget.ts`；`fs_read_many` 的 legacy `paths` 分支保持原输出，V2 分支由 `contract_version: 2` 显式选择。
+- 单文件读取上限为 `min(config.maxReadBytes, 8 MiB)`；非正整数配置失败关闭。hash、行数、正文来自同一份受限 buffer；BOM 不进入展示但进入 hash，CRLF 原样保留。
+- 预算统计最终 `{content, structuredContent}` 的 JSON UTF-8 字节。超预算时按整行裁剪并返回 `nextOffset`；未处理请求返回 `pendingIndexes`；单行无法容纳时返回 `LINE_TOO_LARGE`；连错误信封都放不下时返回固定 `RESULT_BUDGET_TOO_SMALL`。
+- V2 错误使用固定 code/message，不包含解析后的宿主绝对路径。读取沿用 `assertAccessiblePath`，现有 hardlink/TOCTOU 局限未改变。
+- `src/test/file-contracts.ts` 覆盖 154 项检查；`output-schema.ts` 增加真实 stdio MCP 客户端预算、正文可见性、续读、协议边界和 legacy 回归检查；`profile-exposure.ts` 验证 readonly profile 下 V2 范围读取仍只读可用。未引入 `isError`，执行审计的失败分类统一仍留给 A3。
+- 读取 hash 通过测试与既有 `patchTextFile` 衔接：BOM 与 CRLF fixture 在 UTF-8 解码/重编码后仍保持原始字节 hash。
 
 ## A2. 同原文多编辑与诚实的写入结果
 
