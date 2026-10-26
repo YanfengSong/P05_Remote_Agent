@@ -46,7 +46,7 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  const expected = CAPABILITIES.map((capability) => capability.name).sort();
+  const expected = CAPABILITIES.filter((capability) => capability.name !== "fs_read").map((capability) => capability.name).sort();
 
   check(
     "output-schema: full surface covers every Core capability",
@@ -108,8 +108,11 @@ try {
     ["plugin_list", {}],
     ["recovery_status", { limit: 5 }],
     ["fs_list", { path: "." }],
-    ["fs_read", { path: "README.md" }],
+    ["fs_read_many", { paths: ["README.md"] }],
+    ["fs_read_many", { paths: ["README.md", "src/index.ts"] }],
+    ["fs_search", { query: "export function", path: "src/tools", max_results: 5 }],
     ["git_status", {}],
+    ["git_workspace_audit", {}],
     ["git_diff_stat", {}],
     ["shell_run", { command: "Write-Output p05-structured-output" }],
     ["mcp_status", {}]

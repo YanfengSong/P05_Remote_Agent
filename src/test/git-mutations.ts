@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gitAdd, gitBranch, gitCommit, gitPush, gitStatus } from "../tools/git.js";
+import { gitWorkspaceAudit, parsePorcelainStatus } from "../tools/git-audit.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, "..", "..");
@@ -94,6 +95,55 @@ try {
     "Invalid Git remote name"
   );
 
+
+  // Git workspace audit: only observe the existing repository and local tracking refs.
+  const cleanAudit = await gitWorkspaceAudit(WORK);
+  check("git audit: active branch resolved", cleanAudit.branch === "main", JSON.stringify(cleanAudit.branch));
+  check("git audit: local upstream divergence is zero after push",
+    cleanAudit.upstream === "origin/main" && cleanAudit.ahead === 0 && cleanAudit.behind === 0,
+    JSON.stringify({ upstream: cleanAudit.upstream, ahead: cleanAudit.ahead, behind: cleanAudit.behind }));
+  check("git audit: clean worktree recognized",
+    cleanAudit.counts.entries === 0 && cleanAudit.readOnly && cleanAudit.remoteRefsOnly);
+
+  await fs.mkdir(path.join(WORK, "slprj"), { recursive: true });
+  await fs.mkdir(path.join(WORK, "evidence"), { recursive: true });
+  await fs.mkdir(path.join(WORK, "nested"), { recursive: true });
+  await fs.writeFile(path.join(WORK, "slprj", "cache.slxc"), "generated", "utf8");
+  await fs.writeFile(path.join(WORK, "evidence", "sample.mat"), "potential raw data", "utf8");
+  await fs.writeFile(path.join(WORK, "evidence", "big.bin"), Buffer.alloc(11 * 1024 * 1024, 65));
+  await fs.appendFile(path.join(WORK, "alpha.txt"), "edited\n", "utf8");
+  const indexBefore = await fs.readFile(path.join(WORK, ".git", "index"));
+  const headBefore = execFileSync("git", ["rev-parse", "HEAD"], { cwd: WORK }).toString().trim();
+  const audit = await gitWorkspaceAudit(WORK);
+  const indexAfter = await fs.readFile(path.join(WORK, ".git", "index"));
+  const headAfter = execFileSync("git", ["rev-parse", "HEAD"], { cwd: WORK }).toString().trim();
+  check("git audit: did not mutate Git index or HEAD",
+    indexBefore.equals(indexAfter) && headBefore === headAfter);
+  check("git audit: tracked edit and untracked files counted",
+    audit.counts.worktree >= 1 && audit.counts.untracked === 3,
+    JSON.stringify(audit.counts));
+  check("git audit: detects Simulink generated cache",
+    audit.risks.some((risk) => risk.path.endsWith("cache.slxc") && risk.reason === "generated_cache"));
+  check("git audit: .mat data is review-only, not blanket ignored",
+    audit.risks.some((risk) => risk.path.endsWith("sample.mat") && risk.reason === "raw_data_review"));
+  check("git audit: large untracked file detected",
+    audit.risks.some((risk) => risk.path.endsWith("big.bin") && risk.reason === "large_file" &&
+      (risk.bytes ?? 0) > 10 * 1024 * 1024));
+  check("git audit: counts and samples bounded",
+    audit.changedSample.length <= 30 && audit.risks.length <= 30 && !audit.truncated);
+  check("git audit: untracked directories grouped",
+    audit.untrackedGroups.some((g) => g.directory === "evidence" && g.count === 2));
+
+  await rejects("git audit: workspace subfolder cannot traverse to parent repo",
+    () => gitWorkspaceAudit(path.join(WORK, "nested")), "repository root differs");
+  await rejects("git audit: cannot audit arbitrary non-repository directory",
+    () => gitWorkspaceAudit(OUTSIDE));
+  const renamed = parsePorcelainStatus("R  new.txt\0old.txt\0?? other.txt\0");
+  check("git audit: porcelain rename consumes old path field",
+    renamed.entries.length === 2 && renamed.entries[0].path === "new.txt" &&
+    renamed.entries[1].path === "other.txt");
+  check("git audit: truncation explicitly disclosed",
+    parsePorcelainStatus("?? a.txt\0?? b.txt\0", 1).truncated);
   console.log(`GIT_MUTATIONS_OK (${checks} checks)`);
 } finally {
   await fs.rm(FIXTURE, { recursive: true, force: true }).catch(() => undefined);

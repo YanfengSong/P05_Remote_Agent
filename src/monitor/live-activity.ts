@@ -110,6 +110,54 @@ export function summarizeToolInput(
     case "apply_patch":
       return stringValue(value, "path");
 
+    case "fs_read_many": {
+      const paths = Array.isArray(value.paths)
+        ? value.paths.filter((item): item is string => typeof item === "string")
+        : [];
+      const shown = paths.slice(0, 5);
+      const suffix = paths.length > shown.length
+        ? ` (+${paths.length - shown.length} more)`
+        : "";
+      return shown.join(" · ") + suffix;
+    }
+
+    case "fs_write_many":
+    case "apply_patch_many": {
+      const key = capability === "fs_write_many" ? "files" : "patches";
+      const entries = Array.isArray(value[key])
+        ? value[key].filter((item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item))
+        : [];
+      const paths = entries
+        .map((item) => typeof item.path === "string" ? item.path : "")
+        .filter(Boolean);
+      const shown = paths.slice(0, 5);
+      const suffix = paths.length > shown.length
+        ? " (+" + (paths.length - shown.length) + " more)"
+        : "";
+      return shown.join(" · ") + suffix;
+    }
+
+    case "fs_search": {
+      const query = stringValue(value, "query");
+      const root = stringValue(value, "path");
+      return [
+        query ? "query=" + shorten(query, 80) : undefined,
+        root ? "path=" + shorten(root, 100) : undefined
+      ].filter(Boolean).join(" · ");
+    }
+
+    case "project_validate": {
+      const checks = Array.isArray(value.checks)
+        ? value.checks.filter((item): item is string => typeof item === "string")
+        : [];
+      const shown = checks.slice(0, 6);
+      const suffix = checks.length > shown.length
+        ? " (+" + (checks.length - shown.length) + " more)"
+        : "";
+      return shown.join(", ") + suffix;
+    }
+
     case "reference_read":
     case "reference_list_directory": {
       const reference = stringValue(value, "reference_id");

@@ -14,11 +14,16 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "plugin_list", minProfile: "readonly", risk: "read", scope: "platform", summary: "List installed application plugins, versions and active-workspace availability." },
 
   { name: "fs_read", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read a UTF-8 text file inside the active workspace." },
+  { name: "fs_read_many", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read up to 20 independent workspace files in one call with per-file errors and a 1 MiB total returned-content limit." },
+  { name: "fs_search", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Search literal text recursively with bounded snippets while skipping protected paths and generated directories." },
   { name: "fs_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List direct children of a directory inside the active workspace." },
   { name: "fs_write", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace a UTF-8 text file inside the active workspace." },
+  { name: "fs_write_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace up to 20 files in one preflighted batch with expected-hash guards and rollback on ordinary write failures." },
   { name: "apply_patch", minProfile: "developer", risk: "write", scope: "workspace", summary: "Patch one exact text occurrence with an expected SHA-256 concurrency guard." },
+  { name: "apply_patch_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Apply up to 20 exact, expected-hash-guarded text patches as one preflighted batch with rollback on ordinary write failures." },
 
   { name: "git_status", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Show branch and working-tree status for the active workspace." },
+  { name: "git_workspace_audit", minProfile: "readonly", risk: "read", scope: "workspace", summary: "One read-only Git workspace preflight: branch, local upstream divergence, changed and untracked files, generated-cache and large-file risks." },
   { name: "git_diff", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Show the current workspace Git diff without an external diff driver." },
   { name: "git_diff_stat", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Show compact Git diff statistics for the active workspace." },
   { name: "git_add", minProfile: "developer", risk: "write", scope: "workspace", summary: "Stage explicit paths inside the active workspace." },
@@ -29,6 +34,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "remote_read", minProfile: "readonly", risk: "read", scope: "external", summary: "Run one fixed read-only H1/J1 maintenance query through configured SSH targets." },
 
   { name: "command_run", minProfile: "developer", risk: "execute", scope: "platform", summary: "Run one server-side allowlisted P05 platform validation action." },
+  { name: "project_validate", minProfile: "developer", risk: "execute", scope: "platform", summary: "Run multiple named, allowlisted P05 validation checks sequentially in one approved call; no arbitrary shell commands or arguments are accepted." },
   { name: "runtime_restart", minProfile: "developer", risk: "execute", scope: "host", summary: "Restart only the current P05 runtime slot through the repo-local restart controller." },
 
   { name: "mcp_status", minProfile: "developer", risk: "read", scope: "downstream", summary: "Show configured downstream MCP servers and their connection state." },

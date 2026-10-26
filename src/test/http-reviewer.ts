@@ -302,16 +302,21 @@ try {
       "workspace_list",
       "workspace_current",
       "review_context",
-      "fs_read",
+      "fs_read_many",
+      "fs_search",
       "fs_list",
       "git_status",
+      "git_workspace_audit",
       "git_diff",
       "git_diff_stat",
       "reference_list",
       "reference_read",
       "reference_list_directory",
       "fs_write",
+      "fs_write_many",
       "apply_patch",
+      "apply_patch_many",
+      "project_validate",
       "git_add",
       "git_commit",
       "git_branch",
@@ -334,9 +339,11 @@ try {
       "workspace_list",
       "workspace_current",
       "review_context",
-      "fs_read",
+      "fs_read_many",
+      "fs_search",
       "fs_list",
       "git_status",
+      "git_workspace_audit",
       "git_diff",
       "git_diff_stat",
       "reference_list",
@@ -408,13 +415,18 @@ try {
     );
 
     const read = await client.callTool({
-      name: "fs_read",
-      arguments: { path: "review.txt" }
+      name: "fs_read_many",
+      arguments: { paths: ["review.txt"] }
     });
-    const readData = read.structuredContent as { text?: string };
+    const readData = read.structuredContent as {
+      files?: Array<{ path: string; ok: boolean; text?: string }>;
+      successCount?: number;
+    };
     check(
-      "http reviewer: can read the bound workspace",
-      readData?.text?.includes("review-ok") === true,
+      "http reviewer: can read one bound workspace file through the batch reader",
+      readData?.successCount === 1 &&
+        readData.files?.[0]?.ok === true &&
+        readData.files[0].text?.includes("review-ok") === true,
       JSON.stringify(readData)
     );
 

@@ -10,3 +10,6 @@ Thumbs.db
 # Vendored tunnel-client binaries (fetched via scripts/fetch-tunnel-client.ps1, never committed)
 /tunnel-client-*/
 /vendor/
+
+# Machine-local environment backups may contain credentials.
+.env.bak*

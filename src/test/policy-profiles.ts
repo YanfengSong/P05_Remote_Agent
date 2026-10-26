@@ -24,6 +24,7 @@ import { DEFAULT_CAPABILITY_CATALOG } from "../capability/registry.js";
 
 // Keep this suite independent from the live Agent's machine-specific exposure/runtime settings.
 delete process.env.REMOTE_AGENT_DEFAULT_CWD;
+delete process.env.P05_EXPOSE_LEGACY_FS_READ;
 
 let checks = 0;
 
@@ -56,10 +57,10 @@ function throws(label: string, fn: () => unknown, mustContain?: string): string 
 
 // The plan's per-profile lists, restricted to the tools implemented today.
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read", "fs_list", "git_status", "git_diff", "git_diff_stat", "remote_read"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_read_many", "fs_search", "fs_list", "git_status", "git_workspace_audit", "git_diff", "git_diff_stat", "remote_read"];
 // shell_run is developer-visible but every call passes the common Tool Permission Broker.
 // Generic downstream execution and external Git push remain full-only.
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "fs_write_many", "apply_patch", "apply_patch_many", "project_validate", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
 
 // ---------------------------------------------------------------- catalog invariants
@@ -98,6 +99,16 @@ sameSet("matrix: discovery", toolProfileReport("discovery", "env").exposed, DISC
 sameSet("matrix: readonly", toolProfileReport("readonly", "env").exposed, READONLY_TOOLS);
 sameSet("matrix: developer", toolProfileReport("developer", "env").exposed, DEVELOPER_TOOLS);
 sameSet("matrix: full", toolProfileReport("full", "env").exposed, FULL_TOOLS);
+check("fs_read: hidden in default tool surface", !isToolAllowed("developer", "fs_read"));
+check("fs_read: is still declared for compatibility", specFor("fs_read")?.risk === "read");
+check("fs_read: batch reader remains available", isToolAllowed("readonly", "fs_read_many"));
+process.env.P05_EXPOSE_LEGACY_FS_READ = "1";
+check("fs_read: explicit compatibility switch re-exposes the endpoint", isToolAllowed("developer", "fs_read"));
+check("fs_read: compatibility switch cannot bypass profile", !isToolAllowed("discovery", "fs_read"));
+check("fs_read: compatibility mode is reflected in surface report",
+  toolProfileReport("readonly", "env").exposed.includes("fs_read"));
+delete process.env.P05_EXPOSE_LEGACY_FS_READ;
+check("fs_read: compatibility toggle is reversible", !isToolAllowed("full", "fs_read"));
 
 for (const name of DISCOVERY_TOOLS) {
   check(`matrix: discovery allows ${name}`, isToolAllowed("discovery", name));
@@ -217,6 +228,30 @@ const { readApprovalMode, writeApprovalMode } = await import("../policy/approval
   );
   check("permission: structured Workspace write defaults ALLOW", allowWrite.mode === "allow");
 
+  const allowBatchWrite = await permissionDecision(
+    "fs_write_many",
+    { files: [{ path: "a.txt", content: "a" }, { path: "b.txt", content: "b" }] },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: batch Workspace write keeps the structured-write guard", allowBatchWrite.mode === "allow");
+
+  const allowBatchPatch = await permissionDecision(
+    "apply_patch_many",
+    { patches: [{ path: "a.txt", expected_sha256: "0".repeat(64), old_text: "a", new_text: "b" }] },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: batch Workspace patch keeps the structured-write guard", allowBatchPatch.mode === "allow");
+
+  const allowSearch = await permissionDecision(
+    "fs_search",
+    { query: "needle", path: "." },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: recursive file search is read-only", allowSearch.mode === "allow");
+
   const commandRun = await permissionDecision(
     "command_run",
     { action: "check" },
@@ -224,6 +259,14 @@ const { readApprovalMode, writeApprovalMode } = await import("../policy/approval
     workspaceRoot
   );
   check("permission: mutable repository validation defaults CONFIRM", commandRun.mode === "confirm");
+
+  const batchValidation = await permissionDecision(
+    "project_validate",
+    { checks: ["check", "build"] },
+    DEFAULT_CAPABILITY_CATALOG,
+    workspaceRoot
+  );
+  check("permission: project_validate requires one-time confirmation", batchValidation.mode === "confirm");
 
   const restart = await permissionDecision(
     "runtime_restart",

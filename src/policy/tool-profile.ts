@@ -26,7 +26,7 @@ export const TOOL_SPECS: readonly CapabilityDescriptor[] = CAPABILITIES;
 
 export const PLANNED_TOOLS: Record<ToolProfile, readonly string[]> = {
   discovery: [],
-  readonly: ["fs_search", "git_log"],
+  readonly: ["git_log"],
   developer: ["process_start", "process_wait", "process_output", "process_stop", "batch_execute"],
   full: []
 };
@@ -84,6 +84,16 @@ export function toolDecision(
   catalog: CapabilityCatalog = DEFAULT_CAPABILITY_CATALOG
 ): ToolDecision {
   const spec = assertToolDeclared(toolName, catalog);
+  // The batch reader also handles a single path, so avoid exposing two
+  // competing read tools to agents. Keep the legacy endpoint opt-in for
+  // existing clients that depend on fs_read's original response schema.
+  if (toolName === "fs_read" && process.env.P05_EXPOSE_LEGACY_FS_READ !== "1") {
+    return {
+      tool: toolName,
+      allowed: false,
+      reason: 'legacy fs_read is hidden by default; set P05_EXPOSE_LEGACY_FS_READ=1 to enable compatibility'
+    };
+  }
   if (PROFILE_RANK[profile] < PROFILE_RANK[spec.minProfile]) {
     return {
       tool: toolName,

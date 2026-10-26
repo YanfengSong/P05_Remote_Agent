@@ -6,7 +6,7 @@ import { assertAccessiblePath } from "../security.js";
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
-export const DEVELOPER_ACTIONS = [
+export const PROJECT_VALIDATION_ACTIONS = [
   "check",
   "build",
   "test_policy",
@@ -16,10 +16,12 @@ export const DEVELOPER_ACTIONS = [
   "test_plugin_framework",
   "test_output_schema",
   "test_operator_console",
-  "smoke_downstream",
-  "verify"
+  "smoke_downstream"
 ] as const;
 
+export const DEVELOPER_ACTIONS = [...PROJECT_VALIDATION_ACTIONS, "verify"] as const;
+
+export type ProjectValidationAction = (typeof PROJECT_VALIDATION_ACTIONS)[number];
 export type DeveloperAction = (typeof DEVELOPER_ACTIONS)[number];
 
 function asDeveloperAction(action: string): DeveloperAction {

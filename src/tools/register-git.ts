@@ -11,6 +11,7 @@ import {
   gitStatus
 } from "./git.js";
 import { structuredResult } from "./result.js";
+import { gitWorkspaceAudit } from "./git-audit.js";
 
 const gitTextOutput = z.object({ output: z.string() });
 
@@ -24,6 +25,54 @@ export function registerGitTools(exposer: Exposer, workspaceManager: WorkspaceMa
     inputSchema: z.object({}),
     outputSchema: gitTextOutput
   }, async () => gitResult(await gitStatus(workspaceManager.currentRoot())));
+
+  exposer.expose("git_workspace_audit", {
+    description:
+      "Read-only Git preflight for the active workspace. Return branch, upstream, local ahead/behind, " +
+      "working-tree/staged/untracked counts, bounded file samples, generated Simulink caches, " +
+      "MAT data warnings and >=10 MiB files. No fetch, staging, commit, push, or ignore-rule edits.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      readOnly: z.literal(true),
+      remoteRefsOnly: z.literal(true),
+      branch: z.string().nullable(),
+      head: z.string().nullable(),
+      upstream: z.string().nullable(),
+      ahead: z.number().int().nullable(),
+      behind: z.number().int().nullable(),
+      remotes: z.array(z.string()),
+      recentCommits: z.array(z.string()),
+      counts: z.object({
+        entries: z.number().int(),
+        staged: z.number().int(),
+        worktree: z.number().int(),
+        untracked: z.number().int(),
+        conflicts: z.number().int(),
+        deleted: z.number().int()
+      }),
+      changedSample: z.array(z.object({
+        path: z.string(),
+        index: z.string(),
+        worktree: z.string(),
+        kind: z.enum(["tracked", "untracked"])
+      })),
+      untrackedGroups: z.array(z.object({
+        directory: z.string(),
+        count: z.number().int()
+      })),
+      risks: z.array(z.object({
+        path: z.string(),
+        reason: z.enum(["generated_cache", "raw_data_review", "large_file"]),
+        bytes: z.number().int().optional()
+      })),
+      riskCount: z.number().int(),
+      truncated: z.boolean(),
+      warnings: z.array(z.string())
+    })
+  }, async () => {
+    const report = await gitWorkspaceAudit(workspaceManager.currentRoot());
+    return structuredResult({ ...report }, JSON.stringify(report, null, 2));
+  });
 
   exposer.expose("git_diff", {
     description: "Show repository diff; set staged=true for the index diff.",

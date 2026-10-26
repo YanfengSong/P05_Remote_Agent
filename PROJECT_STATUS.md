@@ -1,6 +1,62 @@
-﻿# Project Status
+# Project Status
 
-Updated: 2026-10-16
+Updated: 2026-10-26
+
+## Current deployment progress - 2026-10-26
+
+This snapshot takes precedence over the historical baseline and validation counts below.
+The reviewed source is the user-designated latest checkout, `D:\Project_Git\P05_V2_Deployment`.
+Version remains **0.3.1**, with **V2** as the cloud synchronization target; this is not a main-branch release.
+
+### Delivered in this snapshot
+
+- Batch file reading (`fs_read_many`), bounded literal search (`fs_search`), batch writes
+  (`fs_write_many`) and batch patches (`apply_patch_many`).
+- Mutation batches preflight paths and expected hashes, reject ambiguous targets, and attempt
+  rollback on ordinary write failures. They do not claim crash-atomic filesystem transactions.
+- `project_validate` groups fixed allowlisted validation actions under the normal approval gate.
+- `git_workspace_audit` provides a bounded read-only workspace/Git preflight, with tests and
+  usage documentation in `docs/git_workspace_audit.md`.
+- Legacy `fs_read` is hidden by default; `P05_EXPOSE_LEGACY_FS_READ=1` enables compatibility.
+- Capability metadata, live activity summaries, profile exposure, HTTP Reviewer and output
+  schema regressions cover the new tool surface.
+- Machine-local `.env.bak*` files are ignored alongside existing `.env` and `.p05/` exclusions.
+
+### Verification on 2026-10-26
+
+Typecheck and build passed. All suites listed by `npm run verify` were exercised successfully:
+
+| Suite | Explicit checks |
+| --- | ---: |
+| Policy profiles | 335 |
+| Profile exposure | 264 |
+| HTTP Reviewer | 80 |
+| Foundation | 58 |
+| Git mutations / workspace audit | 27 |
+| Operator Console | 93 |
+| Output schemas | 215 |
+| Plugin framework | 35 |
+| Plugin API v1 | 4 |
+| State synchronization | 11 |
+| **Total** | **1,122** |
+
+Downstream smoke and `scripts/deployment/test-universal.ps1` also passed.
+
+Verification was completed in stages. The first invocation encountered a PowerShell module
+path inherited from the Codex host that hid `Get-FileHash`. The next invocation passed policy,
+exposure and HTTP Reviewer tests, then stopped because Foundation imports require an explicit
+`REMOTE_AGENT_ALLOWED_ROOTS`. The remaining suites passed with the test process's module path
+set to Windows PowerShell's built-in Modules and allowed/default roots set to this checkout.
+No machine-wide environment settings or running Runtime processes were changed.
+
+### Open operational follow-up
+
+`BoonrayB_Latency_Test_20261022.md` records an earlier finding that old and current B Runtime
+instances shared the same tunnel profile and requests alternated between them. This sync
+does not independently establish whether that incident has since been resolved. Live route
+acceptance remains a separate follow-up; the automated test results above do not prove it.
+
+## Historical baseline
 
 ## Baseline
 

@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import type { Exposer } from "../policy/expose.js";
 import { assertAccessiblePath } from "../security.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { runDeveloperAction } from "./dev-command.js";
+import { PROJECT_VALIDATION_ACTIONS, runDeveloperAction } from "./dev-command.js";
 import { requestRuntimeRestart } from "./runtime.js";
 import { runPowerShell } from "./shell.js";
 import {
@@ -12,6 +12,22 @@ import {
   runRemoteRead
 } from "./remote-read.js";
 import { structuredResult } from "./result.js";
+
+const MAX_PROJECT_VALIDATION_OUTPUT_BYTES = 256 * 1024;
+
+function boundedValidationOutput(value: string, remainingBytes: number): string {
+  if (remainingBytes <= 0) return "[OUTPUT OMITTED: aggregate validation output limit reached]";
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.byteLength <= remainingBytes) return value;
+  const marker = "\n[TRUNCATED: aggregate validation output limit reached]";
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  if (remainingBytes <= markerBytes) {
+    return buffer.subarray(0, remainingBytes).toString("utf8");
+  }
+  const payloadLimit = remainingBytes - markerBytes;
+  return buffer.subarray(0, payloadLimit).toString("utf8") + marker;
+}
+
 
 export function registerExecutionTools(
   exposer: Exposer,
@@ -31,6 +47,62 @@ export function registerExecutionTools(
       workspaceManager.platformRoot()
     );
     return structuredResult({ action, output }, output);
+  });
+
+  exposer.expose("project_validate", {
+    description:
+      "Run multiple named, allowlisted P05 platform validation checks sequentially in one call. Prefer this over repeated command_run calls for independent checks. Only fixed check names are accepted; arbitrary commands and arguments are not. Requires the normal one-time approval because it executes build/test code, stops at the first failure, and caps aggregate output at 256 KiB.",
+    inputSchema: z.object({
+      checks: z.array(z.enum(PROJECT_VALIDATION_ACTIONS))
+        .min(1)
+        .max(PROJECT_VALIDATION_ACTIONS.length)
+        .refine((items) => new Set(items).size === items.length, "checks must not contain duplicates")
+    }),
+    outputSchema: z.object({
+      status: z.enum(["passed", "failed"]),
+      requestedChecks: z.array(z.enum(PROJECT_VALIDATION_ACTIONS)),
+      completedChecks: z.number().int().nonnegative(),
+      stoppedEarly: z.boolean(),
+      results: z.array(z.object({
+        name: z.enum(PROJECT_VALIDATION_ACTIONS),
+        status: z.enum(["passed", "failed"]),
+        output: z.string()
+      }))
+    })
+  }, async ({ checks }) => {
+    const platformRoot = workspaceManager.platformRoot();
+    const results: Array<{
+      name: typeof PROJECT_VALIDATION_ACTIONS[number];
+      status: "passed" | "failed";
+      output: string;
+    }> = [];
+    let remainingBytes = MAX_PROJECT_VALIDATION_OUTPUT_BYTES;
+
+    for (const action of checks) {
+      try {
+        const output = await runDeveloperAction(action, platformRoot);
+        const bounded = boundedValidationOutput(output, remainingBytes);
+        remainingBytes = Math.max(0, remainingBytes - Buffer.byteLength(bounded, "utf8"));
+        results.push({ name: action, status: "passed", output: bounded });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Validation failed.";
+        const bounded = boundedValidationOutput(message, remainingBytes);
+        results.push({ name: action, status: "failed", output: bounded });
+        break;
+      }
+    }
+
+    const result = {
+      status: results.every((entry) => entry.status === "passed") ? "passed" as const : "failed" as const,
+      requestedChecks: checks,
+      completedChecks: results.length,
+      stoppedEarly: results.length < checks.length,
+      results
+    };
+    const summary = "P05 validation " + result.status + ": completed " +
+      result.completedChecks + " of " + checks.length + " checks" +
+      (result.stoppedEarly ? "; stopped at first failure." : ".");
+    return structuredResult(result, summary);
   });
 
   exposer.expose("runtime_restart", {

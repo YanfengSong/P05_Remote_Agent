@@ -8,6 +8,7 @@
  * Run: npm run test:exposure
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,11 +48,11 @@ await fs.writeFile(
 );
 
 const DISCOVERY_TOOLS = ["device_info", "ping"];
-const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read", "git_status", "git_diff", "git_diff_stat", "remote_read"];
-const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "apply_patch", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
+const READONLY_TOOLS = [...DISCOVERY_TOOLS, "workspace_list", "workspace_current", "reference_list", "reference_read", "reference_list_directory", "activity_recent", "recovery_status", "plugin_list", "fs_list", "fs_read_many", "fs_search", "git_status", "git_workspace_audit", "git_diff", "git_diff_stat", "remote_read"];
+const DEVELOPER_TOOLS = [...READONLY_TOOLS, "fs_write", "fs_write_many", "apply_patch", "apply_patch_many", "project_validate", "git_add", "git_commit", "git_branch", "command_run", "runtime_restart", "mcp_list_tools", "mcp_status", "shell_run"];
 // External Git push and arbitrary downstream execution remain full-only.
 const FULL_TOOLS = [...DEVELOPER_TOOLS, "mcp_call_tool", "git_push"];
-const ALL_TOOLS = [...FULL_TOOLS];
+const ALL_TOOLS = [...FULL_TOOLS, "fs_read"]; // fs_read remains declared, but is hidden unless compatibility is enabled.
 
 let checks = 0;
 
@@ -249,7 +250,8 @@ const scenarios: Scenario[] = [
   { label: "discovery", env: { P05_TOOL_PROFILE: "discovery" }, profile: "discovery", expected: DISCOVERY_TOOLS },
   { label: "readonly", env: { P05_TOOL_PROFILE: "readonly" }, profile: "readonly", expected: READONLY_TOOLS },
   { label: "developer", env: { P05_TOOL_PROFILE: "developer" }, profile: "developer", expected: DEVELOPER_TOOLS },
-  { label: "full", env: { P05_TOOL_PROFILE: "full" }, profile: "full", expected: FULL_TOOLS }
+  { label: "full", env: { P05_TOOL_PROFILE: "full" }, profile: "full", expected: FULL_TOOLS },
+  { label: "legacy fs_read compatibility", env: { P05_TOOL_PROFILE: "developer", P05_EXPOSE_LEGACY_FS_READ: "1" }, profile: "developer", expected: [...DEVELOPER_TOOLS, "fs_read"] }
 ];
 
 for (const scenario of scenarios) {
@@ -326,6 +328,61 @@ for (const scenario of scenarios) {
   console.log(`ok  ${scenario.label} -> [${[...scenario.expected].sort().join(", ")}]`);
 }
 
+// --------------------------------------- default batch read and size-limit regression
+{
+  const singlePath = path.join(ROOT, "_p05_single_read_probe.txt");
+  const bigA = path.join(ROOT, "_p05_read_limit_a.txt");
+  const bigB = path.join(ROOT, "_p05_read_limit_b.txt");
+  const oversized = path.join(ROOT, "_p05_read_oversized.txt");
+  await fs.writeFile(singlePath, "one-file-read-ok", "utf8");
+  await fs.writeFile(bigA, "a".repeat(620 * 1024), "utf8");
+  await fs.writeFile(bigB, "b".repeat(620 * 1024), "utf8");
+  await fs.writeFile(oversized, "c".repeat(2200 * 1024), "utf8");
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "readonly" }));
+  try {
+    const readOne = structuredOf(await session.client.callTool({
+      name: "fs_read_many",
+      arguments: { paths: [singlePath] }
+    }));
+    check("batch reader accepts a single file in place of fs_read",
+      readOne.successCount === 1 && Array.isArray(readOne.files) &&
+        (readOne.files as Array<{ text?: string }>)[0]?.text === "one-file-read-ok");
+
+    const legacyCall = await outcome(() => session.client.callTool({
+      name: "fs_read",
+      arguments: { path: singlePath }
+    }));
+    check("default profile cannot call hidden fs_read even by name", legacyCall.failed);
+
+    const combined = structuredOf(await session.client.callTool({
+      name: "fs_read_many",
+      arguments: { paths: [bigA, bigB] }
+    }));
+    const combinedFiles = combined.files as Array<{ ok: boolean; bytes: number; error?: string }>;
+    check("batch reader enforces 1 MiB aggregate limit and isolates per-path failures",
+      combined.successCount === 1 && combined.failureCount === 1 &&
+      combinedFiles.length === 2 && combinedFiles[0]?.ok === true &&
+      combinedFiles[1]?.ok === false &&
+      combinedFiles[1]?.error?.includes("Batch response limit exceeded") === true);
+
+    const tooLarge = structuredOf(await session.client.callTool({
+      name: "fs_read_many",
+      arguments: { paths: [oversized] }
+    }));
+    const largeFiles = tooLarge.files as Array<{ ok: boolean; error?: string }>;
+    check("batch reader enforces per-file maxReadBytes",
+      tooLarge.successCount === 0 && tooLarge.failureCount === 1 &&
+        largeFiles?.[0]?.ok === false &&
+        largeFiles[0]?.error?.includes("maxReadBytes") === true);
+  } finally {
+    await closeSession(session);
+    for (const target of [singlePath, bigA, bigB, oversized]) {
+      await fs.rm(target, { force: true });
+    }
+  }
+  console.log("ok  legacy fs_read is hidden, single-file batch fallback and byte limits work");
+}
+
 // ---------------------------------------------------------------- TASK-001 DoD, verbatim
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "discovery" }));
@@ -362,7 +419,7 @@ for (const scenario of scenarios) {
 
 // ----------------------------------------------------------- runtime-scoped reference roots
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B" }));
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B", P05_EXPOSE_LEGACY_FS_READ: "1" }));
   try {
     const refs = textOf(await session.client.callTool({
       name: "reference_list",
@@ -427,7 +484,7 @@ for (const scenario of scenarios) {
 
 // ---------------------------------------------------------------- write + real filesystem guards
 {
-  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B" }));
+  const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B", P05_EXPOSE_LEGACY_FS_READ: "1" }));
   const outsideTarget = path.join(OUTSIDE_FIXTURES, "_p05_junction_target");
   const outsideName = "_p05_junction_target";
   const outlink = path.join(ROOT, "_p05_junction_probe");
@@ -473,6 +530,243 @@ for (const scenario of scenarios) {
     const readBack = await session.client.callTool({ name: "fs_read", arguments: { path: probe } });
     check("developer: fs_write round-trips through fs_read", textOf(readBack).includes("p05-probe"), textOf(readBack));
 
+    const batchRead = await session.client.callTool({
+      name: "fs_read_many",
+      arguments: { paths: [probe, "definitely-not-here.txt"] }
+    });
+    const batch = structuredOf(batchRead);
+    const batchFiles = Array.isArray(batch.files)
+      ? batch.files as Array<Record<string, unknown>>
+      : [];
+    check(
+      "developer: fs_read_many returns per-path success and failure",
+      batchFiles.length === 2 &&
+        batchFiles[0]?.ok === true &&
+        batchFiles[0]?.text === "p05-probe" &&
+        batchFiles[1]?.ok === false &&
+        typeof batchFiles[1]?.error === "string",
+      JSON.stringify(batch).slice(0, 320)
+    );
+
+    const tooManyBatchPaths = await outcome(() =>
+      session.client.callTool({
+        name: "fs_read_many",
+        arguments: { paths: Array.from({ length: 21 }, (_, i) => `probe-${i}.txt`) }
+      })
+    );
+    check(
+      "developer: fs_read_many rejects more than 20 paths",
+      tooManyBatchPaths.failed,
+      tooManyBatchPaths.message.slice(0, 240)
+    );
+
+    check(
+      "developer: fs_read_many text payload is a compact summary, not a duplicate of file contents",
+      !textOf(batchRead).includes("p05-probe"),
+      textOf(batchRead).slice(0, 200)
+    );
+
+    const batchA = path.join(PROBE_DIR, "batch-a.txt");
+    const batchB = path.join(PROBE_DIR, "batch-b.txt");
+    const batchC = path.join(PROBE_DIR, "batch-c.txt");
+    const noPartialPath = path.join(PROBE_DIR, "batch-must-not-create.txt");
+    const batchWrite = await session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [
+          { path: batchA, content: "batch-a original" },
+          { path: batchB, content: "search-needle alpha" }
+        ]
+      }
+    });
+    const batchWriteData = structuredOf(batchWrite);
+    check(
+      "developer: fs_write_many creates multiple files in one committed batch",
+      batchWriteData?.status === "committed" &&
+        batchWriteData.successCount === 2 &&
+        Array.isArray(batchWriteData.files) &&
+        (await fs.readFile(batchA, "utf8")) === "batch-a original" &&
+        (await fs.readFile(batchB, "utf8")) === "search-needle alpha",
+      JSON.stringify(batchWriteData).slice(0, 300)
+    );
+
+    const batchAHash = createHash("sha256").update(await fs.readFile(batchA)).digest("hex");
+    const batchUpdate = await session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [
+          { path: batchA, content: "batch-a updated", expected_sha256: batchAHash },
+          { path: batchC, content: "batch-c created" }
+        ]
+      }
+    });
+    const batchUpdateData = structuredOf(batchUpdate);
+    check(
+      "developer: fs_write_many requires reviewed hash for replacements and can mix create/update",
+      batchUpdateData?.status === "committed" &&
+        batchUpdateData.successCount === 2 &&
+        (await fs.readFile(batchA, "utf8")) === "batch-a updated" &&
+        (await fs.readFile(batchC, "utf8")) === "batch-c created",
+      JSON.stringify(batchUpdateData).slice(0, 300)
+    );
+
+    const beforeRejectedBatchA = await fs.readFile(batchA, "utf8");
+    const staleWrite = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [
+          { path: noPartialPath, content: "must-not-land" },
+          { path: batchA, content: "must-not-overwrite", expected_sha256: "0".repeat(64) }
+        ]
+      }
+    }));
+    check(
+      "developer: fs_write_many rejects stale hashes before any mutation",
+      staleWrite.failed &&
+        !(await pathExists(noPartialPath)) &&
+        (await fs.readFile(batchA, "utf8")) === beforeRejectedBatchA,
+      staleWrite.message.slice(0, 240)
+    );
+
+    const missingHashWrite = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: { files: [{ path: batchA, content: "must-not-overwrite-without-hash" }] }
+    }));
+    check(
+      "developer: fs_write_many refuses to replace an existing file without expected_sha256",
+      missingHashWrite.failed && (await fs.readFile(batchA, "utf8")) === beforeRejectedBatchA,
+      missingHashWrite.message.slice(0, 240)
+    );
+
+    const oversizedBatchA = path.join(PROBE_DIR, "batch-oversize-a.txt");
+    const oversizedBatchB = path.join(PROBE_DIR, "batch-oversize-b.txt");
+    const oversizedBatch = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [
+          { path: oversizedBatchA, content: "a".repeat(540 * 1024) },
+          { path: oversizedBatchB, content: "b".repeat(540 * 1024) }
+        ]
+      }
+    }));
+    check(
+      "developer: fs_write_many enforces aggregate 1 MiB limit without creating partial files",
+      oversizedBatch.failed &&
+        !(await pathExists(oversizedBatchA)) &&
+        !(await pathExists(oversizedBatchB)),
+      oversizedBatch.message.slice(0, 240)
+    );
+
+    const duplicateWrite = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [
+          { path: batchA, content: "one", expected_sha256: createHash("sha256").update(beforeRejectedBatchA).digest("hex") },
+          { path: batchA, content: "two", expected_sha256: createHash("sha256").update(beforeRejectedBatchA).digest("hex") }
+        ]
+      }
+    }));
+    check(
+      "developer: fs_write_many rejects duplicate targets before mutation",
+      duplicateWrite.failed && (await fs.readFile(batchA, "utf8")) === beforeRejectedBatchA,
+      duplicateWrite.message.slice(0, 240)
+    );
+
+    const tooManyBatchWrites = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: Array.from({ length: 21 }, (_, i) => ({
+          path: path.join(PROBE_DIR, "batch-limit-" + i + ".txt"),
+          content: "x"
+        }))
+      }
+    }));
+    check(
+      "developer: fs_write_many rejects more than 20 files",
+      tooManyBatchWrites.failed,
+      tooManyBatchWrites.message.slice(0, 240)
+    );
+
+    const searchProbe = path.join(PROBE_DIR, ".env.test");
+    await fs.writeFile(searchProbe, "search-needle must-not-be-returned", "utf8");
+    const searchResult = await session.client.callTool({
+      name: "fs_search",
+      arguments: { query: "search-needle", path: PROBE_DIR, max_results: 10 }
+    });
+    const searchData = structuredOf(searchResult);
+    const searchFiles = Array.isArray(searchData?.results)
+      ? searchData.results as Array<Record<string, unknown>>
+      : [];
+    check(
+      "readonly: fs_search finds literal text and returns line snippets",
+      searchData?.matchedFiles === 1 &&
+        searchFiles.some((entry) => String(entry.path).endsWith("batch-b.txt")) &&
+        JSON.stringify(searchFiles).includes("search-needle"),
+      JSON.stringify(searchData).slice(0, 300)
+    );
+    check(
+      "readonly: fs_search never returns protected .env files",
+      !JSON.stringify(searchFiles).includes(".env.test"),
+      JSON.stringify(searchFiles).slice(0, 240)
+    );
+
+    const batchAHashForPatch = createHash("sha256").update(await fs.readFile(batchA)).digest("hex");
+    const batchBHashForPatch = createHash("sha256").update(await fs.readFile(batchB)).digest("hex");
+    const batchPatch = await session.client.callTool({
+      name: "apply_patch_many",
+      arguments: {
+        patches: [
+          { path: batchA, expected_sha256: batchAHashForPatch, old_text: "updated", new_text: "patched" },
+          { path: batchB, expected_sha256: batchBHashForPatch, old_text: "alpha", new_text: "beta" }
+        ]
+      }
+    });
+    const batchPatchData = structuredOf(batchPatch);
+    check(
+      "developer: apply_patch_many applies multiple exact hash-guarded patches",
+      batchPatchData?.status === "committed" &&
+        batchPatchData.successCount === 2 &&
+        (await fs.readFile(batchA, "utf8")) === "batch-a patched" &&
+        (await fs.readFile(batchB, "utf8")) === "search-needle beta",
+      JSON.stringify(batchPatchData).slice(0, 300)
+    );
+
+    const beforeStalePatchA = await fs.readFile(batchA, "utf8");
+    const beforeStalePatchB = await fs.readFile(batchB, "utf8");
+    const stalePatch = await outcome(() => session.client.callTool({
+      name: "apply_patch_many",
+      arguments: {
+        patches: [
+          { path: batchA, expected_sha256: createHash("sha256").update(beforeStalePatchA).digest("hex"), old_text: "patched", new_text: "should-not-apply" },
+          { path: batchB, expected_sha256: "0".repeat(64), old_text: "beta", new_text: "should-not-apply" }
+        ]
+      }
+    }));
+    check(
+      "developer: apply_patch_many rejects stale batch without partially applying patches",
+      stalePatch.failed &&
+        (await fs.readFile(batchA, "utf8")) === beforeStalePatchA &&
+        (await fs.readFile(batchB, "utf8")) === beforeStalePatchB,
+      stalePatch.message.slice(0, 240)
+    );
+
+    const tooManyBatchPatches = await outcome(() => session.client.callTool({
+      name: "apply_patch_many",
+      arguments: {
+        patches: Array.from({ length: 21 }, (_, i) => ({
+          path: path.join(PROBE_DIR, "patch-limit-" + i + ".txt"),
+          expected_sha256: "0".repeat(64),
+          old_text: "x",
+          new_text: "y"
+        }))
+      }
+    }));
+    check(
+      "developer: apply_patch_many rejects more than 20 patches",
+      tooManyBatchPatches.failed,
+      tooManyBatchPatches.message.slice(0, 240)
+    );
+
     // A successful write must not disclose the resolved path. A relative path is the
     // sharpest probe: it resolves against the server's working directory, so returning
     // the resolved form would hand the remote that directory.
@@ -496,6 +790,19 @@ for (const scenario of scenarios) {
       structuredHardlinkWrite.message.slice(0, 220));
     check("hardlink: refused structured write preserves outside target",
       (await fs.readFile(structuredHardlinkTarget, "utf8")).trim() === "outside-original");
+
+    const structuredHardlinkBatch = await outcome(() => session.client.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [{ path: structuredHardlinkAlias, content: "must-not-cross-hardlink" }]
+      }
+    }));
+    check(
+      "hardlink: fs_write_many refuses a multi-link target",
+      structuredHardlinkBatch.failed &&
+        (await fs.readFile(structuredHardlinkTarget, "utf8")).trim() === "outside-original",
+      structuredHardlinkBatch.message.slice(0, 240)
+    );
 
     // 1. a junction inside the active workspace that points outside it
     mklink(outlink, outsideTarget);
@@ -652,6 +959,13 @@ for (const scenario of scenarios) {
   try {
     await expectToolConfirmation(
       developerSession,
+      "project_validate",
+      { checks: ["check"] },
+      "project_validate",
+      "check"
+    );
+    await expectToolConfirmation(
+      developerSession,
       "command_run",
       { action: "test_policy" },
       "command_run:test_policy",
@@ -778,6 +1092,24 @@ for (const scenario of scenarios) {
     }));
     check("platform binding survives business workspace switch after approval",
       platformCheck.includes("ACTION check OK"), platformCheck.slice(0, 300));
+
+    const projectValidation = structuredOf(await callToolWithApproval(
+      session,
+      "project_validate",
+      { checks: ["check"] }
+    ));
+    const validationResults = Array.isArray(projectValidation.results)
+      ? projectValidation.results as Array<Record<string, unknown>>
+      : [];
+    check(
+      "project_validate runs a fixed allowlisted check and returns structured status",
+      projectValidation.status === "passed" &&
+        projectValidation.completedChecks === 1 &&
+        validationResults[0]?.name === "check" &&
+        validationResults[0]?.status === "passed" &&
+        String(validationResults[0]?.output).includes("ACTION check OK"),
+      JSON.stringify(projectValidation).slice(0, 400)
+    );
   } finally {
     await fs.rm(crossProbe, { force: true }).catch(() => undefined);
     await closeSession(session);
