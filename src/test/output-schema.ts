@@ -70,6 +70,36 @@ const AMBIGUOUS_SHA = createHash("sha256")
 const M1_E2_FIXTURE = path.join(REPO, "_p05_output_schema_e2_fixture.txt");
 await fs.writeFile(M1_E2_FIXTURE, "x".repeat(12000), "utf8");
 
+const SEARCH_BUDGET_DIR = path.join(REPO, "_p05_output_schema_search_budget");
+await fs.rm(SEARCH_BUDGET_DIR, { recursive: true, force: true });
+await fs.mkdir(SEARCH_BUDGET_DIR, { recursive: true });
+const searchBudgetLine = "needle" + "中".repeat(234);
+for (let index = 0; index < 100; index += 1) {
+  await fs.writeFile(
+    path.join(SEARCH_BUDGET_DIR, String(index) + ".txt"),
+    (searchBudgetLine + "\n").repeat(5),
+    "utf8"
+  );
+}
+
+const PATCH_BUDGET_DIR = path.join(REPO, "_p05_output_schema_patch_budget");
+await fs.rm(PATCH_BUDGET_DIR, { recursive: true, force: true });
+await fs.mkdir(PATCH_BUDGET_DIR, { recursive: true });
+const patchBudgetEdits = Array.from({ length: 4 }, (_, index) => ({
+  old_text: String(index) + "\u0001".repeat(166),
+  new_text: String(index) + "\u0002".repeat(166)
+}));
+const patchBudgetOriginal = patchBudgetEdits.map((edit) => edit.old_text).join("\n");
+const patchBudgetHash = createHash("sha256")
+  .update(Buffer.from(patchBudgetOriginal, "utf8"))
+  .digest("hex");
+const patchBudgetPaths: string[] = [];
+for (let index = 0; index < 20; index += 1) {
+  const name = "f" + String(index).padStart(2, "0") + ".txt";
+  await fs.writeFile(path.join(PATCH_BUDGET_DIR, name), patchBudgetOriginal, "utf8");
+  patchBudgetPaths.push(path.join(path.basename(PATCH_BUDGET_DIR), name));
+}
+
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -405,6 +435,46 @@ try {
     textOf(searchV2).slice(0, 400)
   );
 
+  const searchBudgetName = path.basename(SEARCH_BUDGET_DIR);
+  for (const maxBytes of [4096, 65536, 262144]) {
+    const budgeted = await client.callTool({
+      name: "fs_search",
+      arguments: {
+        contract_version: 2,
+        query: "needle",
+        path: searchBudgetName,
+        max_results: 100,
+        max_bytes: maxBytes
+      }
+    });
+    const budgetedStructured = structuredOf(budgeted);
+    check(
+      `search v2 budget ${maxBytes}: selected max_bytes returned`,
+      budgetedStructured?.max_bytes === maxBytes,
+      JSON.stringify(budgetedStructured).slice(0, 300)
+    );
+    check(
+      `search v2 budget ${maxBytes}: actual client result within budget`,
+      serializedBytes(budgeted) <= maxBytes,
+      `${serializedBytes(budgeted)} bytes`
+    );
+    check(
+      `search v2 budget ${maxBytes}: response truncation is explicit`,
+      budgetedStructured?.responseTruncated === true &&
+        typeof budgetedStructured?.returnedFiles === "number" &&
+        typeof budgetedStructured?.returnedMatches === "number" &&
+        budgetedStructured.returnedMatches > 0,
+      JSON.stringify(budgetedStructured).slice(0, 400)
+    );
+    check(
+      `search v2 budget ${maxBytes}: coverage and outcome remain meaningful`,
+      (budgetedStructured?.coverage as { complete?: unknown } | undefined)?.complete === false &&
+        (budgetedStructured?.outcome as { code?: unknown } | undefined)?.code === "SEARCH_TRUNCATED" &&
+        (budgeted as { isError?: boolean }).isError !== true,
+      JSON.stringify(budgetedStructured).slice(0, 400)
+    );
+  }
+
   const patchFixtureName = path.basename(PATCH_FIXTURE);
   const patchEdits = [{ old_text: "beta", new_text: "BETA" }];
   const patchDryRun = await client.callTool({
@@ -519,6 +589,69 @@ try {
     await fs.readFile(AMBIGUOUS_FIXTURE, "utf8") === AMBIGUOUS_TEXT
   );
 
+  for (const maxBytes of [4096, 65536, 262144]) {
+    const patchBudget = await client.callTool({
+      name: "apply_patch_many",
+      arguments: {
+        contract_version: 2,
+        dry_run: true,
+        max_bytes: maxBytes,
+        patches: patchBudgetPaths.map((targetPath) => ({
+          path: targetPath,
+          expected_sha256: patchBudgetHash,
+          edits: patchBudgetEdits
+        }))
+      }
+    });
+    const patchBudgetStructured = structuredOf(patchBudget);
+    check(
+      `patch v2 budget ${maxBytes}: actual client result within budget`,
+      serializedBytes(patchBudget) <= maxBytes,
+      `${serializedBytes(patchBudget)} bytes`
+    );
+    check(
+      `patch v2 budget ${maxBytes}: selected max_bytes returned`,
+      patchBudgetStructured?.max_bytes === maxBytes,
+      JSON.stringify(patchBudgetStructured).slice(0, 300)
+    );
+    if (maxBytes === 4096) {
+      check(
+        "patch v2 budget 4096: necessary statuses do not fit and no write occurs",
+        patchBudgetStructured?.status === "rejected" &&
+          (patchBudgetStructured?.outcome as { code?: unknown; effectState?: unknown } | undefined)?.code === "RESULT_BUDGET_TOO_SMALL" &&
+          (patchBudgetStructured?.outcome as { effectState?: unknown } | undefined)?.effectState === "none" &&
+          Array.isArray(patchBudgetStructured?.files) &&
+          patchBudgetStructured.files.length === 0 &&
+          (patchBudget as { isError?: boolean }).isError === true,
+        JSON.stringify(patchBudgetStructured).slice(0, 400)
+      );
+    } else {
+      check(
+        `patch v2 budget ${maxBytes}: all targets retain status`,
+        patchBudgetStructured?.status === "dry_run" &&
+          Array.isArray(patchBudgetStructured?.files) &&
+          patchBudgetStructured.files.length === 20,
+        JSON.stringify(patchBudgetStructured).slice(0, 400)
+      );
+      if (maxBytes === 65536) {
+        const patchBudgetFiles = patchBudgetStructured?.files as Array<Record<string, unknown>>;
+        const firstDiff = patchBudgetFiles[0]?.diff as { previewTruncated?: unknown } | undefined;
+        check(
+          "patch v2 budget 65536: optional preview is explicitly truncated",
+          patchBudgetStructured?.responseTruncated === true &&
+            firstDiff?.previewTruncated === true,
+          JSON.stringify(patchBudgetStructured).slice(0, 400)
+        );
+      }
+    }
+  }
+  for (const targetPath of patchBudgetPaths) {
+    check(
+      "patch v2 budget: dry-run leaves the fixture unchanged",
+      await fs.readFile(path.join(REPO, targetPath), "utf8") === patchBudgetOriginal
+    );
+  }
+
   const e2Name = path.basename(M1_E2_FIXTURE);
   const mixedFailure = await client.callTool({
     name: "fs_read_many",
@@ -602,4 +735,6 @@ try {
   await fs.rm(PATCH_FIXTURE, { force: true });
   await fs.rm(AMBIGUOUS_FIXTURE, { force: true });
   await fs.rm(M1_E2_FIXTURE, { force: true });
+  await fs.rm(SEARCH_BUDGET_DIR, { recursive: true, force: true });
+  await fs.rm(PATCH_BUDGET_DIR, { recursive: true, force: true });
 }

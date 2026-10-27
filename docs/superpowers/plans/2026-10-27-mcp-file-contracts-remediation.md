@@ -182,7 +182,7 @@ maxConcurrentInCriticalSection 由实际进入/退出锁回调累计。
 - V2响应返回实际使用的max_bytes；增加 `responseTruncated` 说明响应内容被裁剪，patch的diff可增加 `previewTruncated`。不新增工具、不增加搜索快照游标。
 - 最终化基于实际MCP对象计量，与M1共用计量原语，不复制第三套字节估算。
 
-- [ ] 将handler-probes的中文搜索、JSON转义patch预览变成真实MCP预算测试，覆盖默认/最小/最大预算。
+- [x] 将handler-probes的中文搜索、JSON转义patch预览变成真实MCP预算测试，覆盖默认/最小/最大预算。
 ```ts
 assert.ok(Buffer.byteLength(JSON.stringify(searchResult), "utf8") <= 65536);
 assert.ok(Buffer.byteLength(JSON.stringify(patchPreview), "utf8") <= 65536);
@@ -190,14 +190,16 @@ assert.equal(patchPreview.structuredContent.files.length, 20);
 ```
 三个变量均来自真实调用；再增加强制4096和262144边界，不只跑默认值。
 
-- [ ] 搜索裁剪以完整match/snippet为单位，保持真实已扫描统计与已观察命中统计；增加明确的返回数量/responseTruncated。coverage描述扫描是否完成，responseTruncated描述响应是否完整，两者不要混用。错误+裁剪仍是错误，不被SEARCH_TRUNCATED掩盖。
-- [ ] 搜索无游标时nextAction指导缩小path/query或提高预算；不能声称被裁掉的命中不存在。内容预算要包含给纯文本客户端的说明/命中内容。
-- [ ] patch只裁剪可选diff预览/冗长文案，**不丢弃任何目标的执行状态、版本和失败效果**。所有会执行的目标必须留得下最小必要结果。
-- [ ] 在任何mutation前，按各目标必要元数据和有限错误码，预留成功、回滚、unknown等最坏结果信封；必要结果放不下时，先返回RESULT_BUDGET_TOO_SMALL且effectState=none，文件字节零改变。
-- [ ] 写入后不允许因为响应预算失败而重试、回滚、返回“未执行”，或把已执行目标放pending。实际诊断采用固定有界错误码/文案；预算只可压缩可选展示。最终出口再次验证始终<=max_bytes。
-- [ ] 预览被裁剪而候选计算完整时可保持dry_run completed，但必须明确previewTruncated；不要把展示不全误报执行失败。
-- [ ] 更新outputSchema/profile描述，确认新增参数仍参与现有审批指纹，不绕过授权。
-- [ ] 提交：`fix: enforce final response budgets across V2 file tools`。
+- [x] 搜索裁剪以完整match/snippet为单位，保持真实已扫描统计与已观察命中统计；增加明确的返回数量/responseTruncated。coverage描述扫描是否完成，responseTruncated描述响应是否完整，两者不要混用。错误+裁剪仍是错误，不被SEARCH_TRUNCATED掩盖。
+- [x] 搜索无游标时nextAction指导缩小path/query或提高预算；不能声称被裁掉的命中不存在。内容预算要包含给纯文本客户端的说明/命中内容。
+- [x] patch只裁剪可选diff预览/冗长文案，**不丢弃任何目标的执行状态、版本和失败效果**。所有会执行的目标必须留得下最小必要结果。
+- [x] 在任何mutation前，按各目标必要元数据和有限错误码，预留成功、回滚、unknown等最坏结果信封；必要结果放不下时，先返回RESULT_BUDGET_TOO_SMALL且effectState=none，文件字节零改变。
+- [x] 写入后不允许因为响应预算失败而重试、回滚、返回“未执行”，或把已执行目标放pending。实际诊断采用固定有界错误码/文案；预算只可压缩可选展示。最终出口再次验证始终<=max_bytes。
+- [x] 预览被裁剪而候选计算完整时可保持dry_run completed，但必须明确previewTruncated；不要把展示不全误报执行失败。
+- [x] 更新outputSchema/profile描述，确认新增参数仍参与现有审批指纹，不绕过授权。
+- [x] 提交：`fix: enforce final response budgets across V2 file tools`。
+
+**M4 实施记录（2026-10-27）：** V2 `fs_search`/`apply_patch_many` 增加可选 `max_bytes`（4096—262144，默认65536），legacy schema 拒绝该字段；响应返回实际 `max_bytes`、`responseTruncated`、搜索 `returnedFiles/returnedMatches`，patch diff 增加 `previewTruncated`。搜索按完整 match 前缀二分裁剪，coverage 与 responseTruncated 分离，错误 outcome 不被裁剪掩盖；patch 在任何 mutation 前用成功/失败 union skeleton 预留预算，不足时返回 `RESULT_BUDGET_TOO_SMALL` 且零写入，执行后只裁剪可选 diff/文案，所有目标状态和哈希保留。真实 MCP 测试覆盖中文 100×5 搜索的 4096/65536/262144 预算、20 文件 JSON 控制转义 dry_run 的三档预算、最小预算零写入和 `previewTruncated`；`file-contracts` 418 项、output-schema 303 项通过。
 
 ## M5. V2业务错误结构化与路径脱敏
 

@@ -129,6 +129,7 @@ export function summarizeEdits(
     bytesAfter: Buffer.byteLength(updated, "utf8"),
     linesBefore: countLines(original),
     linesAfter: countLines(updated),
-    preview: parts.join("\n").slice(0, MAX_PREVIEW_CHARS)
+    preview: parts.join("\n").slice(0, MAX_PREVIEW_CHARS),
+    previewTruncated: false
   };
 }

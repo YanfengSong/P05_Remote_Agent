@@ -1019,6 +1019,15 @@ try {
     dry_run: true,
     patches: [v2PatchArg]
   }).success);
+  check("patch schema: V2 max_bytes accepted", applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    max_bytes: READ_LIMITS.minMaxBytes,
+    patches: [v2PatchArg]
+  }).success);
+  check("patch schema: legacy rejects max_bytes", !applyPatchManyInputSchema.safeParse({
+    max_bytes: READ_LIMITS.minMaxBytes,
+    patches: [legacyPatchArg]
+  }).success);
   check("patch schema: V2 requires edits", !applyPatchManyInputSchema.safeParse({
     contract_version: 2,
     patches: [legacyPatchArg]
@@ -1912,6 +1921,15 @@ try {
     contract_version: 2,
     query: "needle",
     max_results: 10
+  }).success);
+  check("search schema: V2 max_bytes accepted", fsSearchInputSchema.safeParse({
+    contract_version: 2,
+    query: "needle",
+    max_bytes: READ_LIMITS.minMaxBytes
+  }).success);
+  check("search schema: legacy rejects max_bytes", !fsSearchInputSchema.safeParse({
+    query: "needle",
+    max_bytes: READ_LIMITS.minMaxBytes
   }).success);
   check("search schema: unknown contract rejected", !fsSearchInputSchema.safeParse({
     contract_version: 1,

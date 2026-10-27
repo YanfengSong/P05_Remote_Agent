@@ -13,7 +13,7 @@ import type {
   SearchStopReason,
   TextEdit
 } from "./file-contracts.js";
-import { FILE_CONTRACT_VERSION, PATCH_LIMITS, outcomeFor } from "./file-contracts.js";
+import { FILE_CONTRACT_VERSION, PATCH_LIMITS, READ_LIMITS, isOutcomeFailure, outcomeFor } from "./file-contracts.js";
 import { applyEditsToText, PatchEditError, summarizeEdits } from "./patch-edits.js";
 import { canonicalWriteKey, withWriteLocks } from "./file-write-lock.js";
 import {
@@ -22,6 +22,7 @@ import {
   validatePositiveFileLimit,
   writeAllAtStart
 } from "./file-io.js";
+import { toolResultBytes } from "./result-budget.js";
 
 /**
  * fs errors are returned to a remote client, so they are mapped to short messages: the
@@ -232,6 +233,7 @@ export type BatchCommitHooks = {
 
 export type PatchBatchV2Options = {
   dryRun?: boolean;
+  maxBytes?: number;
   hooks?: BatchCommitHooks;
 };
 
@@ -954,6 +956,14 @@ function patchOutcomeForCode(code: string): Outcome {
   return outcomeFor(code);
 }
 
+const PATCH_ERROR_MESSAGE_MAX = 512;
+
+function boundedPatchMessage(message: string): string {
+  return message.length <= PATCH_ERROR_MESSAGE_MAX
+    ? message
+    : message.slice(0, PATCH_ERROR_MESSAGE_MAX - 3) + "...";
+}
+
 function patchFailureFile(pathValue: string, code: string, message: string): PatchFileResult {
   return {
     path: pathValue,
@@ -962,34 +972,50 @@ function patchFailureFile(pathValue: string, code: string, message: string): Pat
     created: false,
     applied: false,
     errorCode: code,
-    error: message
+    error: boundedPatchMessage(message)
   };
 }
 
-function patchPreflightFailureResult(error: unknown, dryRun: boolean): PatchBatchResult {
+function patchPreflightFailureResult(
+  error: unknown,
+  dryRun: boolean,
+  maxBytes: number
+): PatchBatchResult {
   const known = error instanceof BatchOperationError ? error : undefined;
   const patchError = error instanceof PatchEditError ? error : undefined;
   const code = known?.code ?? patchError?.code ?? "WRITE_FAILED";
-  const message = known?.message ?? patchError?.message ?? "Could not prepare the patch batch.";
+  const message = boundedPatchMessage(
+    known?.message ?? patchError?.message ?? "Could not prepare the patch batch."
+  );
   const outcome = patchOutcomeForCode(code);
   const files = known?.targetPath
     ? [patchFailureFile(known.targetPath, code, message)]
     : [];
 
-  return {
+  const result: PatchBatchResult = {
     contract_version: FILE_CONTRACT_VERSION,
     status: outcome.status === "error" ? "error" : "rejected",
     outcome,
     dry_run: dryRun,
+    max_bytes: maxBytes,
+    responseTruncated: false,
     files,
     totalBytes: 0,
     successCount: 0,
     failureCount: files.length,
     error: message
   };
+  const contentText = renderPatchBatchContent(result);
+  if (toolResultBytes(result, contentText, true) > maxBytes) {
+    return patchBudgetFailure(maxBytes, dryRun);
+  }
+  return result;
 }
 
-function patchDryRunResult(prepared: PreparedBatchOperation[]): PatchBatchResult {
+function patchDryRunResult(
+  prepared: PreparedBatchOperation[],
+  maxBytes: number
+): PatchBatchResult {
   const files: PatchFileResult[] = prepared.map((operation) => ({
     path: operation.path,
     ok: true,
@@ -1011,6 +1037,8 @@ function patchDryRunResult(prepared: PreparedBatchOperation[]): PatchBatchResult
       nextAction: "Review the expected hash and diff, then submit with dry_run=false."
     },
     dry_run: true,
+    max_bytes: maxBytes,
+    responseTruncated: false,
     files,
     totalBytes: files.reduce((total, file) => total + file.bytes, 0),
     successCount: files.length,
@@ -1020,7 +1048,8 @@ function patchDryRunResult(prepared: PreparedBatchOperation[]): PatchBatchResult
 
 function patchCommitSuccessResult(
   results: BatchTextChangeResult[],
-  prepared: PreparedBatchOperation[]
+  prepared: PreparedBatchOperation[],
+  maxBytes: number
 ): PatchBatchResult {
   const files: PatchFileResult[] = results.map((result, index) => {
     const operation = prepared[index];
@@ -1045,6 +1074,8 @@ function patchCommitSuccessResult(
       nextAction: "Use each returned sha256 as the expected_sha256 for the next edit."
     },
     dry_run: false,
+    max_bytes: maxBytes,
+    responseTruncated: false,
     files,
     totalBytes: files.reduce((total, file) => total + file.bytes, 0),
     successCount: files.length,
@@ -1054,7 +1085,8 @@ function patchCommitSuccessResult(
 
 function patchCommitFailureResult(
   failure: BatchCommitFailure,
-  prepared: PreparedBatchOperation[]
+  prepared: PreparedBatchOperation[],
+  maxBytes: number
 ): PatchBatchResult {
   const unknown = new Set(failure.unknown);
   const rolledBack = new Set(failure.rolledBack);
@@ -1115,12 +1147,240 @@ function patchCommitFailureResult(
     status,
     outcome,
     dry_run: false,
+    max_bytes: maxBytes,
+    responseTruncated: false,
     files,
     totalBytes: 0,
     successCount: 0,
     failureCount: files.length,
-    error: failure.cause
+    error: boundedPatchMessage(failure.cause)
   };
+}
+
+function patchResultFits(result: PatchBatchResult, maxBytes: number): boolean {
+  const contentText = renderPatchBatchContent(result);
+  return toolResultBytes(result, contentText, isOutcomeFailure(result.outcome)) <= maxBytes;
+}
+
+export function renderPatchBatchContent(result: PatchBatchResult): string {
+  const parts: string[] = [
+    "V2 apply_patch_many: " +
+      result.status +
+      " (" +
+      result.outcome.code +
+      "), dry_run=" +
+      result.dry_run +
+      ", files=" +
+      result.files.length +
+      ", max_bytes=" +
+      result.max_bytes +
+      ", responseTruncated=" +
+      result.responseTruncated +
+      "."
+  ];
+
+  for (const file of result.files) {
+    if (file.ok) {
+      parts.push(
+        "--- " +
+          file.path +
+          " | " +
+          (result.dry_run ? "expected_sha256=" : "sha256=") +
+          file.sha256 +
+          " | bytes=" +
+          file.bytes +
+          " | applied=" +
+          file.applied +
+          " ---"
+      );
+      if (file.diff) {
+        parts.push(
+          "diff: " +
+            file.diff.edits +
+            " edit(s), lines " +
+            file.diff.linesBefore +
+            " -> " +
+            file.diff.linesAfter +
+            ", bytes " +
+            file.diff.bytesBefore +
+            " -> " +
+            file.diff.bytesAfter
+        );
+        if (file.diff.previewTruncated) {
+          parts.push("(diff preview truncated by max_bytes)");
+        } else {
+          parts.push(file.diff.preview);
+        }
+      }
+    } else {
+      parts.push(
+        "--- " + file.path + " | ERROR " + (file.errorCode ?? "WRITE_FAILED") + " ---"
+      );
+      parts.push(file.error ?? "Could not apply the patch.");
+    }
+  }
+
+  if (result.error) parts.push("error: " + result.error);
+  parts.push(
+    "outcome: " +
+      result.outcome.status +
+      "/" +
+      result.outcome.effectState +
+      "/" +
+      result.outcome.retry +
+      " " +
+      result.outcome.code +
+      ". " +
+      result.outcome.nextAction
+  );
+  return parts.join("\n");
+}
+
+function patchBudgetFailure(maxBytes: number, dryRun: boolean): PatchBatchResult {
+  const result: PatchBatchResult = {
+    contract_version: FILE_CONTRACT_VERSION,
+    status: "rejected",
+    outcome: outcomeFor("RESULT_BUDGET_TOO_SMALL"),
+    dry_run: dryRun,
+    max_bytes: maxBytes,
+    responseTruncated: false,
+    files: [],
+    totalBytes: 0,
+    successCount: 0,
+    failureCount: 0,
+    error: "Patch result budget is too small; no files were changed."
+  };
+  const contentText = renderPatchBatchContent(result);
+  if (toolResultBytes(result, contentText, true) > maxBytes) {
+    throw new BatchOperationError(
+      "RESULT_BUDGET_TOO_SMALL",
+      "The response budget is too small for the error envelope."
+    );
+  }
+  return result;
+}
+
+function patchBudgetSkeleton(
+  prepared: PreparedBatchOperation[],
+  dryRun: boolean,
+  maxBytes: number
+): { result: PatchBatchResult; contentText: string } {
+  const files: PatchFileResult[] = prepared.map((operation) => ({
+    path: operation.path,
+    ok: true,
+    bytes: operation.updatedBuffer.byteLength,
+    sha256: operation.sha256,
+    ...(operation.originalSha256 ? { original_sha256: operation.originalSha256 } : {}),
+    created: false,
+    applied: !dryRun,
+    errorCode: "ROLLBACK_UNCONFIRMED",
+    error: "E".repeat(PATCH_ERROR_MESSAGE_MAX)
+  }));
+  const result: PatchBatchResult = {
+    contract_version: FILE_CONTRACT_VERSION,
+    status: "rolled_back",
+    outcome: {
+      status: "completed",
+      effectState: "rolled_back",
+      retry: "never_automatic",
+      code: "ROLLBACK_UNCONFIRMED",
+      nextAction: "Inspect the listed files before retrying; do not assume either version is current."
+    },
+    dry_run: dryRun,
+    max_bytes: maxBytes,
+    responseTruncated: true,
+    files,
+    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+    successCount: files.length,
+    failureCount: files.length,
+    error: "E".repeat(PATCH_ERROR_MESSAGE_MAX)
+  };
+  const parts = [
+    "V2 apply_patch_many: rolled_back (ROLLBACK_UNCONFIRMED), dry_run=" +
+      dryRun +
+      ", files=" +
+      files.length +
+      ", max_bytes=" +
+      maxBytes +
+      ", responseTruncated=true."
+  ];
+  for (const file of files) {
+    parts.push(
+      "--- " +
+        file.path +
+        " | sha256=" +
+        file.sha256 +
+        " | bytes=" +
+        file.bytes +
+        " | ERROR ROLLBACK_UNCONFIRMED ---"
+    );
+    parts.push("E".repeat(PATCH_ERROR_MESSAGE_MAX));
+  }
+  parts.push("error: " + "E".repeat(PATCH_ERROR_MESSAGE_MAX));
+  parts.push(
+    "outcome: completed/rolled_back/never_automatic ROLLBACK_UNCONFIRMED. " +
+      result.outcome.nextAction
+  );
+  return { result, contentText: parts.join("\n") };
+}
+
+function patchBudgetSkeletonFits(
+  prepared: PreparedBatchOperation[],
+  dryRun: boolean,
+  maxBytes: number
+): boolean {
+  const skeleton = patchBudgetSkeleton(prepared, dryRun, maxBytes);
+  return toolResultBytes(skeleton.result, skeleton.contentText, true) <= maxBytes;
+}
+
+export function finalizePatchResponse(
+  result: PatchBatchResult,
+  maxBytes: number
+): { result: PatchBatchResult; contentText: string } {
+  let current: PatchBatchResult = {
+    ...result,
+    max_bytes: maxBytes
+  };
+  let contentText = renderPatchBatchContent(current);
+  if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+    return { result: current, contentText };
+  }
+
+  if (current.files.some((file) => file.diff !== undefined)) {
+    current = {
+      ...current,
+      responseTruncated: true,
+      files: current.files.map((file) => file.diff
+        ? {
+            ...file,
+            diff: {
+              ...file.diff,
+              preview: "",
+              previewTruncated: true
+            }
+          }
+        : file)
+    };
+    contentText = renderPatchBatchContent(current);
+    if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+      return { result: current, contentText };
+    }
+
+    current = {
+      ...current,
+      responseTruncated: true,
+      files: current.files.map(({ diff: _diff, ...file }) => file)
+    };
+    contentText = renderPatchBatchContent(current);
+    if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+      return { result: current, contentText };
+    }
+  }
+
+  throw new BatchOperationError(
+    "RESULT_BUDGET_TOO_SMALL",
+    "Patch response budget was exceeded after execution."
+  );
 }
 
 export async function writeTextFilesBatch(
@@ -1168,6 +1428,7 @@ export async function patchTextFilesBatchV2(
   options: PatchBatchV2Options = {}
 ): Promise<PatchBatchResult> {
   const dryRun = options.dryRun === true;
+  const maxBytes = options.maxBytes ?? READ_LIMITS.defaultMaxBytes;
 
   if (entries.length < 1 || entries.length > MAX_BATCH_FILE_COUNT) {
     return patchPreflightFailureResult(
@@ -1175,7 +1436,8 @@ export async function patchTextFilesBatchV2(
         "INVALID_REQUEST",
         "Batch operation requires 1 to " + MAX_BATCH_FILE_COUNT + " files."
       ),
-      dryRun
+      dryRun,
+      maxBytes
     );
   }
 
@@ -1187,16 +1449,30 @@ export async function patchTextFilesBatchV2(
     includeDiff: dryRun
   }));
 
+  let actionStarted = false;
   try {
     return await withBatchLocks(operations, baseDir, async (prepared) => {
-      if (dryRun) return patchDryRunResult(prepared);
+      actionStarted = true;
+      if (!patchBudgetSkeletonFits(prepared, dryRun, maxBytes)) {
+        return patchBudgetFailure(maxBytes, dryRun);
+      }
+      if (dryRun) {
+        return finalizePatchResponse(
+          patchDryRunResult(prepared, maxBytes),
+          maxBytes
+        ).result;
+      }
       const outcome = await commitBatchOperationsDetailed(prepared, options.hooks);
-      return outcome.ok
-        ? patchCommitSuccessResult(outcome.results, prepared)
-        : patchCommitFailureResult(outcome.failure, prepared);
+      const result = outcome.ok
+        ? patchCommitSuccessResult(outcome.results, prepared, maxBytes)
+        : patchCommitFailureResult(outcome.failure, prepared, maxBytes);
+      return finalizePatchResponse(result, maxBytes).result;
     });
   } catch (error) {
-    return patchPreflightFailureResult(error, dryRun);
+    // A failure raised after the action starts may follow a mutation. Never
+    // translate that into a preflight "effect none" response.
+    if (actionStarted) throw error;
+    return patchPreflightFailureResult(error, dryRun, maxBytes);
   }
 }
 
@@ -1229,6 +1505,10 @@ export type TextSearchV2Result = TextSearchResult & {
   contract_version: 2;
   coverage: SearchCoverage;
   outcome: Outcome;
+  max_bytes?: number;
+  responseTruncated?: boolean;
+  returnedFiles?: number;
+  returnedMatches?: number;
 };
 
 /** Test-only read injection; MCP handlers never pass this. */
@@ -1472,4 +1752,160 @@ export async function searchTextFilesV2(
     coverage,
     outcome
   };
+}
+
+export function renderSearchContent(result: TextSearchV2Result): string {
+  const parts: string[] = [
+    "Search result: scanned=" + result.scannedFiles +
+      ", matchedFiles=" + result.matchedFiles +
+      ", matches=" + result.matchCount +
+      ", skipped=" + result.skippedFiles +
+      ", truncated=" + result.truncated + ".",
+    "Coverage: complete=" + result.coverage.complete +
+      ", stopReason=" + result.coverage.stopReason +
+      ", scannedFiles=" + result.coverage.scannedFiles +
+      ", skippedByReason=" + JSON.stringify(result.coverage.skippedByReason) + ".",
+    "Response: returnedFiles=" + (result.returnedFiles ?? result.results.length) +
+      ", returnedMatches=" + (
+        result.returnedMatches ??
+        result.results.reduce((total, file) => total + file.matches.length, 0)
+      ) +
+      ", responseTruncated=" + (result.responseTruncated === true) + "."
+  ];
+
+  for (const file of result.results) {
+    for (const match of file.matches) {
+      parts.push(
+        file.path + ":" + match.line + " (" + match.occurrences + "): " + match.snippet
+      );
+    }
+  }
+
+  parts.push(
+    "outcome: " + result.outcome.status + "/" + result.outcome.effectState +
+      "/" + result.outcome.retry + " " + result.outcome.code + ". " +
+      result.outcome.nextAction
+  );
+  return parts.join("\n");
+}
+
+function searchResultFits(result: TextSearchV2Result, maxBytes: number): boolean {
+  return toolResultBytes(
+    result,
+    renderSearchContent(result),
+    isOutcomeFailure(result.outcome)
+  ) <= maxBytes;
+}
+
+export function finalizeSearchResponse(
+  result: TextSearchV2Result,
+  maxBytes: number
+): { result: TextSearchV2Result; contentText: string } {
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < READ_LIMITS.minMaxBytes ||
+    maxBytes > READ_LIMITS.maxMaxBytes
+  ) {
+    throw new Error("Search response max_bytes is outside the supported range.");
+  }
+
+  const returnedMatches = (files: readonly TextSearchFileResult[]): number =>
+    files.reduce((total, file) => total + file.matches.length, 0);
+
+  let current: TextSearchV2Result = {
+    ...result,
+    max_bytes: maxBytes,
+    responseTruncated: false,
+    returnedFiles: result.results.length,
+    returnedMatches: returnedMatches(result.results)
+  };
+  let contentText = renderSearchContent(current);
+  if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+    return { result: current, contentText };
+  }
+
+  const results = result.results.map((file) => ({
+    ...file,
+    matches: [...file.matches]
+  }));
+  const totalMatches = results.reduce((total, file) => total + file.matches.length, 0);
+  const withMatchCount = (count: number): TextSearchV2Result => {
+    let remaining = count;
+    const kept: TextSearchFileResult[] = [];
+    for (const file of results) {
+      if (remaining <= 0) break;
+      const keep = Math.min(remaining, file.matches.length);
+      if (keep === 0) continue;
+      kept.push({
+        ...file,
+        matches: file.matches.slice(0, keep),
+        matchesTruncated: keep < file.matches.length
+      });
+      remaining -= keep;
+    }
+    return {
+      ...result,
+      max_bytes: maxBytes,
+      responseTruncated: true,
+      results: kept,
+      returnedFiles: kept.length,
+      returnedMatches: count,
+      outcome: result.outcome.code === "SEARCH_COMPLETE"
+        ? outcomeFor("SEARCH_TRUNCATED")
+        : result.outcome
+    };
+  };
+
+  let low = 1;
+  let high = Math.max(0, totalMatches - 1);
+  let best = 0;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = withMatchCount(middle);
+    const candidateText = renderSearchContent(candidate);
+    if (
+      toolResultBytes(candidate, candidateText, isOutcomeFailure(candidate.outcome)) <= maxBytes
+    ) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (best > 0) {
+    const candidate = withMatchCount(best);
+    const candidateText = renderSearchContent(candidate);
+    if (
+      toolResultBytes(candidate, candidateText, isOutcomeFailure(candidate.outcome)) <= maxBytes
+    ) {
+      return { result: candidate, contentText: candidateText };
+    }
+  }
+
+  current = {
+    ...result,
+    max_bytes: maxBytes,
+    responseTruncated: true,
+    results: [],
+    returnedFiles: 0,
+    returnedMatches: 0,
+    outcome: result.outcome.code === "SEARCH_COMPLETE"
+      ? outcomeFor("SEARCH_TRUNCATED")
+      : result.outcome
+  };
+  contentText = renderSearchContent(current);
+  if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+    return { result: current, contentText };
+  }
+
+  current = {
+    ...current,
+    outcome: outcomeFor("RESULT_BUDGET_TOO_SMALL")
+  };
+  contentText = renderSearchContent(current);
+  if (toolResultBytes(current, contentText, true) <= maxBytes) {
+    return { result: current, contentText };
+  }
+
+  throw new Error("Search response budget was exceeded after trimming.");
 }

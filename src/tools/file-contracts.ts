@@ -35,6 +35,7 @@ export type PatchDiffSummary = {
   linesBefore: number;
   linesAfter: number;
   preview: string;
+  previewTruncated?: boolean;
 };
 
 export type PatchFileResult = {
@@ -63,6 +64,8 @@ export type PatchBatchResult = {
   status: PatchBatchStatus;
   outcome: Outcome;
   dry_run: boolean;
+  max_bytes: number;
+  responseTruncated: boolean;
   files: PatchFileResult[];
   totalBytes: number;
   successCount: number;
@@ -457,6 +460,7 @@ export const textEditSchema = z.object({
 export const applyPatchManyInputSchema = z.object({
   contract_version: z.literal(FILE_CONTRACT_VERSION).optional(),
   dry_run: z.boolean().optional(),
+  max_bytes: z.number().int().min(READ_LIMITS.minMaxBytes).max(READ_LIMITS.maxMaxBytes).optional(),
   patches: z.array(z.object({
     path: z.string().min(1),
     expected_sha256: sha256Schema,
@@ -499,6 +503,13 @@ export const applyPatchManyInputSchema = z.object({
       message: "dry_run is only valid with contract_version: 2."
     });
   }
+  if (value.max_bytes !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["max_bytes"],
+      message: "max_bytes is only valid with contract_version: 2."
+    });
+  }
   for (const [index, patch] of value.patches.entries()) {
     if (patch.old_text === undefined || patch.new_text === undefined) {
       context.addIssue({
@@ -523,7 +534,8 @@ const patchDiffSchema = z.object({
   bytesAfter: z.number().int().nonnegative(),
   linesBefore: z.number().int().nonnegative(),
   linesAfter: z.number().int().nonnegative(),
-  preview: z.string()
+  preview: z.string(),
+  previewTruncated: z.boolean().optional()
 });
 
 const patchFileResultSchema = z.object({
@@ -549,6 +561,8 @@ export const applyPatchManyOutputSchema = z.object({
   contract_version: z.literal(FILE_CONTRACT_VERSION).optional(),
   dry_run: z.boolean().optional(),
   outcome: outcomeSchema.optional(),
+  max_bytes: z.number().int().positive().optional(),
+  responseTruncated: z.boolean().optional(),
   error: z.string().optional()
 });
 
@@ -564,7 +578,16 @@ export const fsSearchInputSchema = z.object({
   query: z.string().min(1).max(500),
   path: z.string().min(1).optional(),
   case_sensitive: z.boolean().optional(),
-  max_results: z.number().int().min(1).max(100).optional()
+  max_results: z.number().int().min(1).max(100).optional(),
+  max_bytes: z.number().int().min(READ_LIMITS.minMaxBytes).max(READ_LIMITS.maxMaxBytes).optional()
+}).superRefine((value, context) => {
+  if (value.contract_version !== FILE_CONTRACT_VERSION && value.max_bytes !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["max_bytes"],
+      message: "max_bytes is only valid with contract_version: 2."
+    });
+  }
 });
 
 const searchMatchSchema = z.object({
@@ -593,7 +616,11 @@ export const fsSearchOutputSchema = z.object({
   results: z.array(searchFileResultSchema),
   contract_version: z.literal(FILE_CONTRACT_VERSION).optional(),
   coverage: searchCoverageSchema.optional(),
-  outcome: outcomeSchema.optional()
+  outcome: outcomeSchema.optional(),
+  max_bytes: z.number().int().positive().optional(),
+  responseTruncated: z.boolean().optional(),
+  returnedFiles: z.number().int().nonnegative().optional(),
+  returnedMatches: z.number().int().nonnegative().optional()
 });
 
 const readItemSchema = z.object({

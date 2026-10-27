@@ -1,77 +1,11 @@
 import * as z from "zod/v4";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { listDirectory, patchTextFile, patchTextFilesBatch, patchTextFilesBatchV2, readTextFile, searchTextFiles, searchTextFilesV2, writeTextFile, writeTextFilesBatch } from "./files.js";
-import { applyPatchManyInputSchema, applyPatchManyOutputSchema, fsReadManyInputSchema, fsReadManyOutputSchema, fsSearchInputSchema, fsSearchOutputSchema, isOutcomeFailure, READ_LIMITS, type PatchBatchResult } from "./file-contracts.js";
+import { listDirectory, patchTextFile, patchTextFilesBatch, patchTextFilesBatchV2, finalizePatchResponse, finalizeSearchResponse, readTextFile, searchTextFiles, searchTextFilesV2, writeTextFile, writeTextFilesBatch } from "./files.js";
+import { applyPatchManyInputSchema, applyPatchManyOutputSchema, fsReadManyInputSchema, fsReadManyOutputSchema, fsSearchInputSchema, fsSearchOutputSchema, isOutcomeFailure, READ_LIMITS } from "./file-contracts.js";
 import { readManyRanges } from "./read-ranges.js";
 import { structuredResult } from "./result.js";
 import { assertWorkspaceWriteTarget } from "./write-target.js";
-
-function renderPatchBatchContent(result: PatchBatchResult): string {
-  const parts: string[] = [
-    "V2 apply_patch_many: " +
-      result.status +
-      " (" +
-      result.outcome.code +
-      "), dry_run=" +
-      result.dry_run +
-      ", files=" +
-      result.files.length +
-      "."
-  ];
-
-  for (const file of result.files) {
-    if (file.ok) {
-      parts.push(
-        "--- " +
-          file.path +
-          " | " +
-          (result.dry_run ? "expected_sha256=" : "sha256=") +
-          file.sha256 +
-          " | bytes=" +
-          file.bytes +
-          " | applied=" +
-          file.applied +
-          " ---"
-      );
-      if (file.diff) {
-        parts.push(
-          "diff: " +
-            file.diff.edits +
-            " edit(s), lines " +
-            file.diff.linesBefore +
-            " -> " +
-            file.diff.linesAfter +
-            ", bytes " +
-            file.diff.bytesBefore +
-            " -> " +
-            file.diff.bytesAfter
-        );
-        parts.push(file.diff.preview);
-      }
-    } else {
-      parts.push(
-        "--- " + file.path + " | ERROR " + (file.errorCode ?? "WRITE_FAILED") + " ---"
-      );
-      parts.push(file.error ?? "Could not apply the patch.");
-    }
-  }
-
-  if (result.error) parts.push("error: " + result.error);
-  parts.push(
-    "outcome: " +
-      result.outcome.status +
-      "/" +
-      result.outcome.effectState +
-      "/" +
-      result.outcome.retry +
-      " " +
-      result.outcome.code +
-      ". " +
-      result.outcome.nextAction
-  );
-  return parts.join("\n");
-}
 
 export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceManager): void {
   exposer.expose("fs_read", {
@@ -159,37 +93,25 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("fs_search", {
     description:
-      "Search literal text recursively inside the active workspace. Skips protected paths, symbolic links, binary/oversized files and common generated directories. Legacy requests return bounded line snippets. V2 requests (contract_version:2) additionally return coverage {complete, stopReason, scannedFiles, skippedByReason} and an outcome; limit stops are partial/safe, while unreadable-path I/O errors are reported as errors.",
+      "Search literal text recursively inside the active workspace. Skips protected paths, symbolic links, binary/oversized files and common generated directories. Legacy requests return bounded line snippets. V2 requests (contract_version:2) additionally return coverage {complete, stopReason, scannedFiles, skippedByReason}, an outcome and a response budget; max_bytes defaults to 64 KiB with a 256 KiB hard cap. Limit stops are partial/safe, while unreadable-path I/O errors are reported as errors.",
     inputSchema: fsSearchInputSchema,
     outputSchema: fsSearchOutputSchema
   }, async (input) => {
     const workspaceRoot = workspaceManager.currentRoot();
 
     if (input.contract_version === 2) {
+      const maxBytes = input.max_bytes ?? READ_LIMITS.defaultMaxBytes;
       const result = await searchTextFilesV2(
         input.query,
         input.path ?? ".",
         workspaceRoot,
         { caseSensitive: input.case_sensitive, maxResults: input.max_results }
       );
-      const summary = [
-        "Search result: scanned=" + result.scannedFiles +
-          ", matchedFiles=" + result.matchedFiles +
-          ", matches=" + result.matchCount +
-          ", skipped=" + result.skippedFiles +
-          ", truncated=" + result.truncated + ".",
-        "Coverage: complete=" + result.coverage.complete +
-          ", stopReason=" + result.coverage.stopReason +
-          ", scannedFiles=" + result.coverage.scannedFiles +
-          ", skippedByReason=" + JSON.stringify(result.coverage.skippedByReason) + ".",
-        "outcome: " + result.outcome.status + "/" + result.outcome.effectState +
-          "/" + result.outcome.retry + " " + result.outcome.code + ". " +
-          result.outcome.nextAction
-      ].join("\n");
+      const finalized = finalizeSearchResponse(result, maxBytes);
       return structuredResult(
-        result,
-        summary,
-        isOutcomeFailure(result.outcome)
+        finalized.result,
+        finalized.contentText,
+        isOutcomeFailure(finalized.result.outcome)
       );
     }
 
@@ -310,7 +232,7 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("apply_patch_many", {
     description:
-      "Apply exact text patches to up to 20 independent files in one call. Legacy form uses one old_text/new_text pair per file. V2 form {contract_version:2, dry_run?, patches:[{path,expected_sha256,edits:[{old_text,new_text}]}]} locates 1-100 edits per file against the same reviewed revision, rejects ambiguous or overlapping edits, and preflights the whole batch before writing. dry_run returns the expected new hashes and a bounded diff without writing. Ordinary write failures trigger rollback; files changed externally during rollback are preserved and reported as effect unknown.",
+      "Apply exact text patches to up to 20 independent files in one call. Legacy form uses one old_text/new_text pair per file. V2 form {contract_version:2, dry_run?, max_bytes?, patches:[{path,expected_sha256,edits:[{old_text,new_text}]}]} locates 1-100 edits per file against the same reviewed revision, rejects ambiguous or overlapping edits, and preflights the whole batch before writing. dry_run returns the expected new hashes and a bounded diff without writing. The whole V2 MCP result is bounded by max_bytes (default 64 KiB, hard cap 256 KiB); optional diff previews are trimmed before any target status/hash is removed. Ordinary write failures trigger rollback; files changed externally during rollback are preserved and reported as effect unknown.",
     inputSchema: applyPatchManyInputSchema,
     outputSchema: applyPatchManyOutputSchema
   }, async (input) => {
@@ -331,13 +253,16 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
       for (const patch of v2Patches) {
         await assertWorkspaceWriteTarget(patch.path, workspaceRoot);
       }
+      const maxBytes = input.max_bytes ?? READ_LIMITS.defaultMaxBytes;
       const result = await patchTextFilesBatchV2(v2Patches, workspaceRoot, {
-        dryRun: input.dry_run === true
+        dryRun: input.dry_run === true,
+        maxBytes
       });
+      const finalized = finalizePatchResponse(result, maxBytes);
       return structuredResult(
-        result,
-        renderPatchBatchContent(result),
-        isOutcomeFailure(result.outcome)
+        finalized.result,
+        finalized.contentText,
+        isOutcomeFailure(finalized.result.outcome)
       );
     }
 
