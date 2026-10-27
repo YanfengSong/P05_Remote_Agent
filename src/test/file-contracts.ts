@@ -169,7 +169,7 @@ const {
 } = await import("../tools/read-ranges.js");
 const { serializedBytes, toolResultBytes } = await import("../tools/result-budget.js");
 const { PatchEditError, applyEditsToText, summarizeEdits } = await import("../tools/patch-edits.js");
-const { withWriteLocks } = await import("../tools/file-write-lock.js");
+const { withWriteLocks, canonicalWriteKey } = await import("../tools/file-write-lock.js");
 const { config } = await import("../config.js");
 const {
   patchTextFile,
@@ -1711,6 +1711,99 @@ try {
     } finally {
       mutableFs.open = originalOpen;
     }
+  }
+
+  // ---------------------------------------------------------------- M3 canonical lock keys / dry-run lock
+  const lockReal = path.join(FIXTURE, "lock-real");
+  const lockAlias = path.join(FIXTURE, "lock-alias");
+  await fs.mkdir(lockReal, { recursive: true });
+  if (process.platform === "win32") {
+    execFileSync("cmd", ["/c", "mklink", "/J", lockAlias, lockReal], { stdio: "pipe" });
+  } else {
+    await fs.symlink(lockReal, lockAlias, "dir");
+  }
+  const aliasTarget = path.join(lockAlias, "new", "nested", "file.txt");
+  const realTarget = path.join(lockReal, "new", "nested", "file.txt");
+  const missingKeys = [
+    await canonicalWriteKey(aliasTarget),
+    await canonicalWriteKey(realTarget)
+  ];
+  checkEqual("M3: aliases share a key with missing ancestors", new Set(missingKeys).size, 1);
+  await fs.mkdir(path.dirname(realTarget), { recursive: true });
+  checkEqual(
+    "M3: aliases keep the same key after creating ancestors",
+    await canonicalWriteKey(aliasTarget),
+    await canonicalWriteKey(realTarget)
+  );
+
+  const sameKey = await canonicalWriteKey(realTarget);
+  let inside = 0;
+  let maxInside = 0;
+  const lockAction = () => withWriteLocks([sameKey], async () => {
+    inside += 1;
+    maxInside = Math.max(maxInside, inside);
+    await new Promise((resolve) => setImmediate(resolve));
+    inside -= 1;
+  });
+  await Promise.all([lockAction(), lockAction()]);
+  checkEqual("M3: same canonical key serializes critical sections", maxInside, 1);
+
+  try {
+    await withWriteLocks([sameKey], async () => {
+      throw new Error("synthetic lock action failure");
+    });
+  } catch {
+    // expected
+  }
+  let reacquired = false;
+  await withWriteLocks([sameKey], async () => {
+    reacquired = true;
+  });
+  check("M3: lock is released after an action failure", reacquired);
+
+  await writeFixture("m3-dry.txt", "value = 0;\n");
+  const dryHash = sha256(Buffer.from("value = 0;\n", "utf8"));
+  const dryKey = await canonicalWriteKey(path.join(FIXTURE, "m3-dry.txt"));
+  let releaseLock!: () => void;
+  const lockGate = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  let enteredLock!: () => void;
+  const lockEntered = new Promise<void>((resolve) => {
+    enteredLock = resolve;
+  });
+  const holder = withWriteLocks([dryKey], async () => {
+    enteredLock();
+    await lockGate;
+  });
+  await lockEntered;
+  const originalDryOpen = mutableFs.open;
+  const dryState = { opened: false };
+  const dryTarget = path.resolve(FIXTURE, "m3-dry.txt");
+  mutableFs.open = async (file, flags, ...args) => {
+    if (path.resolve(String(file)) === dryTarget) dryState.opened = true;
+    return originalDryOpen.call(fs, file, flags, ...args);
+  };
+  try {
+    const dryPromise = patchTextFilesBatchV2(
+      [{
+        path: "m3-dry.txt",
+        expectedSha256: dryHash,
+        edits: [{ old_text: "0", new_text: "1" }]
+      }],
+      FIXTURE,
+      { dryRun: true }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    check("M3: dry_run waits for the shared lock", dryState.opened === false);
+    releaseLock();
+    await holder;
+    const dry = await dryPromise;
+    check("M3: dry_run completes after the lock is released", dryState.opened === true);
+    checkEqual("M3: dry_run result remains dry_run", dry.status, "dry_run");
+  } finally {
+    mutableFs.open = originalDryOpen;
+    releaseLock();
   }
 
   // ---------------------------------------------------------------- search coverage

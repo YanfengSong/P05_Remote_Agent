@@ -154,7 +154,7 @@ while (offset < bytes.length) {
 **问题：** E7；dry_run稳定性改进。
 **Files：** file-write-lock.ts、files.ts、file-contracts测试。
 
-- [ ] 用临时内部junction/symlink建立 real 和 alias，两级父目录缺失；证明锁key相同。加入受控barrier测试，两个key上的临界区不能重叠，不以时间sleep判断。
+- [x] 用临时内部junction/symlink建立 real 和 alias，两级父目录缺失；证明锁key相同。加入受控barrier测试，两个key上的临界区不能重叠，不以时间sleep判断。
 ```ts
 assert.equal(
   await canonicalWriteKey(path.join(root, "alias/new/nested/file.txt")),
@@ -164,11 +164,13 @@ assert.equal(maxConcurrentInCriticalSection, 1);
 ```
 maxConcurrentInCriticalSection 由实际进入/退出锁回调累计。
 
-- [ ] canonicalWriteKey 逐级寻找最近存在的祖先，对其realpath，再按原序拼回缺失段；Windows保持大小写规范化。只有ENOENT/ENOTDIR等符合“尚不存在”的情况可向上解析，EACCES/循环链接/无法解析要失败关闭。
-- [ ] 批量先无副作用做策略与key解析，排序获取锁；锁内再执行权威预检、读取与生成候选。dry_run也在同一临界区内生成结果；commit复用已经持有的锁，避免重复获取死锁。
-- [ ] 锁内发现路径解析结果改变则拒绝/释放重试，不边持有旧key边随机获取新key。先保持一套清晰的锁所有权，不能让legacy与V2分别有自己的Map。
-- [ ] 验证四个写入口、重复目标、异常释放、反向多路径请求和dry_run并发。外部进程仍不受此锁约束。
-- [ ] 提交：`fix: canonicalize missing ancestors for shared file locks`。
+- [x] canonicalWriteKey 逐级寻找最近存在的祖先，对其realpath，再按原序拼回缺失段；Windows保持大小写规范化。只有ENOENT/ENOTDIR等符合“尚不存在”的情况可向上解析，EACCES/循环链接/无法解析要失败关闭。
+- [x] 批量先无副作用做策略与key解析，排序获取锁；锁内再执行权威预检、读取与生成候选。dry_run也在同一临界区内生成结果；commit复用已经持有的锁，避免重复获取死锁。
+- [x] 锁内发现路径解析结果改变则拒绝/释放重试，不边持有旧key边随机获取新key。先保持一套清晰的锁所有权，不能让legacy与V2分别有自己的Map。
+- [x] 验证四个写入口、重复目标、异常释放、反向多路径请求和dry_run并发。外部进程仍不受此锁约束。
+- [x] 提交：`fix: canonicalize missing ancestors for shared file locks`。
+
+**M3 实施记录（2026-10-27）：** `canonicalWriteKey` 改为逐级 realpath 最近存在祖先并拼回缺失段，ENOENT/ENOTDIR 才继续，其他错误失败关闭；新增 alias/real 两级缺失父目录 key 相等、同 key barrier、异常释放和 dry_run 等待共享锁测试。批量 legacy/V2 都通过同一个 `withBatchLocks` 先解析 key、排序加锁，再在锁内做权威预检/读取/候选；commit 复用已持有锁，不再二次获取。`file-contracts` 414 项检查通过。
 
 ## M4. 将 R03 落实到 search 与 patch
 

@@ -8,27 +8,39 @@ const lockTails = new Map<string, Promise<void>>();
 /**
  * Return a stable in-process lock key for one resolved write target.
  *
- * Existing files use their real path, so a symlink and its target share a lock.
- * Missing files use the real parent directory plus the requested basename. If
- * even the parent is missing, the resolved spelling is the best available key.
- * Windows comparisons are case-insensitive.
+ * Resolve the nearest existing ancestor with realpath, then append the missing
+ * path segments in their original order. This makes an alias and its real path
+ * share a key even before intermediate directories exist. Only ENOENT/ENOTDIR
+ * mean "not created yet"; permission failures, link loops and every other
+ * resolution error fail closed.
  */
 export async function canonicalWriteKey(safePath: string): Promise<string> {
-  let canonical = path.resolve(safePath);
+  const resolved = path.resolve(safePath);
+  const missing: string[] = [];
+  let current = resolved;
 
-  try {
-    canonical = await fs.realpath(safePath);
-  } catch {
+  for (;;) {
     try {
-      const parent = await fs.realpath(path.dirname(safePath));
-      canonical = path.join(parent, path.basename(safePath));
-    } catch {
-      // Keep the resolved spelling. The actual write will report a useful error.
+      const real = await fs.realpath(current);
+      const canonical = missing.length === 0
+        ? real
+        : path.join(real, ...missing.reverse());
+      return process.platform === "win32"
+        ? path.resolve(canonical).toLowerCase()
+        : path.resolve(canonical);
+    } catch (error) {
+      const code = (error as { code?: string })?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        throw new Error("Could not resolve the write target path.");
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw new Error("Could not resolve the write target path.");
+      }
+      missing.push(path.basename(current));
+      current = parent;
     }
   }
-
-  const resolved = path.resolve(canonical);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 async function acquire(key: string): Promise<Release> {

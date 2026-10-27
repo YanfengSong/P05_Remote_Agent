@@ -623,6 +623,63 @@ async function prepareBatchOperations(
   return prepared;
 }
 
+async function resolveBatchLockKeys(
+  operations: readonly BatchOperation[],
+  baseDir: string
+): Promise<string[]> {
+  const keys: string[] = [];
+  for (const operation of operations) {
+    let safePath: string;
+    try {
+      safePath = await assertAccessiblePath(operation.path, "write", baseDir, baseDir);
+    } catch (error) {
+      throw new BatchOperationError(
+        "PATH_REFUSED",
+        safeBatchError(error, "Write target is not allowed."),
+        operation.path
+      );
+    }
+    try {
+      keys.push(await canonicalWriteKey(safePath));
+    } catch {
+      throw new BatchOperationError(
+        "PATH_REFUSED",
+        "Batch target " + operation.path + ": write target path could not be resolved.",
+        operation.path
+      );
+    }
+  }
+  return keys;
+}
+
+async function withBatchLocks<T>(
+  operations: readonly BatchOperation[],
+  baseDir: string,
+  action: (prepared: PreparedBatchOperation[]) => Promise<T>
+): Promise<T> {
+  const keys = await resolveBatchLockKeys(operations, baseDir);
+  return withWriteLocks(keys, async () => {
+    const prepared = await prepareBatchOperations([...operations], baseDir);
+    if (prepared.length !== keys.length) {
+      throw new BatchOperationError(
+        "PATH_REFUSED",
+        "Batch target set changed before locking; retry."
+      );
+    }
+    for (let index = 0; index < prepared.length; index += 1) {
+      if (prepared[index]!.canonicalKey !== keys[index]) {
+        throw new BatchOperationError(
+          "PATH_REFUSED",
+          "Batch target " + prepared[index]!.path +
+            ": path resolution changed before locking; retry.",
+          prepared[index]!.path
+        );
+      }
+    }
+    return action(prepared);
+  });
+}
+
 async function commitBatchOperationsDetailed(
   prepared: PreparedBatchOperation[],
   hooks?: BatchCommitHooks
@@ -885,13 +942,10 @@ async function commitBatchOperationsDetailed(
   }
 }
 
-async function commitBatchOrThrow(
+async function commitBatchOrThrowHeld(
   prepared: PreparedBatchOperation[]
 ): Promise<BatchTextChangeResult[]> {
-  const outcome = await withWriteLocks(
-    prepared.map((operation) => operation.canonicalKey),
-    () => commitBatchOperationsDetailed(prepared)
-  );
+  const outcome = await commitBatchOperationsDetailed(prepared);
   if (outcome.ok) return outcome.results;
   throw new Error(outcome.failure.message);
 }
@@ -1073,32 +1127,34 @@ export async function writeTextFilesBatch(
   entries: BatchWriteInput[],
   baseDir = config.defaultCwd
 ): Promise<BatchTextChangeResult[]> {
-  const prepared = await prepareBatchOperations(
-    entries.map((entry) => ({
-      kind: "write" as const,
-      path: entry.path,
-      content: entry.content,
-      ...(entry.expectedSha256 ? { expectedSha256: entry.expectedSha256 } : {})
-    })),
-    baseDir
+  const operations: BatchOperation[] = entries.map((entry) => ({
+    kind: "write" as const,
+    path: entry.path,
+    content: entry.content,
+    ...(entry.expectedSha256 ? { expectedSha256: entry.expectedSha256 } : {})
+  }));
+  return withBatchLocks(
+    operations,
+    baseDir,
+    (prepared) => commitBatchOrThrowHeld(prepared)
   );
-  return commitBatchOrThrow(prepared);
 }
 
 export async function patchTextFilesBatch(
   entries: BatchPatchInput[],
   baseDir = config.defaultCwd
 ): Promise<BatchTextChangeResult[]> {
-  const prepared = await prepareBatchOperations(
-    entries.map((entry) => ({
-      kind: "patch" as const,
-      path: entry.path,
-      expectedSha256: entry.expectedSha256,
-      edits: [{ old_text: entry.oldText, new_text: entry.newText }]
-    })),
-    baseDir
+  const operations: BatchOperation[] = entries.map((entry) => ({
+    kind: "patch" as const,
+    path: entry.path,
+    expectedSha256: entry.expectedSha256,
+    edits: [{ old_text: entry.oldText, new_text: entry.newText }]
+  }));
+  return withBatchLocks(
+    operations,
+    baseDir,
+    (prepared) => commitBatchOrThrowHeld(prepared)
   );
-  return commitBatchOrThrow(prepared);
 }
 
 /**
@@ -1123,37 +1179,25 @@ export async function patchTextFilesBatchV2(
     );
   }
 
-  let prepared: PreparedBatchOperation[];
+  const operations: BatchOperation[] = entries.map((entry) => ({
+    kind: "patch" as const,
+    path: entry.path,
+    expectedSha256: entry.expectedSha256,
+    edits: entry.edits,
+    includeDiff: dryRun
+  }));
+
   try {
-    prepared = await prepareBatchOperations(
-      entries.map((entry) => ({
-        kind: "patch" as const,
-        path: entry.path,
-        expectedSha256: entry.expectedSha256,
-        edits: entry.edits,
-        includeDiff: dryRun
-      })),
-      baseDir
-    );
+    return await withBatchLocks(operations, baseDir, async (prepared) => {
+      if (dryRun) return patchDryRunResult(prepared);
+      const outcome = await commitBatchOperationsDetailed(prepared, options.hooks);
+      return outcome.ok
+        ? patchCommitSuccessResult(outcome.results, prepared)
+        : patchCommitFailureResult(outcome.failure, prepared);
+    });
   } catch (error) {
     return patchPreflightFailureResult(error, dryRun);
   }
-
-  if (dryRun) return patchDryRunResult(prepared);
-
-  let outcome: BatchCommitOutcome;
-  try {
-    outcome = await withWriteLocks(
-      prepared.map((operation) => operation.canonicalKey),
-      () => commitBatchOperationsDetailed(prepared, options.hooks)
-    );
-  } catch (error) {
-    return patchPreflightFailureResult(error, false);
-  }
-
-  return outcome.ok
-    ? patchCommitSuccessResult(outcome.results, prepared)
-    : patchCommitFailureResult(outcome.failure, prepared);
 }
 
 export type TextSearchMatch = {
