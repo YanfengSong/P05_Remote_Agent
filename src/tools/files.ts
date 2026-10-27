@@ -3,6 +3,17 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { assertAccessiblePath } from "../security.js";
+import type {
+  Outcome,
+  PatchBatchResult,
+  PatchBatchStatus,
+  PatchDiffSummary,
+  PatchFileResult,
+  TextEdit
+} from "./file-contracts.js";
+import { FILE_CONTRACT_VERSION, PATCH_LIMITS } from "./file-contracts.js";
+import { applyEditsToText, PatchEditError, summarizeEdits } from "./patch-edits.js";
+import { canonicalWriteKey, withWriteLocks } from "./file-write-lock.js";
 
 /**
  * fs errors are returned to a remote client, so they are mapped to short messages: the
@@ -52,13 +63,17 @@ export async function writeTextFile(
   if (bytes > config.maxWriteBytes) {
     throw new Error(`Content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
   }
-  try {
-    await fs.mkdir(path.dirname(safePath), { recursive: true });
-    await fs.writeFile(safePath, content, "utf8");
-  } catch (error) {
-    throw describeError(error, "Could not write the file.");
-  }
-  return { bytes };
+
+  const lockKey = await canonicalWriteKey(safePath);
+  return withWriteLocks([lockKey], async () => {
+    try {
+      await fs.mkdir(path.dirname(safePath), { recursive: true });
+      await fs.writeFile(safePath, content, "utf8");
+    } catch (error) {
+      throw describeError(error, "Could not write the file.");
+    }
+    return { bytes };
+  });
 }
 
 /**
@@ -98,40 +113,43 @@ export async function patchTextFile(
   }
   if (oldText.length === 0) throw new Error("old_text must not be empty.");
 
-  let current: string;
-  try {
-    current = await fs.readFile(safePath, "utf8");
-  } catch (error) {
-    throw describeError(error, "Could not read the file for patching.");
-  }
+  const lockKey = await canonicalWriteKey(safePath);
+  return withWriteLocks([lockKey], async () => {
+    let current: string;
+    try {
+      current = await fs.readFile(safePath, "utf8");
+    } catch (error) {
+      throw describeError(error, "Could not read the file for patching.");
+    }
 
-  const actual = createHash("sha256").update(current, "utf8").digest("hex");
-  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new Error(`Patch refused: file changed since review (actual_sha256=${actual}). Re-read before retrying.`);
-  }
+    const actual = createHash("sha256").update(current, "utf8").digest("hex");
+    if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+      throw new Error(`Patch refused: file changed since review (actual_sha256=${actual}). Re-read before retrying.`);
+    }
 
-  const first = current.indexOf(oldText);
-  if (first < 0) throw new Error("Patch refused: old_text was not found.");
-  if (current.indexOf(oldText, first + oldText.length) >= 0) {
-    throw new Error("Patch refused: old_text is ambiguous because it occurs more than once.");
-  }
+    const first = current.indexOf(oldText);
+    if (first < 0) throw new Error("Patch refused: old_text was not found.");
+    if (current.indexOf(oldText, first + 1) >= 0) {
+      throw new Error("Patch refused: old_text is ambiguous because it occurs more than once.");
+    }
 
-  const updated = current.slice(0, first) + newText + current.slice(first + oldText.length);
-  const bytes = Buffer.byteLength(updated, "utf8");
-  if (bytes > config.maxWriteBytes) {
-    throw new Error(`Patched content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
-  }
+    const updated = current.slice(0, first) + newText + current.slice(first + oldText.length);
+    const bytes = Buffer.byteLength(updated, "utf8");
+    if (bytes > config.maxWriteBytes) {
+      throw new Error(`Patched content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
+    }
 
-  try {
-    await fs.writeFile(safePath, updated, "utf8");
-  } catch (error) {
-    throw describeError(error, "Could not write the patched file.");
-  }
+    try {
+      await fs.writeFile(safePath, updated, "utf8");
+    } catch (error) {
+      throw describeError(error, "Could not write the patched file.");
+    }
 
-  return {
-    bytes,
-    sha256: createHash("sha256").update(updated, "utf8").digest("hex")
-  };
+    return {
+      bytes,
+      sha256: createHash("sha256").update(updated, "utf8").digest("hex")
+    };
+  });
 }
 
 export type BatchWriteInput = {
@@ -154,9 +172,61 @@ export type BatchTextChangeResult = {
   created: boolean;
 };
 
+export type BatchMultiPatchInput = {
+  path: string;
+  expectedSha256: string;
+  edits: TextEdit[];
+};
+
+/**
+ * Test-only injection points. Production callers must omit hooks; the MCP
+ * handlers never pass them.
+ */
+export type BatchCommitHooks = {
+  afterWrite?: (path: string, index: number) => Promise<void> | void;
+  beforeRollback?: (path: string, index: number) => Promise<void> | void;
+};
+
+export type PatchBatchV2Options = {
+  dryRun?: boolean;
+  hooks?: BatchCommitHooks;
+};
+
+class BatchOperationError extends Error {
+  readonly code: string;
+  readonly targetPath?: string;
+
+  constructor(code: string, message: string, targetPath?: string) {
+    super(message);
+    this.name = "BatchOperationError";
+    this.code = code;
+    if (targetPath !== undefined) this.targetPath = targetPath;
+  }
+}
+
+type BatchCommitFailure = {
+  message: string;
+  effect: "none" | "rolled_back" | "unknown";
+  cause: string;
+  causeCode: string;
+  causePath?: string;
+  rolledBack: string[];
+  unknown: string[];
+};
+
+type BatchCommitOutcome =
+  | { ok: true; results: BatchTextChangeResult[] }
+  | { ok: false; failure: BatchCommitFailure };
+
 type BatchOperation =
   | { kind: "write"; path: string; content: string; expectedSha256?: string }
-  | { kind: "patch"; path: string; expectedSha256: string; oldText: string; newText: string };
+  | {
+      kind: "patch";
+      path: string;
+      expectedSha256: string;
+      edits: TextEdit[];
+      includeDiff?: boolean;
+    };
 
 type PreparedBatchOperation = {
   path: string;
@@ -167,10 +237,11 @@ type PreparedBatchOperation = {
   originalSha256?: string;
   updatedBuffer: Buffer;
   sha256: string;
+  diff?: PatchDiffSummary;
 };
 
-const MAX_BATCH_FILE_COUNT = 20;
-const MAX_BATCH_WRITE_BYTES = 1024 * 1024;
+const MAX_BATCH_FILE_COUNT = PATCH_LIMITS.maxFiles;
+const MAX_BATCH_WRITE_BYTES = PATCH_LIMITS.maxCandidateBytes;
 const MAX_BATCH_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 
 function sha256Buffer(value: Buffer): string {
@@ -178,6 +249,7 @@ function sha256Buffer(value: Buffer): string {
 }
 
 function safeBatchError(error: unknown, fallback: string): string {
+  if (error instanceof BatchOperationError) return error.message;
   if ((error as { code?: string })?.code) {
     return describeError(error, fallback).message;
   }
@@ -216,7 +288,10 @@ async function prepareBatchOperations(
   baseDir: string
 ): Promise<PreparedBatchOperation[]> {
   if (operations.length < 1 || operations.length > MAX_BATCH_FILE_COUNT) {
-    throw new Error("Batch operation requires 1 to " + MAX_BATCH_FILE_COUNT + " files.");
+    throw new BatchOperationError(
+      "INVALID_REQUEST",
+      "Batch operation requires 1 to " + MAX_BATCH_FILE_COUNT + " files."
+    );
   }
 
   const seen = new Set<string>();
@@ -225,32 +300,44 @@ async function prepareBatchOperations(
   let totalSnapshotBytes = 0;
 
   for (const operation of operations) {
-    const safePath = await assertAccessiblePath(operation.path, "write", baseDir, baseDir);
+    let safePath: string;
+    try {
+      safePath = await assertAccessiblePath(operation.path, "write", baseDir, baseDir);
+    } catch (error) {
+      throw new BatchOperationError(
+        "PATH_REFUSED",
+        safeBatchError(error, "Write target is not allowed."),
+        operation.path
+      );
+    }
+
     const parentPath = path.dirname(safePath);
     let parentStat;
     try {
       parentStat = await fs.stat(parentPath);
     } catch (error) {
-      throw new Error("Batch target " + operation.path + ": " +
-        safeBatchError(error, "Parent directory is unavailable."));
+      throw new BatchOperationError(
+        "WRITE_FAILED",
+        "Batch target " + operation.path + ": " +
+          safeBatchError(error, "Parent directory is unavailable."),
+        operation.path
+      );
     }
     if (!parentStat.isDirectory()) {
-      throw new Error("Batch target " + operation.path + ": parent path is not a directory.");
+      throw new BatchOperationError(
+        "WRITE_FAILED",
+        "Batch target " + operation.path + ": parent path is not a directory.",
+        operation.path
+      );
     }
 
-    let realParent: string;
-    try {
-      realParent = await fs.realpath(parentPath);
-    } catch (error) {
-      throw new Error("Batch target " + operation.path + ": " +
-        safeBatchError(error, "Parent directory is unavailable."));
-    }
-    const canonicalPath = path.join(realParent, path.basename(safePath));
-    const canonicalKey = process.platform === "win32"
-      ? canonicalPath.toLowerCase()
-      : canonicalPath;
+    const canonicalKey = await canonicalWriteKey(safePath);
     if (seen.has(canonicalKey)) {
-      throw new Error("Batch operation contains duplicate target paths: " + operation.path);
+      throw new BatchOperationError(
+        "DUPLICATE_TARGET",
+        "Batch operation contains duplicate target paths: " + operation.path,
+        operation.path
+      );
     }
     seen.add(canonicalKey);
 
@@ -261,88 +348,163 @@ async function prepareBatchOperations(
     try {
       const stat = await fs.lstat(safePath);
       if (stat.isSymbolicLink()) {
-        throw new Error("Batch target " + operation.path + " is a symbolic link; refusing mutation.");
+        throw new BatchOperationError(
+          "SYMLINK_REFUSED",
+          "Batch target " + operation.path + " is a symbolic link; refusing mutation.",
+          operation.path
+        );
       }
       if (!stat.isFile()) {
-        throw new Error("Batch target " + operation.path + " is not a regular file.");
+        throw new BatchOperationError(
+          "NOT_REGULAR_FILE",
+          "Batch target " + operation.path + " is not a regular file.",
+          operation.path
+        );
       }
       if (stat.nlink > 1) {
-        throw new Error("Batch target " + operation.path + " has multiple hard links; refusing mutation.");
+        throw new BatchOperationError(
+          "HARDLINK_REFUSED",
+          "Batch target " + operation.path + " has multiple hard links; refusing mutation.",
+          operation.path
+        );
       }
       if (stat.size > config.maxReadBytes) {
-        throw new Error("Batch target " + operation.path + " exceeds maxReadBytes (" + config.maxReadBytes + ").");
+        throw new BatchOperationError(
+          "READ_TOO_LARGE",
+          "Batch target " + operation.path + " exceeds maxReadBytes (" + config.maxReadBytes + ").",
+          operation.path
+        );
       }
       originalBuffer = await fs.readFile(safePath);
-      originalText = decodeUtf8(originalBuffer, "Batch target " + operation.path);
+      try {
+        originalText = decodeUtf8(originalBuffer, "Batch target " + operation.path);
+      } catch (error) {
+        throw new BatchOperationError(
+          "INVALID_UTF8",
+          error instanceof Error ? error.message : "Batch target is not valid UTF-8 text.",
+          operation.path
+        );
+      }
       originalSha256 = sha256Buffer(originalBuffer);
     } catch (error) {
+      if (error instanceof BatchOperationError) throw error;
       if ((error as { code?: string })?.code === "ENOENT") {
         existed = false;
       } else {
-        throw new Error("Batch target " + operation.path + ": " +
-          safeBatchError(error, "Could not inspect the target file."));
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": " +
+            safeBatchError(error, "Could not inspect the target file."),
+          operation.path
+        );
       }
     }
 
     let updatedText: string;
     if (operation.kind === "write") {
       if (operation.expectedSha256 && !/^[a-f0-9]{64}$/i.test(operation.expectedSha256)) {
-        throw new Error("expected_sha256 for " + operation.path + " must be a 64-character hexadecimal SHA-256.");
+        throw new BatchOperationError(
+          "INVALID_REQUEST",
+          "expected_sha256 for " + operation.path + " must be a 64-character hexadecimal SHA-256.",
+          operation.path
+        );
       }
       if (existed && !operation.expectedSha256) {
-        throw new Error("Batch write refused for existing file " + operation.path +
-          ": expected_sha256 is required. Re-read the file before replacing it.");
+        throw new BatchOperationError(
+          "EXPECTED_SHA_REQUIRED",
+          "Batch write refused for existing file " + operation.path +
+            ": expected_sha256 is required. Re-read the file before replacing it.",
+          operation.path
+        );
       }
       if (existed && originalSha256?.toLowerCase() !== operation.expectedSha256?.toLowerCase()) {
-        throw new Error("Batch write refused for " + operation.path +
-          ": file changed since review (actual_sha256=" + originalSha256 + ").");
+        throw new BatchOperationError(
+          "STALE_REVISION",
+          "Batch write refused for " + operation.path +
+            ": file changed since review (actual_sha256=" + originalSha256 + ").",
+          operation.path
+        );
       }
       if (!existed && operation.expectedSha256) {
-        throw new Error("Batch write refused for " + operation.path +
-          ": expected_sha256 was supplied but the target does not exist.");
+        throw new BatchOperationError(
+          "TARGET_NOT_FOUND",
+          "Batch write refused for " + operation.path +
+            ": expected_sha256 was supplied but the target does not exist.",
+          operation.path
+        );
       }
       updatedText = operation.content;
     } else {
       if (!existed || originalText === undefined || originalSha256 === undefined || !originalBuffer) {
-        throw new Error("Batch patch refused for " + operation.path + ": target file was not found.");
+        throw new BatchOperationError(
+          "TARGET_NOT_FOUND",
+          "Batch patch refused for " + operation.path + ": target file was not found.",
+          operation.path
+        );
       }
       if (!/^[a-f0-9]{64}$/i.test(operation.expectedSha256)) {
-        throw new Error("expected_sha256 for " + operation.path + " must be a 64-character hexadecimal SHA-256.");
+        throw new BatchOperationError(
+          "INVALID_REQUEST",
+          "expected_sha256 for " + operation.path + " must be a 64-character hexadecimal SHA-256.",
+          operation.path
+        );
       }
       if (originalSha256.toLowerCase() !== operation.expectedSha256.toLowerCase()) {
-        throw new Error("Batch patch refused for " + operation.path +
-          ": file changed since review (actual_sha256=" + originalSha256 + ").");
+        throw new BatchOperationError(
+          "STALE_REVISION",
+          "Batch patch refused for " + operation.path +
+            ": file changed since review (actual_sha256=" + originalSha256 + ").",
+          operation.path
+        );
       }
-      if (operation.oldText.length === 0) {
-        throw new Error("Batch patch refused for " + operation.path + ": old_text must not be empty.");
+
+      try {
+        updatedText = applyEditsToText(originalText, operation.edits);
+      } catch (error) {
+        if (error instanceof PatchEditError) {
+          throw new BatchOperationError(
+            error.code,
+            "Batch patch refused for " + operation.path + ": " + error.message,
+            operation.path
+          );
+        }
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch patch refused for " + operation.path + ": Could not apply edits.",
+          operation.path
+        );
       }
-      const first = originalText.indexOf(operation.oldText);
-      if (first < 0) {
-        throw new Error("Batch patch refused for " + operation.path + ": old_text was not found.");
-      }
-      if (originalText.indexOf(operation.oldText, first + operation.oldText.length) >= 0) {
-        throw new Error("Batch patch refused for " + operation.path +
-          ": old_text is ambiguous because it occurs more than once.");
-      }
-      updatedText = originalText.slice(0, first) + operation.newText +
-        originalText.slice(first + operation.oldText.length);
     }
 
     const updatedBuffer = Buffer.from(updatedText, "utf8");
     if (updatedBuffer.byteLength > config.maxWriteBytes) {
-      throw new Error("Batch target " + operation.path +
-        " exceeds maxWriteBytes (" + config.maxWriteBytes + ").");
+      throw new BatchOperationError(
+        "TOO_LARGE",
+        "Batch target " + operation.path +
+          " exceeds maxWriteBytes (" + config.maxWriteBytes + ").",
+        operation.path
+      );
     }
     totalUpdatedBytes += updatedBuffer.byteLength;
     if (totalUpdatedBytes > MAX_BATCH_WRITE_BYTES) {
-      throw new Error("Batch output exceeds the 1 MiB total write limit.");
+      throw new BatchOperationError(
+        "TOO_LARGE",
+        "Batch output exceeds the 1 MiB total write limit."
+      );
     }
     if (originalBuffer) {
       totalSnapshotBytes += originalBuffer.byteLength;
       if (totalSnapshotBytes > MAX_BATCH_SNAPSHOT_BYTES) {
-        throw new Error("Batch rollback snapshot exceeds the 8 MiB safety limit.");
+        throw new BatchOperationError(
+          "TOO_LARGE",
+          "Batch rollback snapshot exceeds the 8 MiB safety limit."
+        );
       }
     }
+
+    const diff = operation.kind === "patch" && operation.includeDiff && originalText !== undefined
+      ? summarizeEdits(originalText, updatedText, operation.edits)
+      : undefined;
 
     prepared.push({
       path: operation.path,
@@ -352,22 +514,25 @@ async function prepareBatchOperations(
       ...(originalBuffer ? { originalBuffer } : {}),
       ...(originalSha256 ? { originalSha256 } : {}),
       updatedBuffer,
-      sha256: sha256Buffer(updatedBuffer)
+      sha256: sha256Buffer(updatedBuffer),
+      ...(diff ? { diff } : {})
     });
   }
 
   return prepared;
 }
 
-async function commitBatchOperations(
-  prepared: PreparedBatchOperation[]
-): Promise<BatchTextChangeResult[]> {
+async function commitBatchOperationsDetailed(
+  prepared: PreparedBatchOperation[],
+  hooks?: BatchCommitHooks
+): Promise<BatchCommitOutcome> {
   type Opened = {
     operation: PreparedBatchOperation;
     handle: Awaited<ReturnType<typeof fs.open>>;
   };
   const opened: Opened[] = [];
   const attempted: PreparedBatchOperation[] = [];
+  let currentOperation: PreparedBatchOperation | undefined;
 
   try {
     // Open all targets before changing any existing file. New files use "wx" so a
@@ -377,29 +542,44 @@ async function commitBatchOperations(
       try {
         handle = await fs.open(operation.safePath, operation.existed ? "r+" : "wx");
       } catch (error) {
-        throw new Error("Batch target " + operation.path + ": " +
-          safeBatchError(error, "Could not open target file."));
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": " +
+            safeBatchError(error, "Could not open target file."),
+          operation.path
+        );
       }
       opened.push({ operation, handle });
 
       if (operation.existed) {
         const current = await readHandleAtStart(handle);
         if (sha256Buffer(current) !== operation.originalSha256) {
-          throw new Error("Batch operation refused for " + operation.path +
-            ": file changed after preflight; no batch changes were applied.");
+          throw new BatchOperationError(
+            "STALE_REVISION",
+            "Batch operation refused for " + operation.path +
+              ": file changed after preflight; no batch changes were applied.",
+            operation.path
+          );
         }
         decodeUtf8(current, "Batch target " + operation.path);
       }
     }
 
-    for (const entry of opened) {
+    for (let index = 0; index < opened.length; index += 1) {
+      const entry = opened[index]!;
       const operation = entry.operation;
+      currentOperation = operation;
+
       if (operation.existed) {
         // Recheck the same open file immediately before writing.
         const current = await readHandleAtStart(entry.handle);
         if (sha256Buffer(current) !== operation.originalSha256) {
-          throw new Error("Batch operation refused for " + operation.path +
-            ": file changed before commit; no batch changes were applied.");
+          throw new BatchOperationError(
+            "STALE_REVISION",
+            "Batch operation refused for " + operation.path +
+              ": file changed before commit; no batch changes were applied.",
+            operation.path
+          );
         }
       }
 
@@ -416,26 +596,50 @@ async function commitBatchOperations(
         );
       }
       await entry.handle.sync();
+      await hooks?.afterWrite?.(operation.path, index);
     }
 
-    return prepared.map((operation) => ({
-      path: operation.path,
-      bytes: operation.updatedBuffer.byteLength,
-      sha256: operation.sha256,
-      created: !operation.existed
-    }));
+    return {
+      ok: true,
+      results: prepared.map((operation) => ({
+        path: operation.path,
+        bytes: operation.updatedBuffer.byteLength,
+        sha256: operation.sha256,
+        created: !operation.existed
+      }))
+    };
   } catch (error) {
-    const rollbackFailures: string[] = [];
-    for (const operation of [...attempted].reverse()) {
-      if (!operation.existed || !operation.originalBuffer) continue;
+    const rolledBack: string[] = [];
+    const unknown: string[] = [];
+    const attemptedExisting = attempted.filter((operation) => operation.existed);
+
+    // Restore existing files only while they still contain the exact bytes this
+    // batch wrote. Anything else may be an external edit or an incomplete write,
+    // so preserve the scene and report an unknown effect instead of overwriting it.
+    for (let index = attemptedExisting.length - 1; index >= 0; index -= 1) {
+      const operation = attemptedExisting[index]!;
       const entry = opened.find((candidate) => candidate.operation === operation);
       if (!entry) {
-        rollbackFailures.push(operation.path);
+        unknown.push(operation.path);
         continue;
       }
+
       try {
+        await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
+        const current = await readHandleAtStart(entry.handle);
+        const currentSha = sha256Buffer(current);
+
+        if (currentSha === operation.originalSha256) {
+          rolledBack.push(operation.path);
+          continue;
+        }
+        if (currentSha !== operation.sha256) {
+          unknown.push(operation.path);
+          continue;
+        }
+
         await entry.handle.truncate(0);
-        if (operation.originalBuffer.byteLength > 0) {
+        if (operation.originalBuffer && operation.originalBuffer.byteLength > 0) {
           await entry.handle.write(
             operation.originalBuffer,
             0,
@@ -444,8 +648,15 @@ async function commitBatchOperations(
           );
         }
         await entry.handle.sync();
+
+        const restored = await readHandleAtStart(entry.handle);
+        if (sha256Buffer(restored) !== operation.originalSha256) {
+          unknown.push(operation.path);
+          continue;
+        }
+        rolledBack.push(operation.path);
       } catch {
-        rollbackFailures.push(operation.path);
+        unknown.push(operation.path);
       }
     }
 
@@ -456,21 +667,72 @@ async function commitBatchOperations(
         // The original failure remains authoritative; cleanup below is still attempted.
       }
     }
+
+    // Newly created targets are removed only when they still contain either the
+    // bytes this batch wrote or the empty file created by "wx".
+    const emptySha = sha256Buffer(Buffer.alloc(0));
     for (const entry of opened) {
-      if (entry.operation.existed) continue;
+      const operation = entry.operation;
+      if (operation.existed) continue;
+      const wasAttempted = attempted.includes(operation);
       try {
-        await fs.rm(entry.operation.safePath, { force: true });
+        if (wasAttempted) {
+          await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
+        }
+
+        let current: Buffer;
+        try {
+          current = await fs.readFile(operation.safePath);
+        } catch (readError) {
+          if ((readError as { code?: string })?.code === "ENOENT") {
+            rolledBack.push(operation.path);
+            continue;
+          }
+          throw readError;
+        }
+
+        const currentSha = sha256Buffer(current);
+        if (currentSha === emptySha || currentSha === operation.sha256) {
+          await fs.rm(operation.safePath, { force: true });
+          rolledBack.push(operation.path);
+        } else {
+          unknown.push(operation.path);
+        }
       } catch {
-        rollbackFailures.push(entry.operation.path);
+        unknown.push(operation.path);
       }
     }
 
-    const detail = safeBatchError(error, "Unexpected batch write failure.");
-    if (rollbackFailures.length > 0) {
-      throw new Error("Batch operation failed and rollback was incomplete for: " +
-        [...new Set(rollbackFailures)].join(", ") + ". Inspect these files immediately. Cause: " + detail);
-    }
-    throw new Error("Batch operation failed; attempted changes were rolled back. Cause: " + detail);
+    const effect: "none" | "rolled_back" | "unknown" =
+      unknown.length > 0 ? "unknown" : attempted.length > 0 ? "rolled_back" : "none";
+    const cause = safeBatchError(error, "Unexpected batch write failure.");
+    const causeCode = error instanceof BatchOperationError ? error.code : "WRITE_FAILED";
+    const causePath = error instanceof BatchOperationError
+      ? error.targetPath
+      : currentOperation?.path;
+    const uniqueUnknown = [...new Set(unknown)];
+    const uniqueRolledBack = [...new Set(rolledBack)];
+    const message = effect === "unknown"
+      ? "Batch operation failed and rollback was incomplete for: " +
+        uniqueUnknown.join(", ") +
+        ". Inspect these files immediately. Cause: " +
+        cause
+      : effect === "rolled_back"
+        ? "Batch operation failed; attempted changes were rolled back. Cause: " + cause
+        : "Batch operation failed before any change was applied. Cause: " + cause;
+
+    return {
+      ok: false,
+      failure: {
+        message,
+        effect,
+        cause,
+        causeCode,
+        ...(causePath ? { causePath } : {}),
+        rolledBack: uniqueRolledBack,
+        unknown: uniqueUnknown
+      }
+    };
   } finally {
     for (const entry of opened) {
       try {
@@ -480,6 +742,313 @@ async function commitBatchOperations(
       }
     }
   }
+}
+
+async function commitBatchOrThrow(
+  prepared: PreparedBatchOperation[]
+): Promise<BatchTextChangeResult[]> {
+  const outcome = await withWriteLocks(
+    prepared.map((operation) => operation.canonicalKey),
+    () => commitBatchOperationsDetailed(prepared)
+  );
+  if (outcome.ok) return outcome.results;
+  throw new Error(outcome.failure.message);
+}
+
+function patchOutcomeForCode(code: string): Outcome {
+  switch (code) {
+    case "STALE_REVISION":
+      return {
+        status: "conflict",
+        effectState: "none",
+        retry: "after_refresh",
+        code,
+        nextAction: "Re-read the listed files and rebuild the patch."
+      };
+    case "AMBIGUOUS_EDIT":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Make each old_text occur exactly once, or split the request."
+      };
+    case "OVERLAPPING_EDITS":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Remove overlapping edits; each byte range must be disjoint."
+      };
+    case "EMPTY_OLD_TEXT":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Provide non-empty old_text for every edit."
+      };
+    case "MISSING_EDIT":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Re-read the file and correct old_text."
+      };
+    case "INVALID_EDIT":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Provide 1-100 valid edits per file."
+      };
+    case "DUPLICATE_TARGET":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Use each canonical target path once per batch."
+      };
+    case "TOO_LARGE":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Reduce the resulting content below 1 MiB."
+      };
+    case "EXPECTED_SHA_REQUIRED":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "after_refresh",
+        code,
+        nextAction: "Re-read the file and provide expected_sha256."
+      };
+    case "TARGET_NOT_FOUND":
+      return {
+        status: "error",
+        effectState: "none",
+        retry: "after_refresh",
+        code,
+        nextAction: "Re-read the file before retrying."
+      };
+    case "READ_TOO_LARGE":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Use a file below the configured read limit."
+      };
+    case "SYMLINK_REFUSED":
+    case "HARDLINK_REFUSED":
+    case "NOT_REGULAR_FILE":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "never_automatic",
+        code,
+        nextAction: "Choose a regular workspace file without links."
+      };
+    case "PATH_REFUSED":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "never_automatic",
+        code,
+        nextAction: "Choose a path inside the active workspace."
+      };
+    case "INVALID_UTF8":
+      return {
+        status: "rejected",
+        effectState: "none",
+        retry: "never_automatic",
+        code,
+        nextAction: "Choose a valid UTF-8 text file."
+      };
+    default:
+      return {
+        status: "error",
+        effectState: "none",
+        retry: "safe",
+        code,
+        nextAction: "Correct the reported error and retry."
+      };
+  }
+}
+
+function patchFailureFile(pathValue: string, code: string, message: string): PatchFileResult {
+  return {
+    path: pathValue,
+    ok: false,
+    bytes: 0,
+    created: false,
+    applied: false,
+    errorCode: code,
+    error: message
+  };
+}
+
+function patchPreflightFailureResult(error: unknown, dryRun: boolean): PatchBatchResult {
+  const known = error instanceof BatchOperationError ? error : undefined;
+  const patchError = error instanceof PatchEditError ? error : undefined;
+  const code = known?.code ?? patchError?.code ?? "WRITE_FAILED";
+  const message = known?.message ?? patchError?.message ?? "Could not prepare the patch batch.";
+  const outcome = patchOutcomeForCode(code);
+  const files = known?.targetPath
+    ? [patchFailureFile(known.targetPath, code, message)]
+    : [];
+
+  return {
+    contract_version: FILE_CONTRACT_VERSION,
+    status: outcome.status === "error" ? "error" : "rejected",
+    outcome,
+    dry_run: dryRun,
+    files,
+    totalBytes: 0,
+    successCount: 0,
+    failureCount: files.length,
+    error: message
+  };
+}
+
+function patchDryRunResult(prepared: PreparedBatchOperation[]): PatchBatchResult {
+  const files: PatchFileResult[] = prepared.map((operation) => ({
+    path: operation.path,
+    ok: true,
+    bytes: operation.updatedBuffer.byteLength,
+    sha256: operation.sha256,
+    ...(operation.originalSha256 ? { original_sha256: operation.originalSha256 } : {}),
+    created: false,
+    applied: false,
+    ...(operation.diff ? { diff: operation.diff } : {})
+  }));
+  return {
+    contract_version: FILE_CONTRACT_VERSION,
+    status: "dry_run",
+    outcome: {
+      status: "completed",
+      effectState: "none",
+      retry: "safe",
+      code: "DRY_RUN",
+      nextAction: "Review the expected hash and diff, then submit with dry_run=false."
+    },
+    dry_run: true,
+    files,
+    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+    successCount: files.length,
+    failureCount: 0
+  };
+}
+
+function patchCommitSuccessResult(
+  results: BatchTextChangeResult[],
+  prepared: PreparedBatchOperation[]
+): PatchBatchResult {
+  const files: PatchFileResult[] = results.map((result, index) => {
+    const operation = prepared[index];
+    return {
+      path: result.path,
+      ok: true,
+      bytes: result.bytes,
+      sha256: result.sha256,
+      ...(operation?.originalSha256 ? { original_sha256: operation.originalSha256 } : {}),
+      created: result.created,
+      applied: true
+    };
+  });
+  return {
+    contract_version: FILE_CONTRACT_VERSION,
+    status: "committed",
+    outcome: {
+      status: "completed",
+      effectState: "applied",
+      retry: "safe",
+      code: "PATCH_APPLIED",
+      nextAction: "Use each returned sha256 as the expected_sha256 for the next edit."
+    },
+    dry_run: false,
+    files,
+    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+    successCount: files.length,
+    failureCount: 0
+  };
+}
+
+function patchCommitFailureResult(
+  failure: BatchCommitFailure,
+  prepared: PreparedBatchOperation[]
+): PatchBatchResult {
+  const unknown = new Set(failure.unknown);
+  const rolledBack = new Set(failure.rolledBack);
+  const files: PatchFileResult[] = prepared.map((operation) => {
+    if (unknown.has(operation.path)) {
+      return patchFailureFile(
+        operation.path,
+        "ROLLBACK_UNCONFIRMED",
+        "Rollback could not be confirmed; inspect this file before retrying."
+      );
+    }
+    if (rolledBack.has(operation.path)) {
+      return patchFailureFile(
+        operation.path,
+        "ROLLED_BACK",
+        "Batch write failed; this file was restored to its original content."
+      );
+    }
+    if (operation.path === failure.causePath) {
+      return patchFailureFile(operation.path, failure.causeCode, failure.cause);
+    }
+    return patchFailureFile(
+      operation.path,
+      "BATCH_ABORTED",
+      "Batch aborted before this file was changed."
+    );
+  });
+
+  let status: PatchBatchStatus;
+  let outcome: Outcome;
+  if (failure.effect === "unknown") {
+    status = "unknown";
+    outcome = {
+      status: "unknown",
+      effectState: "unknown",
+      retry: "never_automatic",
+      code: "ROLLBACK_UNCONFIRMED",
+      nextAction: "Inspect the listed files before retrying; do not assume either version is current."
+    };
+  } else if (failure.effect === "rolled_back") {
+    status = "rolled_back";
+    outcome = {
+      status: "error",
+      effectState: "rolled_back",
+      retry: "safe",
+      code: "ROLLED_BACK",
+      nextAction: "The files were restored; re-read their versions before retrying."
+    };
+  } else {
+    outcome = patchOutcomeForCode(failure.causeCode);
+    status = outcome.status === "conflict" || outcome.status === "rejected"
+      ? "rejected"
+      : "error";
+  }
+
+  return {
+    contract_version: FILE_CONTRACT_VERSION,
+    status,
+    outcome,
+    dry_run: false,
+    files,
+    totalBytes: 0,
+    successCount: 0,
+    failureCount: files.length,
+    error: failure.cause
+  };
 }
 
 export async function writeTextFilesBatch(
@@ -495,7 +1064,7 @@ export async function writeTextFilesBatch(
     })),
     baseDir
   );
-  return commitBatchOperations(prepared);
+  return commitBatchOrThrow(prepared);
 }
 
 export async function patchTextFilesBatch(
@@ -507,12 +1076,66 @@ export async function patchTextFilesBatch(
       kind: "patch" as const,
       path: entry.path,
       expectedSha256: entry.expectedSha256,
-      oldText: entry.oldText,
-      newText: entry.newText
+      edits: [{ old_text: entry.oldText, new_text: entry.newText }]
     })),
     baseDir
   );
-  return commitBatchOperations(prepared);
+  return commitBatchOrThrow(prepared);
+}
+
+/**
+ * V2 multi-edit patch batch. Every file is located against its one reviewed
+ * revision. The whole batch is preflighted before any mutation; dry_run returns
+ * expected hashes and a bounded diff without writing.
+ */
+export async function patchTextFilesBatchV2(
+  entries: BatchMultiPatchInput[],
+  baseDir = config.defaultCwd,
+  options: PatchBatchV2Options = {}
+): Promise<PatchBatchResult> {
+  const dryRun = options.dryRun === true;
+
+  if (entries.length < 1 || entries.length > MAX_BATCH_FILE_COUNT) {
+    return patchPreflightFailureResult(
+      new BatchOperationError(
+        "INVALID_REQUEST",
+        "Batch operation requires 1 to " + MAX_BATCH_FILE_COUNT + " files."
+      ),
+      dryRun
+    );
+  }
+
+  let prepared: PreparedBatchOperation[];
+  try {
+    prepared = await prepareBatchOperations(
+      entries.map((entry) => ({
+        kind: "patch" as const,
+        path: entry.path,
+        expectedSha256: entry.expectedSha256,
+        edits: entry.edits,
+        includeDiff: dryRun
+      })),
+      baseDir
+    );
+  } catch (error) {
+    return patchPreflightFailureResult(error, dryRun);
+  }
+
+  if (dryRun) return patchDryRunResult(prepared);
+
+  let outcome: BatchCommitOutcome;
+  try {
+    outcome = await withWriteLocks(
+      prepared.map((operation) => operation.canonicalKey),
+      () => commitBatchOperationsDetailed(prepared, options.hooks)
+    );
+  } catch (error) {
+    return patchPreflightFailureResult(error, false);
+  }
+
+  return outcome.ok
+    ? patchCommitSuccessResult(outcome.results, prepared)
+    : patchCommitFailureResult(outcome.failure, prepared);
 }
 
 export type TextSearchMatch = {

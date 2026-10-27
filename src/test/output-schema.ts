@@ -51,6 +51,15 @@ const V2_TEXT = V2_LINES.join("");
 await fs.writeFile(V2_FIXTURE, V2_TEXT, "utf8");
 const V2_SHA = createHash("sha256").update(Buffer.from(V2_TEXT, "utf8")).digest("hex");
 
+const PATCH_FIXTURE = path.join(REPO, "_p05_output_schema_patch_fixture.txt");
+const PATCH_TEXT = "alpha\nbeta\n";
+const PATCH_EXPECTED_TEXT = "alpha\nBETA\n";
+await fs.writeFile(PATCH_FIXTURE, PATCH_TEXT, "utf8");
+const PATCH_SHA = createHash("sha256").update(Buffer.from(PATCH_TEXT, "utf8")).digest("hex");
+const PATCH_EXPECTED_SHA = createHash("sha256")
+  .update(Buffer.from(PATCH_EXPECTED_TEXT, "utf8"))
+  .digest("hex");
+
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -128,6 +137,24 @@ try {
     "input-schema: fs_read_many advertises legacy paths and V2 requests",
     Boolean(readManyInput?.properties?.paths) && Boolean(readManyInput?.properties?.requests),
     JSON.stringify(readManyInput?.properties ?? {})
+  );
+
+  const patchManyTool = listed.tools.find((tool) => tool.name === "apply_patch_many");
+  const patchManyInput = patchManyTool?.inputSchema as {
+    type?: unknown;
+    properties?: Record<string, unknown>;
+  } | undefined;
+  check(
+    "input-schema: apply_patch_many has an object root",
+    patchManyInput?.type === "object",
+    JSON.stringify(patchManyInput).slice(0, 400)
+  );
+  check(
+    "input-schema: apply_patch_many advertises V2 patches and dry_run",
+    Boolean(patchManyInput?.properties?.patches) &&
+      Boolean(patchManyInput?.properties?.contract_version) &&
+      Boolean(patchManyInput?.properties?.dry_run),
+    JSON.stringify(patchManyInput?.properties ?? {})
   );
 
   // Runtime-confirmed tools are covered by permission tests. These samples validate
@@ -288,6 +315,78 @@ try {
   }
   check("v2: paths and requests are rejected at the protocol boundary", mixedRejected);
 
+  const patchFixtureName = path.basename(PATCH_FIXTURE);
+  const patchEdits = [{ old_text: "beta", new_text: "BETA" }];
+  const patchDryRun = await client.callTool({
+    name: "apply_patch_many",
+    arguments: {
+      contract_version: 2,
+      dry_run: true,
+      patches: [{
+        path: patchFixtureName,
+        expected_sha256: PATCH_SHA,
+        edits: patchEdits
+      }]
+    }
+  });
+  const patchDryRunStructured = structuredOf(patchDryRun);
+  const patchDryRunFiles = Array.isArray(patchDryRunStructured?.files)
+    ? patchDryRunStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "patch v2: dry_run status and no effect",
+    patchDryRunStructured?.status === "dry_run" &&
+      (patchDryRunStructured?.outcome as { effectState?: unknown } | undefined)?.effectState === "none",
+    JSON.stringify(patchDryRunStructured).slice(0, 400)
+  );
+  check(
+    "patch v2: dry_run returns expected hash",
+    patchDryRunFiles[0]?.sha256 === PATCH_EXPECTED_SHA &&
+      patchDryRunFiles[0]?.original_sha256 === PATCH_SHA &&
+      patchDryRunFiles[0]?.applied === false,
+    JSON.stringify(patchDryRunFiles[0] ?? {})
+  );
+  check(
+    "patch v2: dry_run text includes diff and expected hash",
+    textOf(patchDryRun).includes("- beta") &&
+      textOf(patchDryRun).includes("+ BETA") &&
+      textOf(patchDryRun).includes("expected_sha256=" + PATCH_EXPECTED_SHA),
+    textOf(patchDryRun).slice(0, 300)
+  );
+  check(
+    "patch v2: dry_run did not write",
+    await fs.readFile(PATCH_FIXTURE, "utf8") === PATCH_TEXT
+  );
+
+  const patchCommit = await client.callTool({
+    name: "apply_patch_many",
+    arguments: {
+      contract_version: 2,
+      dry_run: false,
+      patches: [{
+        path: patchFixtureName,
+        expected_sha256: PATCH_SHA,
+        edits: patchEdits
+      }]
+    }
+  });
+  const patchCommitStructured = structuredOf(patchCommit);
+  const patchCommitFiles = Array.isArray(patchCommitStructured?.files)
+    ? patchCommitStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "patch v2: commit reports applied and the new hash",
+    patchCommitStructured?.status === "committed" &&
+      (patchCommitStructured?.outcome as { effectState?: unknown } | undefined)?.effectState === "applied" &&
+      patchCommitFiles[0]?.sha256 === PATCH_EXPECTED_SHA &&
+      patchCommitFiles[0]?.applied === true,
+    JSON.stringify(patchCommitStructured).slice(0, 400)
+  );
+  check(
+    "patch v2: commit writes the expected content",
+    await fs.readFile(PATCH_FIXTURE, "utf8") === PATCH_EXPECTED_TEXT
+  );
+
   const legacy = await client.callTool({
     name: "fs_read_many",
     arguments: { paths: ["README.md"] }
@@ -312,4 +411,5 @@ try {
 } finally {
   await client.close().catch(() => undefined);
   await fs.rm(V2_FIXTURE, { force: true });
+  await fs.rm(PATCH_FIXTURE, { force: true });
 }

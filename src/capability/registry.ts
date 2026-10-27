@@ -20,7 +20,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "fs_write", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace a UTF-8 text file inside the active workspace." },
   { name: "fs_write_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace up to 20 files in one preflighted batch with expected-hash guards and rollback on ordinary write failures." },
   { name: "apply_patch", minProfile: "developer", risk: "write", scope: "workspace", summary: "Patch one exact text occurrence with an expected SHA-256 concurrency guard." },
-  { name: "apply_patch_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Apply up to 20 exact, expected-hash-guarded text patches as one preflighted batch with rollback on ordinary write failures." },
+  { name: "apply_patch_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Apply one reviewed-revision patch per file, or V2 multi-edit patches with dry_run, ambiguity/overlap preflight, shared path locks and honest rolled_back/unknown outcomes." },
 
   { name: "git_status", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Show branch and working-tree status for the active workspace." },
   { name: "git_workspace_audit", minProfile: "readonly", risk: "read", scope: "workspace", summary: "One read-only Git workspace preflight: branch, local upstream divergence, changed and untracked files, generated-cache and large-file risks." },

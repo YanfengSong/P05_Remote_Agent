@@ -1,11 +1,77 @@
 import * as z from "zod/v4";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { listDirectory, patchTextFile, patchTextFilesBatch, readTextFile, searchTextFiles, writeTextFile, writeTextFilesBatch } from "./files.js";
-import { fsReadManyInputSchema, fsReadManyOutputSchema, READ_LIMITS } from "./file-contracts.js";
+import { listDirectory, patchTextFile, patchTextFilesBatch, patchTextFilesBatchV2, readTextFile, searchTextFiles, writeTextFile, writeTextFilesBatch } from "./files.js";
+import { applyPatchManyInputSchema, applyPatchManyOutputSchema, fsReadManyInputSchema, fsReadManyOutputSchema, READ_LIMITS, type PatchBatchResult } from "./file-contracts.js";
 import { readManyRanges } from "./read-ranges.js";
 import { structuredResult } from "./result.js";
 import { assertWorkspaceWriteTarget } from "./write-target.js";
+
+function renderPatchBatchContent(result: PatchBatchResult): string {
+  const parts: string[] = [
+    "V2 apply_patch_many: " +
+      result.status +
+      " (" +
+      result.outcome.code +
+      "), dry_run=" +
+      result.dry_run +
+      ", files=" +
+      result.files.length +
+      "."
+  ];
+
+  for (const file of result.files) {
+    if (file.ok) {
+      parts.push(
+        "--- " +
+          file.path +
+          " | " +
+          (result.dry_run ? "expected_sha256=" : "sha256=") +
+          file.sha256 +
+          " | bytes=" +
+          file.bytes +
+          " | applied=" +
+          file.applied +
+          " ---"
+      );
+      if (file.diff) {
+        parts.push(
+          "diff: " +
+            file.diff.edits +
+            " edit(s), lines " +
+            file.diff.linesBefore +
+            " -> " +
+            file.diff.linesAfter +
+            ", bytes " +
+            file.diff.bytesBefore +
+            " -> " +
+            file.diff.bytesAfter
+        );
+        parts.push(file.diff.preview);
+      }
+    } else {
+      parts.push(
+        "--- " + file.path + " | ERROR " + (file.errorCode ?? "WRITE_FAILED") + " ---"
+      );
+      parts.push(file.error ?? "Could not apply the patch.");
+    }
+  }
+
+  if (result.error) parts.push("error: " + result.error);
+  parts.push(
+    "outcome: " +
+      result.outcome.status +
+      "/" +
+      result.outcome.effectState +
+      "/" +
+      result.outcome.retry +
+      " " +
+      result.outcome.code +
+      ". " +
+      result.outcome.nextAction
+  );
+  return parts.join("\n");
+}
 
 export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceManager): void {
   exposer.expose("fs_read", {
@@ -235,40 +301,48 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("apply_patch_many", {
     description:
-      "Apply exact text patches to up to 20 independent files in one call. Prefer this over repeated apply_patch calls. Every file must provide its reviewed expected_sha256, and old_text must occur exactly once. All files are preflighted before mutation; total resulting content is capped at 1 MiB and ordinary write failures trigger rollback, but the batch is not crash-atomic.",
-    inputSchema: z.object({
-      patches: z.array(z.object({
-        path: z.string().min(1),
-        expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
-        old_text: z.string().min(1),
-        new_text: z.string()
-      })).min(1).max(20)
-    }),
-    outputSchema: z.object({
-      status: z.literal("committed"),
-      files: z.array(z.object({
-        path: z.string(),
-        bytes: z.number().int().nonnegative(),
-        sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
-        created: z.boolean()
-      })),
-      totalBytes: z.number().int().nonnegative(),
-      successCount: z.number().int().nonnegative()
-    })
-  }, async ({ patches }) => {
+      "Apply exact text patches to up to 20 independent files in one call. Legacy form uses one old_text/new_text pair per file. V2 form {contract_version:2, dry_run?, patches:[{path,expected_sha256,edits:[{old_text,new_text}]}]} locates 1-100 edits per file against the same reviewed revision, rejects ambiguous or overlapping edits, and preflights the whole batch before writing. dry_run returns the expected new hashes and a bounded diff without writing. Ordinary write failures trigger rollback; files changed externally during rollback are preserved and reported as effect unknown.",
+    inputSchema: applyPatchManyInputSchema,
+    outputSchema: applyPatchManyOutputSchema
+  }, async (input) => {
     const workspaceRoot = workspaceManager.currentRoot();
-    for (const patch of patches) {
-      await assertWorkspaceWriteTarget(patch.path, workspaceRoot);
+    const patches = input.patches!;
+
+    if (input.contract_version === 2) {
+      const v2Patches = patches.map((patch) => {
+        if (patch.edits === undefined) {
+          throw new Error("V2 patch requires edits.");
+        }
+        return {
+          path: patch.path,
+          expectedSha256: patch.expected_sha256,
+          edits: patch.edits
+        };
+      });
+      for (const patch of v2Patches) {
+        await assertWorkspaceWriteTarget(patch.path, workspaceRoot);
+      }
+      const result = await patchTextFilesBatchV2(v2Patches, workspaceRoot, {
+        dryRun: input.dry_run === true
+      });
+      return structuredResult(result, renderPatchBatchContent(result));
     }
-    const results = await patchTextFilesBatch(
-      patches.map((patch) => ({
+
+    const legacyPatches = patches.map((patch) => {
+      if (patch.old_text === undefined || patch.new_text === undefined) {
+        throw new Error("Legacy patch requires old_text and new_text.");
+      }
+      return {
         path: patch.path,
         expectedSha256: patch.expected_sha256,
         oldText: patch.old_text,
         newText: patch.new_text
-      })),
-      workspaceRoot
-    );
+      };
+    });
+    for (const patch of legacyPatches) {
+      await assertWorkspaceWriteTarget(patch.path, workspaceRoot);
+    }
+    const results = await patchTextFilesBatch(legacyPatches, workspaceRoot);
     const result = {
       status: "committed" as const,
       files: results,

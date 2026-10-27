@@ -80,6 +80,64 @@ async function expectReadError(
   return failure;
 }
 
+function expectPatchEditError(
+  label: string,
+  fn: () => unknown,
+  expectedCode: string,
+  pattern: RegExp
+): void {
+  try {
+    fn();
+  } catch (error) {
+    check(
+      label,
+      error instanceof PatchEditError &&
+        error.code === expectedCode &&
+        pattern.test(error.message),
+      error instanceof Error ? error.message : String(error)
+    );
+    return;
+  }
+  throw new Error(`FAIL ${label} -> expected a PatchEditError`);
+}
+
+async function expectRejects(
+  label: string,
+  fn: () => Promise<unknown>,
+  pattern: RegExp
+): Promise<void> {
+  try {
+    await fn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    check(label, pattern.test(message), message);
+    return;
+  }
+  throw new Error(`FAIL ${label} -> expected rejection`);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 await fs.rm(FIXTURE, { recursive: true, force: true });
 await fs.rm(OUTSIDE, { recursive: true, force: true });
 await fs.mkdir(FIXTURE, { recursive: true });
@@ -91,7 +149,10 @@ process.env.REMOTE_AGENT_DEFAULT_CWD = FIXTURE;
 process.env.REMOTE_AGENT_MAX_READ_BYTES = String(16 * 1024 * 1024);
 
 const {
+  PATCH_LIMITS,
   READ_LIMITS,
+  applyPatchManyInputSchema,
+  applyPatchManyOutputSchema,
   fsReadManyInputSchema,
   fsReadManyOutputSchema
 } = await import("../tools/file-contracts.js");
@@ -103,7 +164,15 @@ const {
   splitLines
 } = await import("../tools/read-ranges.js");
 const { serializedBytes, toolResultBytes } = await import("../tools/result-budget.js");
-const { patchTextFile } = await import("../tools/files.js");
+const { PatchEditError, applyEditsToText, summarizeEdits } = await import("../tools/patch-edits.js");
+const { withWriteLocks } = await import("../tools/file-write-lock.js");
+const {
+  patchTextFile,
+  patchTextFilesBatch,
+  patchTextFilesBatchV2,
+  writeTextFile,
+  writeTextFilesBatch
+} = await import("../tools/files.js");
 
 try {
   // ---------------------------------------------------------------- pure helpers
@@ -630,6 +699,661 @@ try {
   check(
     "metadata budget: rejected paths are not echoed in the fallback",
     !JSON.stringify(metadata.result).includes("\\\\".repeat(64))
+  );
+
+  // ---------------------------------------------------------------- multi-edit patches
+  checkEqual(
+    "edits: every edit is applied to the same original text",
+    applyEditsToText("a b", [
+      { old_text: "a", new_text: "b" },
+      { old_text: "b", new_text: "c" }
+    ]),
+    "b c"
+  );
+  checkEqual(
+    "edits: input order does not matter",
+    applyEditsToText("one two three", [
+      { old_text: "three", new_text: "3" },
+      { old_text: "one", new_text: "1" }
+    ]),
+    "1 two 3"
+  );
+  expectPatchEditError(
+    "edits: overlapping replacements rejected",
+    () => applyEditsToText("abc", [
+      { old_text: "ab", new_text: "x" },
+      { old_text: "bc", new_text: "y" }
+    ]),
+    "OVERLAPPING_EDITS",
+    /overlap/i
+  );
+  expectPatchEditError(
+    "edits: ambiguous occurrence rejected",
+    () => applyEditsToText("x x", [{ old_text: "x", new_text: "y" }]),
+    "AMBIGUOUS_EDIT",
+    /ambiguous/i
+  );
+  expectPatchEditError(
+    "edits: overlapping occurrence is also ambiguous",
+    () => applyEditsToText("aaa", [{ old_text: "aa", new_text: "b" }]),
+    "AMBIGUOUS_EDIT",
+    /ambiguous/i
+  );
+  expectPatchEditError(
+    "edits: empty old_text rejected",
+    () => applyEditsToText("abc", [{ old_text: "", new_text: "x" }]),
+    "EMPTY_OLD_TEXT",
+    /empty/i
+  );
+  expectPatchEditError(
+    "edits: missing old_text rejected",
+    () => applyEditsToText("abc", [{ old_text: "z", new_text: "x" }]),
+    "MISSING_EDIT",
+    /not found/i
+  );
+  expectPatchEditError(
+    "edits: empty edit list rejected",
+    () => applyEditsToText("abc", []),
+    "INVALID_EDIT",
+    /1 to/i
+  );
+  expectPatchEditError(
+    "edits: more than 100 edits rejected",
+    () => applyEditsToText("a", Array.from(
+      { length: PATCH_LIMITS.maxEditsPerFile + 1 },
+      () => ({ old_text: "a", new_text: "b" })
+    )),
+    "INVALID_EDIT",
+    /1 to/i
+  );
+
+  const diffSummary = summarizeEdits(
+    "alpha\nbeta\n",
+    "alpha\nBETA\n",
+    [{ old_text: "beta", new_text: "BETA" }]
+  );
+  check("diff summary: edit count", diffSummary.edits === 1);
+  check("diff summary: byte counts", diffSummary.bytesBefore === 11 && diffSummary.bytesAfter === 11);
+  check("diff summary: line counts", diffSummary.linesBefore === 2 && diffSummary.linesAfter === 2);
+  check(
+    "diff summary: bounded preview shows old and new text",
+    diffSummary.preview.includes("- beta") &&
+      diffSummary.preview.includes("+ BETA") &&
+      diffSummary.preview.length <= 1024
+  );
+
+  const zeroHash = "0".repeat(64);
+  const legacyPatchArg = {
+    path: "p.txt",
+    expected_sha256: zeroHash,
+    old_text: "a",
+    new_text: "b"
+  };
+  const v2PatchArg = {
+    path: "p.txt",
+    expected_sha256: zeroHash,
+    edits: [{ old_text: "a", new_text: "b" }]
+  };
+  check("patch schema: legacy shape accepted", applyPatchManyInputSchema.safeParse({
+    patches: [legacyPatchArg]
+  }).success);
+  check("patch schema: V2 shape accepted", applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [v2PatchArg]
+  }).success);
+  check("patch schema: V2 dry_run accepted", applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    dry_run: true,
+    patches: [v2PatchArg]
+  }).success);
+  check("patch schema: V2 requires edits", !applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [legacyPatchArg]
+  }).success);
+  check("patch schema: V2 rejects old_text/new_text", !applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [{
+      path: "p.txt",
+      expected_sha256: zeroHash,
+      old_text: "a",
+      new_text: "b",
+      edits: [{ old_text: "a", new_text: "b" }]
+    }]
+  }).success);
+  check("patch schema: legacy rejects edits", !applyPatchManyInputSchema.safeParse({
+    patches: [{ ...legacyPatchArg, edits: [{ old_text: "a", new_text: "b" }] }]
+  }).success);
+  check("patch schema: dry_run requires V2", !applyPatchManyInputSchema.safeParse({
+    dry_run: true,
+    patches: [legacyPatchArg]
+  }).success);
+  check("patch schema: more than 20 files rejected", !applyPatchManyInputSchema.safeParse({
+    patches: Array.from({ length: PATCH_LIMITS.maxFiles + 1 }, () => legacyPatchArg)
+  }).success);
+  check("patch schema: more than 100 edits rejected", !applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [{
+      path: "p.txt",
+      expected_sha256: zeroHash,
+      edits: Array.from(
+        { length: PATCH_LIMITS.maxEditsPerFile + 1 },
+        () => ({ old_text: "a", new_text: "b" })
+      )
+    }]
+  }).success);
+  check("patch schema: 100 edits accepted", applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [{
+      path: "p.txt",
+      expected_sha256: zeroHash,
+      edits: Array.from(
+        { length: PATCH_LIMITS.maxEditsPerFile },
+        () => ({ old_text: "a", new_text: "b" })
+      )
+    }]
+  }).success);
+  check("patch schema: 1024-character V2 path accepted", applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [{ ...v2PatchArg, path: "a".repeat(PATCH_LIMITS.maxPathChars) }]
+  }).success);
+  check("patch schema: 1025-character V2 path rejected", !applyPatchManyInputSchema.safeParse({
+    contract_version: 2,
+    patches: [{ ...v2PatchArg, path: "a".repeat(PATCH_LIMITS.maxPathChars + 1) }]
+  }).success);
+
+  const multiText = 'const count = 1;\nconst label = "old";\nreturn count;\n';
+  const multiEdits = [
+    { old_text: "return count;", new_text: "return count + 1;" },
+    { old_text: "const count = 1;", new_text: "const count = 2;" },
+    { old_text: '"old"', new_text: '"new"' }
+  ];
+  const multiExpectedText = 'const count = 2;\nconst label = "new";\nreturn count + 1;\n';
+  await writeFixture("multi.txt", multiText);
+  const multiHash = sha256(Buffer.from(multiText, "utf8"));
+  const multiExpectedHash = sha256(Buffer.from(multiExpectedText, "utf8"));
+
+  const dryRun = await patchTextFilesBatchV2(
+    [{ path: "multi.txt", expectedSha256: multiHash, edits: multiEdits }],
+    FIXTURE,
+    { dryRun: true }
+  );
+  checkEqual("dry_run: status", dryRun.status, "dry_run");
+  checkEqual("dry_run: effect is none", dryRun.outcome.effectState, "none");
+  checkEqual("dry_run: flag", dryRun.dry_run, true);
+  checkEqual("dry_run: one file result", dryRun.files.length, 1);
+  checkEqual("dry_run: file preview ok", dryRun.files[0]?.ok, true);
+  checkEqual("dry_run: expected new hash", dryRun.files[0]?.sha256, multiExpectedHash);
+  checkEqual("dry_run: original hash retained", dryRun.files[0]?.original_sha256, multiHash);
+  checkEqual("dry_run: expected bytes", dryRun.files[0]?.bytes, Buffer.byteLength(multiExpectedText, "utf8"));
+  checkEqual("dry_run: not applied", dryRun.files[0]?.applied, false);
+  checkEqual("dry_run: diff edit count", dryRun.files[0]?.diff?.edits, 3);
+  check(
+    "dry_run: diff preview describes edits",
+    dryRun.files[0]?.diff?.preview.includes("- const count = 1;") === true &&
+      dryRun.files[0]?.diff?.preview.includes("+ const count = 2;") === true
+  );
+  checkEqual(
+    "dry_run: file is untouched",
+    await fs.readFile(path.join(FIXTURE, "multi.txt"), "utf8"),
+    multiText
+  );
+  check("dry_run: output schema valid", applyPatchManyOutputSchema.safeParse(dryRun).success);
+
+  const committed = await patchTextFilesBatchV2(
+    [{ path: "multi.txt", expectedSha256: multiHash, edits: multiEdits }],
+    FIXTURE
+  );
+  checkEqual("commit: status", committed.status, "committed");
+  checkEqual("commit: effect applied", committed.outcome.effectState, "applied");
+  checkEqual("commit: file hash", committed.files[0]?.sha256, multiExpectedHash);
+  checkEqual("commit: applied", committed.files[0]?.applied, true);
+  checkEqual(
+    "commit: all edits applied to the expected content",
+    await fs.readFile(path.join(FIXTURE, "multi.txt"), "utf8"),
+    multiExpectedText
+  );
+  check("commit: output schema valid", applyPatchManyOutputSchema.safeParse(committed).success);
+
+  await writeFixture("ambiguous.txt", "x x\n");
+  const ambiguousHash = sha256(Buffer.from("x x\n", "utf8"));
+  const ambiguous = await patchTextFilesBatchV2(
+    [{ path: "ambiguous.txt", expectedSha256: ambiguousHash, edits: [{ old_text: "x", new_text: "y" }] }],
+    FIXTURE
+  );
+  checkEqual("preflight: ambiguous status", ambiguous.status, "rejected");
+  checkEqual("preflight: ambiguous code", ambiguous.outcome.code, "AMBIGUOUS_EDIT");
+  checkEqual("preflight: ambiguous effect none", ambiguous.outcome.effectState, "none");
+  checkEqual(
+    "preflight: ambiguous file untouched",
+    await fs.readFile(path.join(FIXTURE, "ambiguous.txt"), "utf8"),
+    "x x\n"
+  );
+
+  await writeFixture("overlap.txt", "abc\n");
+  const overlapHash = sha256(Buffer.from("abc\n", "utf8"));
+  const overlapping = await patchTextFilesBatchV2(
+    [{
+      path: "overlap.txt",
+      expectedSha256: overlapHash,
+      edits: [
+        { old_text: "ab", new_text: "x" },
+        { old_text: "bc", new_text: "y" }
+      ]
+    }],
+    FIXTURE
+  );
+  checkEqual("preflight: overlap status", overlapping.status, "rejected");
+  checkEqual("preflight: overlap code", overlapping.outcome.code, "OVERLAPPING_EDITS");
+  checkEqual(
+    "preflight: overlap file untouched",
+    await fs.readFile(path.join(FIXTURE, "overlap.txt"), "utf8"),
+    "abc\n"
+  );
+
+  await writeFixture("zero-a.txt", "alpha\n");
+  await writeFixture("zero-b.txt", "beta\n");
+  const zeroAHash = sha256(Buffer.from("alpha\n", "utf8"));
+  const zeroBHash = sha256(Buffer.from("beta\n", "utf8"));
+  const zeroWrite = await patchTextFilesBatchV2(
+    [
+      { path: "zero-a.txt", expectedSha256: zeroAHash, edits: [{ old_text: "alpha", new_text: "ALPHA" }] },
+      { path: "zero-b.txt", expectedSha256: zeroHash, edits: [{ old_text: "beta", new_text: "BETA" }] }
+    ],
+    FIXTURE
+  );
+  checkEqual("preflight: stale second target status", zeroWrite.status, "rejected");
+  checkEqual("preflight: stale second target outcome", zeroWrite.outcome.status, "conflict");
+  checkEqual("preflight: stale second target code", zeroWrite.outcome.code, "STALE_REVISION");
+  checkEqual("preflight: stale second target effect none", zeroWrite.outcome.effectState, "none");
+  checkEqual(
+    "preflight: first target has zero writes",
+    await fs.readFile(path.join(FIXTURE, "zero-a.txt"), "utf8"),
+    "alpha\n"
+  );
+  checkEqual(
+    "preflight: second target unchanged",
+    await fs.readFile(path.join(FIXTURE, "zero-b.txt"), "utf8"),
+    "beta\n"
+  );
+  checkEqual("preflight: stale result reports target", zeroWrite.files[0]?.path, "zero-b.txt");
+  check("preflight: stale output schema valid", applyPatchManyOutputSchema.safeParse(zeroWrite).success);
+
+  await writeFixture("duplicate.txt", "alpha\nbeta\n");
+  const duplicateHash = sha256(Buffer.from("alpha\nbeta\n", "utf8"));
+  const duplicate = await patchTextFilesBatchV2(
+    [
+      { path: "duplicate.txt", expectedSha256: duplicateHash, edits: [{ old_text: "alpha", new_text: "ALPHA" }] },
+      { path: "duplicate.txt", expectedSha256: duplicateHash, edits: [{ old_text: "beta", new_text: "BETA" }] }
+    ],
+    FIXTURE
+  );
+  checkEqual("preflight: duplicate target status", duplicate.status, "rejected");
+  checkEqual("preflight: duplicate target code", duplicate.outcome.code, "DUPLICATE_TARGET");
+  checkEqual(
+    "preflight: duplicate target zero writes",
+    await fs.readFile(path.join(FIXTURE, "duplicate.txt"), "utf8"),
+    "alpha\nbeta\n"
+  );
+
+  if (process.platform === "win32") {
+    await writeFixture("case-alias.txt", "alpha\n");
+    const caseHash = sha256(Buffer.from("alpha\n", "utf8"));
+    const caseAlias = await patchTextFilesBatchV2(
+      [
+        { path: "case-alias.txt", expectedSha256: caseHash, edits: [{ old_text: "alpha", new_text: "A" }] },
+        { path: "CASE-ALIAS.TXT", expectedSha256: caseHash, edits: [{ old_text: "alpha", new_text: "B" }] }
+      ],
+      FIXTURE
+    );
+    checkEqual("preflight: case-alias duplicate status", caseAlias.status, "rejected");
+    checkEqual("preflight: case-alias duplicate code", caseAlias.outcome.code, "DUPLICATE_TARGET");
+    checkEqual(
+      "preflight: case-alias zero writes",
+      await fs.readFile(path.join(FIXTURE, "case-alias.txt"), "utf8"),
+      "alpha\n"
+    );
+  }
+
+  const largeCandidateText = "start " + "a".repeat(600 * 1024) + "\n";
+  await writeFixture("large-candidate-a.txt", largeCandidateText);
+  await writeFixture("large-candidate-b.txt", largeCandidateText);
+  const largeCandidateHash = sha256(Buffer.from(largeCandidateText, "utf8"));
+  const largeCandidate = await patchTextFilesBatchV2(
+    [
+      {
+        path: "large-candidate-a.txt",
+        expectedSha256: largeCandidateHash,
+        edits: [{ old_text: "start", new_text: "START" }]
+      },
+      {
+        path: "large-candidate-b.txt",
+        expectedSha256: largeCandidateHash,
+        edits: [{ old_text: "start", new_text: "START" }]
+      }
+    ],
+    FIXTURE
+  );
+  checkEqual("preflight: 1 MiB candidate limit status", largeCandidate.status, "rejected");
+  checkEqual("preflight: 1 MiB candidate limit code", largeCandidate.outcome.code, "TOO_LARGE");
+  checkEqual(
+    "preflight: 1 MiB candidate limit zero writes on first file",
+    await fs.readFile(path.join(FIXTURE, "large-candidate-a.txt"), "utf8"),
+    largeCandidateText
+  );
+  checkEqual(
+    "preflight: 1 MiB candidate limit zero writes on second file",
+    await fs.readFile(path.join(FIXTURE, "large-candidate-b.txt"), "utf8"),
+    largeCandidateText
+  );
+
+  await writeFixture("legacy-patch.txt", "alpha\n");
+  const legacyHash = sha256(Buffer.from("alpha\n", "utf8"));
+  const legacyBatch = await patchTextFilesBatch(
+    [{
+      path: "legacy-patch.txt",
+      expectedSha256: legacyHash,
+      oldText: "alpha",
+      newText: "ALPHA"
+    }],
+    FIXTURE
+  );
+  checkEqual("legacy batch: success fields", legacyBatch[0]?.sha256, sha256(Buffer.from("ALPHA\n", "utf8")));
+  checkEqual(
+    "legacy batch: old_text/new_text still patch",
+    await fs.readFile(path.join(FIXTURE, "legacy-patch.txt"), "utf8"),
+    "ALPHA\n"
+  );
+  await writeFixture("legacy-ambiguous.txt", "x x\n");
+  await expectRejects(
+    "legacy batch: ambiguous error remains actionable",
+    () => patchTextFilesBatch(
+      [{
+        path: "legacy-ambiguous.txt",
+        expectedSha256: sha256(Buffer.from("x x\n", "utf8")),
+        oldText: "x",
+        newText: "y"
+      }],
+      FIXTURE
+    ),
+    /ambiguous/i
+  );
+
+  // ---------------------------------------------------------------- shared write locks
+  let dedupedLockRan = false;
+  await withWriteLocks(["dedupe-key", "dedupe-key"], async () => {
+    dedupedLockRan = true;
+  });
+  check("locks: duplicate keys do not self-deadlock", dedupedLockRan);
+
+  const lockOrder: string[] = [];
+  await withTimeout(
+    Promise.all([
+      withWriteLocks(["lock-a", "lock-b"], async () => {
+        lockOrder.push("a-start");
+        await delay(20);
+        lockOrder.push("a-end");
+      }),
+      withWriteLocks(["lock-b", "lock-a"], async () => {
+        lockOrder.push("b-start");
+        await delay(20);
+        lockOrder.push("b-end");
+      })
+    ]),
+    2000,
+    "write lock deadlock"
+  );
+  check(
+    "locks: opposite multi-key acquisitions serialize",
+    lockOrder.join(",") === "a-start,a-end,b-start,b-end" ||
+      lockOrder.join(",") === "b-start,b-end,a-start,a-end",
+    lockOrder.join(",")
+  );
+
+  await writeFixture("concurrent-patch.txt", "value=0\n");
+  const concurrentHash = sha256(Buffer.from("value=0\n", "utf8"));
+  const concurrent = await Promise.allSettled(
+    Array.from({ length: 8 }, (_, index) =>
+      patchTextFile(
+        "concurrent-patch.txt",
+        concurrentHash,
+        "value=0",
+        `value=${index + 1}`,
+        FIXTURE
+      )
+    )
+  );
+  const concurrentSuccesses = concurrent.filter((result) => result.status === "fulfilled").length;
+  const concurrentFailures = concurrent.filter((result) => result.status === "rejected");
+  check(
+    "locks: one reviewed patch wins, seven stale writers wait",
+    concurrentSuccesses === 1 && concurrentFailures.length === 7,
+    `success=${concurrentSuccesses} failure=${concurrentFailures.length}`
+  );
+  check(
+    "locks: stale writers report a version conflict",
+    concurrentFailures.every((result) =>
+      result.status === "rejected" &&
+      String(result.reason).includes("file changed since review")
+    )
+  );
+  check(
+    "locks: final content is one complete patch",
+    /^value=[1-8]\n$/.test(await fs.readFile(path.join(FIXTURE, "concurrent-patch.txt"), "utf8"))
+  );
+
+  await writeTextFile("shared-lock.txt", "0", FIXTURE);
+  const sharedLockHash = sha256(Buffer.from("0", "utf8"));
+  const [sharedPatch, sharedWrite] = await Promise.allSettled([
+    patchTextFile("shared-lock.txt", sharedLockHash, "0", "P", FIXTURE),
+    writeTextFile("shared-lock.txt", "W", FIXTURE)
+  ]);
+  check("locks: blind write and patch share the same path lock", sharedWrite.status === "fulfilled");
+  check(
+    "locks: shared write lock leaves a coherent final file",
+    await fs.readFile(path.join(FIXTURE, "shared-lock.txt"), "utf8") === "W",
+    String(sharedPatch.status)
+  );
+
+  await writeFixture("batch-lock.txt", "value=0\n");
+  const batchLockHash = sha256(Buffer.from("value=0\n", "utf8"));
+  const [batchOne, batchTwo] = await Promise.all([
+    patchTextFilesBatchV2(
+      [{ path: "batch-lock.txt", expectedSha256: batchLockHash, edits: [{ old_text: "value=0", new_text: "value=1" }] }],
+      FIXTURE
+    ),
+    patchTextFilesBatchV2(
+      [{ path: "batch-lock.txt", expectedSha256: batchLockHash, edits: [{ old_text: "value=0", new_text: "value=2" }] }],
+      FIXTURE
+    )
+  ]);
+  const committedBatches = [batchOne, batchTwo].filter((result) => result.status === "committed");
+  const rejectedBatches = [batchOne, batchTwo].filter((result) => result.status === "rejected");
+  check(
+    "locks: concurrent V2 batches commit at most once",
+    committedBatches.length === 1 && rejectedBatches.length === 1,
+    JSON.stringify([batchOne.status, batchTwo.status])
+  );
+  check(
+    "locks: losing batch reports no effect",
+    rejectedBatches[0]?.outcome.effectState === "none" &&
+      rejectedBatches[0]?.outcome.code === "STALE_REVISION"
+  );
+  check(
+    "locks: batch final content is one complete winner",
+    /^value=[12]\n$/.test(await fs.readFile(path.join(FIXTURE, "batch-lock.txt"), "utf8"))
+  );
+
+  await writeFixture("write-batch-lock.txt", "0");
+  const writeBatchHash = sha256(Buffer.from("0", "utf8"));
+  const writeBatchResults = await Promise.all([
+    writeTextFilesBatch(
+      [{ path: "write-batch-lock.txt", content: "A", expectedSha256: writeBatchHash }],
+      FIXTURE
+    ).then(() => true).catch(() => false),
+    writeTextFilesBatch(
+      [{ path: "write-batch-lock.txt", content: "B", expectedSha256: writeBatchHash }],
+      FIXTURE
+    ).then(() => true).catch(() => false)
+  ]);
+  check(
+    "locks: concurrent fs_write_many batches commit at most once",
+    writeBatchResults.filter(Boolean).length === 1,
+    JSON.stringify(writeBatchResults)
+  );
+  check(
+    "locks: fs_write_many final content is one complete winner",
+    ["A", "B"].includes(await fs.readFile(path.join(FIXTURE, "write-batch-lock.txt"), "utf8"))
+  );
+
+  await writeFixture("legacy-batch-lock.txt", "0");
+  const legacyBatchHash = sha256(Buffer.from("0", "utf8"));
+  const legacyBatchResults = await Promise.all([
+    patchTextFilesBatch(
+      [{ path: "legacy-batch-lock.txt", expectedSha256: legacyBatchHash, oldText: "0", newText: "1" }],
+      FIXTURE
+    ).then(() => true).catch(() => false),
+    patchTextFilesBatch(
+      [{ path: "legacy-batch-lock.txt", expectedSha256: legacyBatchHash, oldText: "0", newText: "2" }],
+      FIXTURE
+    ).then(() => true).catch(() => false)
+  ]);
+  check(
+    "locks: concurrent legacy apply_patch_many batches commit at most once",
+    legacyBatchResults.filter(Boolean).length === 1,
+    JSON.stringify(legacyBatchResults)
+  );
+  check(
+    "locks: legacy apply_patch_many final content is one complete winner",
+    ["1", "2"].includes(await fs.readFile(path.join(FIXTURE, "legacy-batch-lock.txt"), "utf8"))
+  );
+
+  // ---------------------------------------------------------------- rollback outcomes
+  const rollbackEntries = (aHash: string, bHash: string) => [
+    { path: "roll-a.txt", expectedSha256: aHash, edits: [{ old_text: "A0", new_text: "A1" }] },
+    { path: "roll-b.txt", expectedSha256: bHash, edits: [{ old_text: "B0", new_text: "B1" }] }
+  ];
+  const resetRollback = async (): Promise<{ aHash: string; bHash: string }> => {
+    await writeFixture("roll-a.txt", "A0\n");
+    await writeFixture("roll-b.txt", "B0\n");
+    return {
+      aHash: sha256(Buffer.from("A0\n", "utf8")),
+      bHash: sha256(Buffer.from("B0\n", "utf8"))
+    };
+  };
+
+  let rollbackHashes = await resetRollback();
+  const rolledBack = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: (targetPath) => {
+          if (targetPath === "roll-a.txt") throw new Error("injected publish failure");
+        }
+      }
+    }
+  );
+  checkEqual("rollback: publish failure status", rolledBack.status, "rolled_back");
+  checkEqual("rollback: publish failure effect", rolledBack.outcome.effectState, "rolled_back");
+  checkEqual("rollback: publish failure retry", rolledBack.outcome.retry, "safe");
+  check("rollback: restored file reports code", rolledBack.files[0]?.errorCode === "ROLLED_BACK");
+  check("rollback: untouched file reports aborted", rolledBack.files[1]?.errorCode === "BATCH_ABORTED");
+  checkEqual(
+    "rollback: first file restored",
+    await fs.readFile(path.join(FIXTURE, "roll-a.txt"), "utf8"),
+    "A0\n"
+  );
+  checkEqual(
+    "rollback: second file never written",
+    await fs.readFile(path.join(FIXTURE, "roll-b.txt"), "utf8"),
+    "B0\n"
+  );
+  check("rollback: rolled_back output schema valid", applyPatchManyOutputSchema.safeParse(rolledBack).success);
+
+  rollbackHashes = await resetRollback();
+  const externalRewrite = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: (targetPath) => {
+          if (targetPath === "roll-a.txt") throw new Error("injected publish failure");
+        },
+        beforeRollback: async (targetPath) => {
+          if (targetPath === "roll-a.txt") {
+            await fs.writeFile(path.join(FIXTURE, "roll-a.txt"), "EXTERNAL\n", "utf8");
+          }
+        }
+      }
+    }
+  );
+  checkEqual("rollback: external rewrite status", externalRewrite.status, "unknown");
+  checkEqual("rollback: external rewrite effect", externalRewrite.outcome.effectState, "unknown");
+  checkEqual("rollback: external rewrite retry", externalRewrite.outcome.retry, "never_automatic");
+  checkEqual("rollback: external rewrite code", externalRewrite.outcome.code, "ROLLBACK_UNCONFIRMED");
+  checkEqual(
+    "rollback: external rewrite is preserved",
+    await fs.readFile(path.join(FIXTURE, "roll-a.txt"), "utf8"),
+    "EXTERNAL\n"
+  );
+  checkEqual(
+    "rollback: external rewrite does not touch the other file",
+    await fs.readFile(path.join(FIXTURE, "roll-b.txt"), "utf8"),
+    "B0\n"
+  );
+  check("rollback: external rewrite reports unknown file", externalRewrite.files[0]?.errorCode === "ROLLBACK_UNCONFIRMED");
+  check("rollback: unknown output schema valid", applyPatchManyOutputSchema.safeParse(externalRewrite).success);
+
+  rollbackHashes = await resetRollback();
+  const rollbackFailed = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: (targetPath) => {
+          if (targetPath === "roll-a.txt") throw new Error("injected publish failure");
+        },
+        beforeRollback: (targetPath) => {
+          if (targetPath === "roll-a.txt") throw new Error("injected rollback failure");
+        }
+      }
+    }
+  );
+  checkEqual("rollback: injected rollback failure status", rollbackFailed.status, "unknown");
+  checkEqual("rollback: injected rollback failure effect", rollbackFailed.outcome.effectState, "unknown");
+  checkEqual("rollback: injected rollback failure retry", rollbackFailed.outcome.retry, "never_automatic");
+  checkEqual(
+    "rollback: failed rollback preserves the written content",
+    await fs.readFile(path.join(FIXTURE, "roll-a.txt"), "utf8"),
+    "A1\n"
+  );
+  check("rollback: failed rollback reports unknown file", rollbackFailed.files[0]?.errorCode === "ROLLBACK_UNCONFIRMED");
+
+  // ---------------------------------------------------------------- output schema
+  check(
+    "patch output schema: legacy result remains valid",
+    applyPatchManyOutputSchema.safeParse({
+      status: "committed",
+      files: [{ path: "p.txt", bytes: 1, sha256: zeroHash, created: false }],
+      totalBytes: 1,
+      successCount: 1
+    }).success
+  );
+  check(
+    "patch output schema: dry-run result valid",
+    applyPatchManyOutputSchema.safeParse(dryRun).success
+  );
+  check(
+    "patch output schema: committed result valid",
+    applyPatchManyOutputSchema.safeParse(committed).success
+  );
+  check(
+    "patch output schema: preflight rejection valid",
+    applyPatchManyOutputSchema.safeParse(ambiguous).success
+  );
+  check(
+    "patch output schema: unknown rollback valid",
+    applyPatchManyOutputSchema.safeParse(externalRewrite).success
   );
 
   // ---------------------------------------------------------------- output schema

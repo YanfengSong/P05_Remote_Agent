@@ -95,7 +95,7 @@ export function serializedBytes(value: unknown): number {
 - 单文件读取上限为 `min(config.maxReadBytes, 8 MiB)`；非正整数配置失败关闭。hash、行数、正文来自同一份受限 buffer；BOM 不进入展示但进入 hash，CRLF 原样保留。
 - 预算统计最终 `{content, structuredContent}` 的 JSON UTF-8 字节。超预算时按整行裁剪并返回 `nextOffset`；未处理请求返回 `pendingIndexes`；单行无法容纳时返回 `LINE_TOO_LARGE`；连错误信封都放不下时返回固定 `RESULT_BUDGET_TOO_SMALL`。
 - V2 错误使用固定 code/message，不包含解析后的宿主绝对路径。读取沿用 `assertAccessiblePath`，现有 hardlink/TOCTOU 局限未改变。
-- `src/test/file-contracts.ts` 覆盖 154 项检查；`output-schema.ts` 增加真实 stdio MCP 客户端预算、正文可见性、续读、协议边界和 legacy 回归检查；`profile-exposure.ts` 验证 readonly profile 下 V2 范围读取仍只读可用。未引入 `isError`，执行审计的失败分类统一仍留给 A3。
+- `src/test/file-contracts.ts` 覆盖 A1 的读取、预算、兼容与错误断言；`output-schema.ts` 增加真实 stdio MCP 客户端预算、正文可见性、续读、协议边界和 legacy 回归检查；`profile-exposure.ts` 验证 readonly profile 下 V2 范围读取仍只读可用。未引入 `isError`，执行审计的失败分类统一仍留给 A3。
 - 读取 hash 通过测试与既有 `patchTextFile` 衔接：BOM 与 CRLF fixture 在 UTF-8 解码/重编码后仍保持原始字节 hash。
 
 ## A2. 同原文多编辑与诚实的写入结果
@@ -112,7 +112,7 @@ export function withWriteLocks<T>(
 ```
 新补丁请求对每个文件保存 expected_sha256 + edits；旧 old_text/new_text 分支转换为单编辑后保持原响应。锁按规范化路径排序获取，逆序释放，不能对同一锁二次获取造成死锁。
 
-- [ ] 新增失败测试，证明编辑都基于原文、重叠/歧义拒绝。还要覆盖批次第二个目标过期时第一个目标零写入、dry_run 零写入、大小写别名重复。
+- [x] 新增失败测试，证明编辑都基于原文、重叠/歧义拒绝。还要覆盖批次第二个目标过期时第一个目标零写入、dry_run 零写入、大小写别名重复。
 ```ts
 import { applyEditsToText } from "../tools/patch-edits.js";
 assert.equal(applyEditsToText("a b", [
@@ -127,8 +127,8 @@ assert.throws(() => applyEditsToText("x x", [
   { old_text: "x", new_text: "y" }
 ]), /ambiguous/);
 ```
-- [ ] 跑统一命令观察失败；分别注入发布失败、回滚失败、回滚前外部改写，预期结果区分 rolled_back 与 unknown。
-- [ ] 实现定位和候选计算；唯一出现可用 indexOf + 第二次 indexOf（从首个位置+1）检查；排序后要求前项 end <= 后项 start，再倒序替换。空 old_text 拒绝，不自动模糊匹配。
+- [x] 跑统一命令观察失败；分别注入发布失败、回滚失败、回滚前外部改写，预期结果区分 rolled_back 与 unknown。
+- [x] 实现定位和候选计算；唯一出现可用 indexOf + 第二次 indexOf（从首个位置+1）检查；排序后要求前项 end <= 后项 start，再倒序替换。空 old_text 拒绝，不自动模糊匹配。
 ```ts
 const spans = edits.map(edit => {
   const start = original.indexOf(edit.old_text);
@@ -144,9 +144,17 @@ for (const span of spans.reverse()) {
   result = result.slice(0, span.start) + span.text + result.slice(span.end);
 }
 ```
-- [ ] 接入共享写锁，覆盖 fs_write、fs_write_many、apply_patch 和 apply_patch_many；复用既有路径策略、总大小预检与发布逻辑。回滚只恢复仍与本次写出 hash 相符的目标，否则保留现场并返回 never_automatic。旧错误响应可增加诊断，但不吞掉 MCP isError。
-- [ ] 跑完整 file-contracts 与现有 foundation 测试；验证三处替换只需一个原始 hash，失败没有静默覆盖外部文件。
-- [ ] 提交：`rtk git commit -m "feat: apply multiple edits against one reviewed file revision"`。
+- [x] 接入共享写锁，覆盖 fs_write、fs_write_many、apply_patch 和 apply_patch_many；复用既有路径策略、总大小预检与发布逻辑。回滚只恢复仍与本次写出 hash 相符的目标，否则保留现场并返回 never_automatic。旧错误响应可增加诊断，但不吞掉 MCP isError。
+- [x] 跑完整 file-contracts 与现有 foundation 测试；验证三处替换只需一个原始 hash，失败没有静默覆盖外部文件。
+- [x] 提交：`rtk git commit -m "feat: apply multiple edits against one reviewed file revision"`。
+
+**A2 实施记录（2026-10-27）：**
+- 新增 `src/tools/patch-edits.ts`、`src/tools/file-write-lock.ts`；V2 `apply_patch_many` 支持每文件 1—100 处编辑、最多 20 文件、候选正文合计 1 MiB，旧 `old_text/new_text` 请求转换为单编辑并保持原成功响应。
+- 所有编辑先对同一原文定位；空 `old_text`、缺失、歧义（含重叠出现）、编辑重叠和规范化路径重复均拒绝。`dry_run` 返回预期新 hash、原 hash、预期字节数与有界 diff 预览，不写入。
+- `withWriteLocks` 使用规范化路径，排序获取、去重、逆序释放；`fs_write`、`fs_write_many`、`apply_patch`、`apply_patch_many` 共用一个进程内锁。提交前在同一锁内再次核对原始 hash；这是 P05 进程内互斥，不是 OS 文件锁，外部进程竞争仍在。
+- 批次预检在任何写入前完成。发布失败后只回滚仍等于本次写出 hash 的既有文件；回滚前发现外部改写、创建文件被外部修改或回滚失败时保留现场，返回 `effectState=unknown`、`retry=never_automatic`、`ROLLBACK_UNCONFIRMED`。成功回滚返回 `rolled_back`。legacy 分支仍抛出 MCP `isError`，不吞掉失败。
+- `file-contracts.ts` 当前 266 项检查，覆盖三处编辑同原文、dry_run 零写入、第二个目标过期零写入、大小写别名、1 MiB 候选上限、并发锁、发布失败/回滚失败/回滚前外部改写；`output-schema.ts` 通过真实 MCP 客户端验证 V2 dry_run/commit 的输出 schema 与文本 diff。`npm run verify` 通过。
+- V2 结构化失败仍未接入 `isError` 与审计失败分类；该统一映射仍属于 A3。`patchTextFile` 的歧义检查同步收紧为从 `start + 1` 查找，避免接受重叠重复出现。
 
 ## A3. 搜索覆盖范围与执行审计
 
