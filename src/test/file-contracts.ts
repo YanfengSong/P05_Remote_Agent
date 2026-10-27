@@ -587,7 +587,11 @@ try {
   check("batch: text client sees version", partial.contentText.includes(first.sha256));
   check(
     "batch: response budget includes content and structuredContent",
-    toolResultBytes(partial.result, partial.contentText) <= READ_LIMITS.defaultMaxBytes
+    toolResultBytes(
+      partial.result,
+      partial.contentText,
+      isOutcomeFailure(partial.result.outcome)
+    ) <= READ_LIMITS.defaultMaxBytes
   );
 
   const budget = await readManyRanges(
@@ -610,8 +614,16 @@ try {
   checkEqual("budget: outcome code", budget.result.outcome.code, "READ_TRUNCATED");
   check(
     "budget: selected max_bytes respected",
-    toolResultBytes(budget.result, budget.contentText) <= READ_LIMITS.minMaxBytes,
-    String(toolResultBytes(budget.result, budget.contentText))
+    toolResultBytes(
+      budget.result,
+      budget.contentText,
+      isOutcomeFailure(budget.result.outcome)
+    ) <= READ_LIMITS.minMaxBytes,
+    String(toolResultBytes(
+      budget.result,
+      budget.contentText,
+      isOutcomeFailure(budget.result.outcome)
+    ))
   );
   check("budget: text client sees nextOffset", budget.contentText.includes("nextOffset="));
   check("budget: text client sees pending indexes", budget.contentText.includes("pendingIndexes: [1, 2]"));
@@ -642,8 +654,16 @@ try {
   const defaultItem = defaultBudget.result.files[0]!;
   check(
     "budget: default 64 KiB respects the final result size",
-    toolResultBytes(defaultBudget.result, defaultBudget.contentText) <= READ_LIMITS.defaultMaxBytes,
-    String(toolResultBytes(defaultBudget.result, defaultBudget.contentText))
+    toolResultBytes(
+      defaultBudget.result,
+      defaultBudget.contentText,
+      isOutcomeFailure(defaultBudget.result.outcome)
+    ) <= READ_LIMITS.defaultMaxBytes,
+    String(toolResultBytes(
+      defaultBudget.result,
+      defaultBudget.contentText,
+      isOutcomeFailure(defaultBudget.result.outcome)
+    ))
   );
   check("budget: default trims a large range", (defaultItem.returnedLines ?? 0) < 2000);
   checkEqual("budget: default nextOffset advances", defaultItem.nextOffset, defaultItem.returnedLines);
@@ -656,7 +676,11 @@ try {
   const maxItem = maxBudget.result.files[0]!;
   check(
     "budget: 256 KiB maximum respected",
-    toolResultBytes(maxBudget.result, maxBudget.contentText) <= READ_LIMITS.maxMaxBytes
+    toolResultBytes(
+      maxBudget.result,
+      maxBudget.contentText,
+      isOutcomeFailure(maxBudget.result.outcome)
+    ) <= READ_LIMITS.maxMaxBytes
   );
   checkEqual("budget: 256 KiB can return the full 2000-line range", maxItem.returnedLines, 2000);
   checkEqual("budget: 256 KiB range complete", maxItem.complete, true);
@@ -668,8 +692,16 @@ try {
   );
   check(
     "budget: Chinese and JSON escaping counted",
-    toolResultBytes(escapedBudget.result, escapedBudget.contentText) <= READ_LIMITS.minMaxBytes,
-    String(toolResultBytes(escapedBudget.result, escapedBudget.contentText))
+    toolResultBytes(
+      escapedBudget.result,
+      escapedBudget.contentText,
+      isOutcomeFailure(escapedBudget.result.outcome)
+    ) <= READ_LIMITS.minMaxBytes,
+    String(toolResultBytes(
+      escapedBudget.result,
+      escapedBudget.contentText,
+      isOutcomeFailure(escapedBudget.result.outcome)
+    ))
   );
   check("budget: Chinese range still makes progress", (escapedBudget.result.files[0]?.returnedLines ?? 0) > 0);
 
@@ -687,7 +719,27 @@ try {
   checkEqual("line budget: batch error code", lineTooLarge.result.outcome.code, "LINE_TOO_LARGE");
   check(
     "line budget: bounded error result",
-    toolResultBytes(lineTooLarge.result, lineTooLarge.contentText) <= READ_LIMITS.minMaxBytes
+    toolResultBytes(
+      lineTooLarge.result,
+      lineTooLarge.contentText,
+      isOutcomeFailure(lineTooLarge.result.outcome)
+    ) <= READ_LIMITS.minMaxBytes
+  );
+
+  const errorBudget = await readManyRanges(
+    FIXTURE,
+    [{ path: "missing-for-budget.txt", offset: 0, limit: 1 }],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual(
+    "budget: A1 error outcome is a failure",
+    isOutcomeFailure(errorBudget.result.outcome),
+    true
+  );
+  check(
+    "budget: A1 error response includes isError within max_bytes",
+    toolResultBytes(errorBudget.result, errorBudget.contentText, true) <= READ_LIMITS.minMaxBytes,
+    String(toolResultBytes(errorBudget.result, errorBudget.contentText, true))
   );
 
   const lineAndOther = await readManyRanges(
@@ -722,8 +774,16 @@ try {
   );
   check(
     "metadata budget: fixed bounded error fits",
-    toolResultBytes(metadata.result, metadata.contentText) <= READ_LIMITS.minMaxBytes,
-    String(toolResultBytes(metadata.result, metadata.contentText))
+    toolResultBytes(
+      metadata.result,
+      metadata.contentText,
+      isOutcomeFailure(metadata.result.outcome)
+    ) <= READ_LIMITS.minMaxBytes,
+    String(toolResultBytes(
+      metadata.result,
+      metadata.contentText,
+      isOutcomeFailure(metadata.result.outcome)
+    ))
   );
   check(
     "metadata budget: rejected paths are not echoed in the fallback",

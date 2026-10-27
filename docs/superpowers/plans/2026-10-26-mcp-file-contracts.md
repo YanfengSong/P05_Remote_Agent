@@ -197,7 +197,7 @@ const stale: Outcome = {
 - `file-contracts.ts` 统一 `outcomeFor(code)` 与 `isOutcomeFailure(outcome)`。正常读取/搜索截断（`READ_TRUNCATED`、`SEARCH_TRUNCATED`）为 partial/none/safe，MCP 不置错、审计成功并记录 `resultStatus=partial`、`resultTruncated=true`；`READ_PARTIAL`、`SEARCH_IO_ERROR`、`conflict`、`rejected`、`error`、`unknown` 都置 MCP `isError` 并审计失败。未知写入错误默认 unknown/unknown/never_automatic。
 - `structuredResult` 支持可选 `isError`；A1/A2/A3 的 V2 handler 用统一 outcome 计算，legacy handler 不改变成功/抛错行为。真实 stdio MCP 客户端已验证 `isError=true` 时仍能读取 `structuredContent.outcome`、逐文件 `errorCode` 和文本诊断；正常截断保持 `isError=false`。
 - `ExecutionRuntime` 在 `verify` 后检查 `isError` 和 `structuredContent.outcome`，结构化失败不抛异常但仍记 `failed`，不再出现“已捕获失败显示 succeeded”。`AuditEvent` 增加可选 `resultStatus/resultCode/resultEffectState/resultRetry/resultTruncated`，`activity_recent`/`recovery_status` schema 同步；未知写入效果使用 `recoveryHint=human`，不给出自动重试建议。
-- `file-contracts.ts` 当前 365 项检查，覆盖搜索 coverage/跳过统计/io_error、outcome 映射、审计成功与失败分类；`output-schema.ts` 256 项、`profile-exposure.ts` 266 项通过；完整 `npm run verify` 通过。A4 与阶段 B 未启动。
+- A3 当时 `file-contracts.ts` 365 项检查，覆盖搜索 coverage/跳过统计/io_error、outcome 映射、审计成功与失败分类；`output-schema.ts` 256 项、`profile-exposure.ts` 266 项通过；完整 `npm run verify` 通过。
 
 ## A4. 集成与效率证据
 
@@ -207,7 +207,7 @@ const stale: Outcome = {
 `{scenario, variant, calls, responseBytes, elapsedMs, success, conflicts, unsafeRetries}`。
 variant 为 legacy 或 v2；不将 responseBytes 当模型 token 数。
 
-- [ ] 在测试中固定四套 fixture：2000 行文件定位、同文件三处唯一替换、500 文件配置搜索、一次验证失败后修复。断言最终文件字节正确、陈旧版本不写入、unsafeRetries=0。
+- [x] 在测试中固定四套 fixture：2000 行文件定位、同文件三处唯一替换、500 文件配置搜索、一次验证失败后修复。断言最终文件字节正确、陈旧版本不写入、unsafeRetries=0。
 ```ts
 const expected = Buffer.from("const count = 2;\nreturn count + 1;\n", "utf8");
 assert.deepEqual(actualFileBytes, expected);
@@ -215,15 +215,23 @@ assert.equal(measurement.unsafeRetries, 0);
 assert.ok(measurement.responseBytes <= measurement.calls * 262144);
 ```
 actualFileBytes 从修复 fixture 的结果文件读取；measurement 是该场景驱动按上述 JSON 行结构累计的实际结果，不硬编码假测量值。
-- [ ] 对未接入的 V2 路径运行基准，确认失败能定位缺少的行为；完成 MCP 客户端驱动后执行：
+- [x] 对未接入的 V2 路径运行基准，确认失败能定位缺少的行为；完成 MCP 客户端驱动后执行：
 ```powershell
 rtk proxy .p05/tools/node/node.exe node_modules/typescript/bin/tsc -p tsconfig.json
 rtk proxy .p05/tools/node/node.exe dist/test/file-contracts-benchmark.js
 ```
-- [ ] 将四个 fixture 的调用驱动固定到 legacy/v2 两条路径，使用 performance.now 与实际序列化结果计数，写入验证文档；每场景至少 5 次。没有模型服务则明确记录“仅协议基准”，不写模型效率结论。
-- [ ] 执行 `rtk npm run verify`；若环境继承导致 PowerShell 模块或 allowed roots 故障，按项目验证脚本配置本进程环境后重跑失败项，并在报告中区分分项通过与完整 verify 通过。
-- [ ] 记录全部实际命令、失败修复与测量；不运行真实业务工具作为测试；确认 `rtk git diff --check` 通过。
-- [ ] 提交：`rtk git commit -m "test: benchmark and verify MCP file contracts"`。
+- [x] 将四个 fixture 的调用驱动固定到 legacy/v2 两条路径，使用 performance.now 与实际序列化结果计数，写入验证文档；每场景至少 5 次。没有模型服务则明确记录“仅协议基准”，不写模型效率结论。
+- [x] 执行 `rtk npm run verify`；若环境继承导致 PowerShell 模块或 allowed roots 故障，按项目验证脚本配置本进程环境后重跑失败项，并在报告中区分分项通过与完整 verify 通过。
+- [x] 记录全部实际命令、失败修复与测量；不运行真实业务工具作为测试；确认 `rtk git diff --check` 通过。
+- [x] 提交：`rtk git commit -m "test: benchmark and verify MCP file contracts"`。
+
+**A4 实施记录（2026-10-27）：**
+- 新增 `src/test/file-contracts-benchmark.ts` 和 `docs/validation/MCP_FILE_CONTRACTS.md`，并在 `package.json` 增加 `test:benchmark`。基准通过真实 stdio MCP 客户端驱动，fixture 位于仓库内，状态目录也隔离在 fixture；每场景每 variant 运行 5 次，共 40 次测量。V2 路径已在 A1—A3 接入，因此计划中的“未接入路径失败探测”由四场景基准直接覆盖。
+- 四个场景均 5/5 完成任务：大文件定位、同文件三处修改、500 文件配置搜索、验证失败后的修复。正常流程全部 `conflicts=0`、`unsafeRetries=0`；独立 stale guard 下 legacy 与 V2 都拒绝旧 hash、保留外部内容。
+- 实测中位数（legacy → V2）：大文件定位 1→2 次调用、104,273→2,095 响应字节、7.863→18.022 ms；同文件多处修改 4→2 次调用、1,097→1,978 字节、33.322→16.657 ms；500 文件搜索 1→1 次调用、484→951 字节、199.766→200.444 ms；验证失败后修复 3→3 次调用、791→2,867 字节、18.972→19.612 ms。仅记录实测，不设置提速目标，不推导模型/token 收益。
+- A1 错误预算检查：5 次 stale `expected_sha256`、`max_bytes=4096`，均 `isError=true`，最大实际响应 939 字节，预算仍成立。`result-budget.ts` 的字节计量已加入可选 `isError`，`read-ranges.ts` 在裁剪时使用同一计量。
+- 基准 warm-up 为一次 `ping` 和一次 500 文件搜索（不计入测量）。`responseBytes` 为工具结果对象 JSON UTF-8 字节，不含 JSON-RPC 信封；`elapsedMs` 为本地 stdio 往返加 fixture 校验，不代表模型或生产网络。`test:benchmark` 不加入每次提交必须运行的 `test:compiled`。
+- 完整 `npm run verify` 通过（file-contracts 367、output-schema 257）；`git diff --check` 无空白错误。A4 未启动阶段 B，未重启 Runtime、未推送、未合并。
 
 ## 完成门槛
 

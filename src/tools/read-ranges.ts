@@ -5,6 +5,7 @@ import { assertAccessiblePath } from "../security.js";
 import {
   FILE_CONTRACT_VERSION,
   READ_LIMITS,
+  isOutcomeFailure,
   outcomeFor as fixedOutcomeFor,
   type Outcome,
   type ReadBatch,
@@ -416,7 +417,11 @@ function buildReadResult(
 }
 
 function fits(result: ReadManyResult, maxBytes: number): boolean {
-  return toolResultBytes(result.result, result.contentText) <= maxBytes;
+  return toolResultBytes(
+    result.result,
+    result.contentText,
+    isOutcomeFailure(result.result.outcome)
+  ) <= maxBytes;
 }
 
 function fitByLines(

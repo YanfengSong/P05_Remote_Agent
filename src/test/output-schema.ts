@@ -249,7 +249,8 @@ try {
         offset: 0,
         limit: 1,
         expected_sha256: "0".repeat(64)
-      }]
+      }],
+      max_bytes: 4096
     }
   });
   const staleReadStructured = structuredOf(staleRead);
@@ -268,6 +269,11 @@ try {
       staleReadFiles[0]?.errorCode === "STALE_REVISION" &&
       textOf(staleRead).includes("STALE_REVISION"),
     JSON.stringify(staleReadStructured).slice(0, 500)
+  );
+  check(
+    "v2 error: stale read including isError respects max_bytes",
+    serializedBytes(staleRead) <= 4096,
+    `${serializedBytes(staleRead)} bytes`
   );
 
   const continuationOffset = limitedFirst.nextOffset as number;

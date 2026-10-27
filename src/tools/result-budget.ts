@@ -12,9 +12,14 @@ export function serializedBytes(value: unknown): number {
 }
 
 /** Mirrors the object shape produced by `structuredResult` in result.ts. */
-export function toolResultBytes(structuredContent: unknown, text: string): number {
+export function toolResultBytes(
+  structuredContent: unknown,
+  text: string,
+  isError = false
+): number {
   return serializedBytes({
     content: [{ type: "text", text }],
-    structuredContent
+    structuredContent,
+    ...(isError ? { isError: true } : {})
   });
 }
