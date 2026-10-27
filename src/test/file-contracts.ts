@@ -170,6 +170,7 @@ const {
 const { serializedBytes, toolResultBytes } = await import("../tools/result-budget.js");
 const { PatchEditError, applyEditsToText, summarizeEdits } = await import("../tools/patch-edits.js");
 const { withWriteLocks } = await import("../tools/file-write-lock.js");
+const { config } = await import("../config.js");
 const {
   patchTextFile,
   patchTextFilesBatch,
@@ -580,7 +581,8 @@ try {
   checkEqual("batch: first file ok", partial.result.files[0]?.ok, true);
   checkEqual("batch: failed file code", partial.result.files[1]?.errorCode, "NOT_FOUND");
   checkEqual("batch: third file ok", partial.result.files[2]?.ok, true);
-  checkEqual("batch: partial outcome", partial.result.outcome.status, "partial");
+  checkEqual("batch: failure outcome", partial.result.outcome.status, "error");
+  checkEqual("batch: failure code preserved", partial.result.outcome.code, "NOT_FOUND");
   checkEqual("batch: no pending requests", partial.result.pendingIndexes, []);
   check("batch: text client sees body", partial.contentText.includes("alpha\nbeta\ngamma\n"));
   check("batch: text client sees Chinese body", partial.contentText.includes("第三行\n"));
@@ -756,7 +758,7 @@ try {
     ["LINE_TOO_LARGE", true]
   );
   checkEqual("line budget: partial batch counts", [lineAndOther.result.successCount, lineAndOther.result.failureCount], [1, 1]);
-  checkEqual("line budget: partial outcome", lineAndOther.result.outcome.code, "READ_PARTIAL");
+  checkEqual("line budget: single failure outcome", lineAndOther.result.outcome.code, "LINE_TOO_LARGE");
   checkEqual("line budget: no pending cursor for the failed range", lineAndOther.result.pendingIndexes, []);
 
   const longPaths = Array.from({ length: 20 }, () => ({
@@ -788,6 +790,128 @@ try {
   check(
     "metadata budget: rejected paths are not echoed in the fallback",
     !JSON.stringify(metadata.result).includes("\\\\".repeat(64))
+  );
+
+  // ---------------------------------------------------------------- M1 remediation regression
+  const e1Name = "a".repeat(146) + ".txt";
+  await writeFixture(e1Name, "x".repeat(1329) + "\n" + "x\n".repeat(35));
+  const e1Reply = await readManyRanges(
+    FIXTURE,
+    [
+      { path: e1Name, offset: 0, limit: 35 },
+      { path: "missing-" + "m".repeat(490) + ".txt", offset: 0, limit: 1 }
+    ],
+    READ_LIMITS.minMaxBytes
+  );
+  check(
+    "M1 E1: final response with pending stays within max_bytes",
+    toolResultBytes(
+      e1Reply.result,
+      e1Reply.contentText,
+      isOutcomeFailure(e1Reply.result.outcome)
+    ) <= READ_LIMITS.minMaxBytes,
+    String(toolResultBytes(
+      e1Reply.result,
+      e1Reply.contentText,
+      isOutcomeFailure(e1Reply.result.outcome)
+    ))
+  );
+  checkEqual("M1 E1: the unreturned request is pending", e1Reply.result.pendingIndexes, [1]);
+
+  await writeFixture("m1-e2-large-line.txt", "x".repeat(12000));
+  const e2Reply = await readManyRanges(
+    FIXTURE,
+    [
+      { path: "m1-missing.txt", offset: 0, limit: 1 },
+      { path: "m1-e2-large-line.txt", offset: 0, limit: 1 }
+    ],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual("M1 E2: failure count is not masked", e2Reply.result.failureCount, 1);
+  checkEqual("M1 E2: outcome remains a failure", isOutcomeFailure(e2Reply.result.outcome), true);
+  checkEqual("M1 E2: outcome code preserves the failure", e2Reply.result.outcome.code, "NOT_FOUND");
+  checkEqual("M1 E2: pending is preserved", e2Reply.result.pendingIndexes, [1]);
+
+  const refused = await readManyRanges(
+    FIXTURE,
+    [{
+      path: "../" + path.basename(OUTSIDE) + "/secret.txt",
+      offset: 0,
+      limit: 1
+    }],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual("M1: PATH_REFUSED code is preserved", refused.result.outcome.code, "PATH_REFUSED");
+  checkEqual("M1: PATH_REFUSED retry is never automatic", refused.result.outcome.retry, "never_automatic");
+  checkEqual("M1: PATH_REFUSED is a failure", isOutcomeFailure(refused.result.outcome), true);
+
+  const savedMaxReadBytes = config.maxReadBytes;
+  config.maxReadBytes = Number.NaN;
+  try {
+    const invalidLimit = await readManyRanges(
+      FIXTURE,
+      [{ path: "plain.txt", offset: 0, limit: 1 }],
+      READ_LIMITS.minMaxBytes
+    );
+    checkEqual(
+      "M1: READ_LIMIT_INVALID is preserved",
+      invalidLimit.result.outcome.code,
+      "READ_LIMIT_INVALID"
+    );
+    checkEqual(
+      "M1: invalid local limit is never automatic",
+      invalidLimit.result.outcome.retry,
+      "never_automatic"
+    );
+  } finally {
+    config.maxReadBytes = savedMaxReadBytes;
+  }
+
+  const staleBatch = await readManyRanges(
+    FIXTURE,
+    [{
+      path: "plain.txt",
+      offset: 0,
+      limit: 1,
+      expected_sha256: "0".repeat(64)
+    }],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual("M1: STALE_REVISION is preserved", staleBatch.result.outcome.code, "STALE_REVISION");
+  checkEqual("M1: STALE_REVISION is a conflict", staleBatch.result.outcome.status, "conflict");
+  checkEqual("M1: STALE_REVISION is a failure", isOutcomeFailure(staleBatch.result.outcome), true);
+
+  const mixedFailure = await readManyRanges(
+    FIXTURE,
+    [
+      { path: "plain.txt", offset: 0, limit: 3 },
+      { path: "m1-missing.txt", offset: 0, limit: 1 },
+      { path: "m1-e2-large-line.txt", offset: 0, limit: 1 }
+    ],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual("M1: success + failure + pending keeps the failure", mixedFailure.result.failureCount, 1);
+  checkEqual(
+    "M1: success + failure + pending outcome is a failure",
+    isOutcomeFailure(mixedFailure.result.outcome),
+    true
+  );
+  checkEqual("M1: success + failure + pending keeps pending", mixedFailure.result.pendingIndexes, [2]);
+
+  const multiCodeFailure = await readManyRanges(
+    FIXTURE,
+    [
+      { path: "single-line.txt", offset: 0, limit: 1 },
+      { path: "m1-missing.txt", offset: 0, limit: 1 }
+    ],
+    READ_LIMITS.minMaxBytes
+  );
+  checkEqual("M1: mixed failures remain failures", multiCodeFailure.result.failureCount, 2);
+  checkEqual("M1: mixed failures use READ_FAILED", multiCodeFailure.result.outcome.code, "READ_FAILED");
+  checkEqual(
+    "M1: mixed failures use the most conservative retry",
+    multiCodeFailure.result.outcome.retry,
+    "after_refresh"
   );
 
   // ---------------------------------------------------------------- multi-edit patches
@@ -1604,6 +1728,23 @@ try {
   checkEqual("audit: search truncation code", searchTruncatedRun.record.resultCode, "SEARCH_TRUNCATED");
   checkEqual("audit: search truncation flag", searchTruncatedRun.record.resultTruncated, true);
   checkEqual("audit: search truncation recovery", searchTruncatedRun.record.recoveryHint, "none");
+
+  const mixedAuditResult = {
+    content: [{ type: "text", text: "diagnostic" }],
+    isError: true,
+    structuredContent: {
+      outcome: outcomeFor("NOT_FOUND"),
+      pendingIndexes: [1],
+      failureCount: 1,
+      files: [{ path: "missing.txt", ok: false, bytes: 0, errorCode: "NOT_FOUND" }]
+    }
+  };
+  const mixedAuditReturned = await runtime.run("workspace_current", async () => mixedAuditResult);
+  checkEqual("audit: mixed failure result is returned", mixedAuditReturned, mixedAuditResult);
+  const mixedAuditRecord = audit.recent(1)[0]!;
+  checkEqual("audit: mixed failure + pending fails", mixedAuditRecord.state, "failed");
+  checkEqual("audit: mixed failure code retained", mixedAuditRecord.resultCode, "NOT_FOUND");
+  checkEqual("audit: mixed failure marks truncation", mixedAuditRecord.resultTruncated, true);
 
   const bareError = {
     content: [{ type: "text", text: "diagnostic" }],

@@ -67,6 +67,9 @@ const AMBIGUOUS_SHA = createHash("sha256")
   .update(Buffer.from(AMBIGUOUS_TEXT, "utf8"))
   .digest("hex");
 
+const M1_E2_FIXTURE = path.join(REPO, "_p05_output_schema_e2_fixture.txt");
+await fs.writeFile(M1_E2_FIXTURE, "x".repeat(12000), "utf8");
+
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -516,6 +519,62 @@ try {
     await fs.readFile(AMBIGUOUS_FIXTURE, "utf8") === AMBIGUOUS_TEXT
   );
 
+  const e2Name = path.basename(M1_E2_FIXTURE);
+  const mixedFailure = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [
+        { path: "missing-e2.txt", offset: 0, limit: 1 },
+        { path: e2Name, offset: 0, limit: 1 }
+      ],
+      max_bytes: 4096
+    }
+  });
+  const mixedFailureStructured = structuredOf(mixedFailure);
+  const mixedFailureFiles = Array.isArray(mixedFailureStructured?.files)
+    ? mixedFailureStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "M1 MCP: failure + pending remains an MCP error",
+    (mixedFailure as { isError?: boolean }).isError === true &&
+      mixedFailureStructured?.failureCount === 1 &&
+      (mixedFailureStructured?.outcome as { code?: unknown } | undefined)?.code === "NOT_FOUND" &&
+      JSON.stringify(mixedFailureStructured?.pendingIndexes) === "[1]",
+    JSON.stringify(mixedFailureStructured).slice(0, 500)
+  );
+  check(
+    "M1 MCP: failure + pending keeps the failed item",
+    mixedFailureFiles[0]?.errorCode === "NOT_FOUND",
+    JSON.stringify(mixedFailureFiles)
+  );
+
+  const auditResult = await client.callTool({
+    name: "activity_recent",
+    arguments: { limit: 30 }
+  });
+  const auditEvents = Array.isArray(structuredOf(auditResult)?.events)
+    ? structuredOf(auditResult)!.events as Array<Record<string, unknown>>
+    : [];
+  const mixedAudit = auditEvents.find((event) =>
+    event.capability === "fs_read_many" &&
+    event.resultCode === "NOT_FOUND"
+  );
+  check(
+    "M1 MCP: mixed failure is audited as failed and truncated",
+    mixedAudit?.state === "failed" && mixedAudit?.resultTruncated === true,
+    JSON.stringify(mixedAudit ?? {})
+  );
+  const truncatedAudit = auditEvents.find((event) =>
+    event.capability === "fs_read_many" &&
+    event.resultCode === "READ_TRUNCATED"
+  );
+  check(
+    "M1 MCP: normal truncation is audited as succeeded and truncated",
+    truncatedAudit?.state === "succeeded" && truncatedAudit?.resultTruncated === true,
+    JSON.stringify(truncatedAudit ?? {})
+  );
+
   const legacy = await client.callTool({
     name: "fs_read_many",
     arguments: { paths: ["README.md"] }
@@ -542,4 +601,5 @@ try {
   await fs.rm(V2_FIXTURE, { force: true });
   await fs.rm(PATCH_FIXTURE, { force: true });
   await fs.rm(AMBIGUOUS_FIXTURE, { force: true });
+  await fs.rm(M1_E2_FIXTURE, { force: true });
 }

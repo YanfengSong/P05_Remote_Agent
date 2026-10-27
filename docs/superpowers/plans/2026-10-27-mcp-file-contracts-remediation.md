@@ -73,7 +73,7 @@ rtk proxy git diff --check
 - 以最终相同的 `{content, structuredContent, isError?}` 对象计量；不能在预算通过后追加 pending、错误文案或 isError。
 - 所有响应均经过一个最终化出口。
 
-- [ ] 把独立报告 E1/E2 fixture 转为失败断言。E1 使用36行文件，首请求取35行且结果接近4096字节，随后长路径失败请求进入pending；不能只测试EOF完整项。
+- [x] 把独立报告 E1/E2 fixture 转为失败断言。E1 使用36行文件，首请求取35行且结果接近4096字节，随后长路径失败请求进入pending；不能只测试EOF完整项。
 ```ts
 assert.ok(toolResultBytes(reply.result, reply.contentText,
   isOutcomeFailure(reply.result.outcome)) <= 4096);
@@ -83,8 +83,8 @@ assert.deepEqual(mixed.result.pendingIndexes, [1]);
 ```
 reply/mixed 分别来自 E1/E2 真实 readManyRanges 调用，不能预置为期望值。
 
-- [ ] 加单项 PATH_REFUSED、READ_LIMIT_INVALID、STALE_REVISION 以及“成功+失败+pending”的测试。先运行并确认边界测试在旧实现失败。
-- [ ] 实现聚合顺序：先看失败，再看是否只截断。单项失败或全部同码失败使用固定 outcomeFor(code)；混合失败保留逐项 code，顶层 READ_PARTIAL/READ_FAILED 的 retry 取最保守值。
+- [x] 加单项 PATH_REFUSED、READ_LIMIT_INVALID、STALE_REVISION 以及“成功+失败+pending”的测试。先运行并确认边界测试在旧实现失败。
+- [x] 实现聚合顺序：先看失败，再看是否只截断。单项失败或全部同码失败使用固定 outcomeFor(code)；混合失败保留逐项 code，顶层 READ_PARTIAL/READ_FAILED 的 retry 取最保守值。
 ```ts
 const rank = { safe: 0, after_refresh: 1, never_automatic: 2 } as const;
 const retry = failures.map(item => fixedOutcomeFor(item.errorCode ?? "READ_FAILED").retry)
@@ -92,11 +92,13 @@ const retry = failures.map(item => fixedOutcomeFor(item.errorCode ?? "READ_FAILE
 ```
 未知读取错误的 effectState 始终 none，不把只读错误误写成已发生未知写入。权限拒绝与本地配置错误不能被标 safe 自动重试。
 
-- [ ] 最终结果超预算时，先在末尾成功项按整行裁剪；必要时将整个末尾项移回 pending 并保持输入索引有序无重复。若移除了失败项，不应假装已成功处理；该索引必须pending。没有任何可前进结果时返回固定有界 RESULT_BUDGET_TOO_SMALL。
-- [ ] 计量要覆盖 outcome 从失败/成功切换、索引位数、长路径、JSON转义与 isError。不得反复返回同 nextOffset；不要为修字节数丢失最后一行或跳过请求。
-- [ ] 审计 resultTruncated 从实际 pending/文件未完成/响应截断状态计算，不能只看 code。一个批次可以同时 failed 和 truncated。
-- [ ] 通过真实 MCP 测试后查询 activity_recent/recovery_status：混合失败应 failed，保留错误与pending；正常截断应 succeeded。
-- [ ] 提交：`fix: finalize read budgets without masking item failures`。
+- [x] 最终结果超预算时，先在末尾成功项按整行裁剪；必要时将整个末尾项移回 pending 并保持输入索引有序无重复。若移除了失败项，不应假装已成功处理；该索引必须pending。没有任何可前进结果时返回固定有界 RESULT_BUDGET_TOO_SMALL。
+- [x] 计量要覆盖 outcome 从失败/成功切换、索引位数、长路径、JSON转义与 isError。不得反复返回同 nextOffset；不要为修字节数丢失最后一行或跳过请求。
+- [x] 审计 resultTruncated 从实际 pending/文件未完成/响应截断状态计算，不能只看 code。一个批次可以同时 failed 和 truncated。
+- [x] 通过真实 MCP 测试后查询 activity_recent/recovery_status：混合失败应 failed，保留错误与pending；正常截断应 succeeded。
+- [x] 提交：`fix: finalize read budgets without masking item failures`。
+
+**M1 实施记录（2026-10-27）：** 新增 E1（4098→≤4096）、E2（失败不被 pending 掩盖）、单项 PATH_REFUSED/READ_LIMIT_INVALID/STALE_REVISION、成功+失败+pending、混合失败 retry 最保守值和审计 truncated 断言；`readManyRanges` 的所有出口统一走 `finalizeReadResult`，失败优先于截断，最后按整行裁剪/移回 pending。`file-contracts` 392 项检查通过；output-schema 257、profile-exposure 266、foundation 58 通过。
 
 ## M2. 共享有界快照与完整写入
 

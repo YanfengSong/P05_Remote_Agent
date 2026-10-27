@@ -290,33 +290,38 @@ function truncatedItem(
 }
 
 function outcomeFor(items: readonly ReadItem[], pendingIndexes: readonly number[]): Outcome {
-  const successCount = items.reduce((total, item) => total + (item.ok ? 1 : 0), 0);
   const failures = items.filter((item) => !item.ok);
+  if (failures.length > 0) {
+    const codes = failures.map((item) => item.errorCode ?? "READ_FAILED");
+    const uniqueCodes = [...new Set(codes)];
+    if (uniqueCodes.length === 1) {
+      return fixedOutcomeFor(uniqueCodes[0]!);
+    }
+
+    const retryRank = { safe: 0, after_refresh: 1, never_automatic: 2 } as const;
+    const retry = uniqueCodes
+      .map((code) => fixedOutcomeFor(code).retry)
+      .reduce(
+        (left, right) => retryRank[left] >= retryRank[right] ? left : right,
+        "safe" as const
+      );
+    const hasSuccess = items.some((item) => item.ok);
+    return {
+      status: hasSuccess ? "partial" : "error",
+      effectState: "none",
+      retry,
+      code: hasSuccess ? "READ_PARTIAL" : "READ_FAILED",
+      nextAction: "Inspect failed indexes; do not automatically retry rejected or conflicting reads."
+    };
+  }
 
   if (pendingIndexes.length > 0) {
     return fixedOutcomeFor("READ_TRUNCATED");
   }
-
-  if (failures.length === 0) {
-    if (items.some((item) => item.ok && item.complete === false)) {
-      return fixedOutcomeFor("READ_TRUNCATED");
-    }
-    return fixedOutcomeFor("READ_COMPLETE");
+  if (items.some((item) => item.ok && item.complete === false)) {
+    return fixedOutcomeFor("READ_TRUNCATED");
   }
-
-  if (successCount > 0) {
-    return fixedOutcomeFor("READ_PARTIAL");
-  }
-
-  if (failures.some((item) => item.errorCode === "STALE_REVISION")) {
-    return fixedOutcomeFor("STALE_REVISION");
-  }
-
-  if (failures.length === 1 && failures[0]?.errorCode === "LINE_TOO_LARGE") {
-    return fixedOutcomeFor("LINE_TOO_LARGE");
-  }
-
-  return fixedOutcomeFor("READ_FAILED");
+  return fixedOutcomeFor("READ_COMPLETE");
 }
 
 function renderReadContent(result: ReadBatch): string {
@@ -455,20 +460,18 @@ function tailIndexes(total: number, start: number): number[] {
   return Array.from({ length: Math.max(0, total - start) }, (_, offset) => start + offset);
 }
 
-function budgetFailure(maxBytes: number, requestCount: number): ReadManyResult {
-  const pendingIndexes = tailIndexes(requestCount, 0);
+function normalizeIndexes(indexes: readonly number[]): number[] {
+  return [...new Set(indexes)].sort((left, right) => left - right);
+}
+
+function budgetFailure(pendingIndexes: readonly number[], maxBytes: number): ReadManyResult {
+  const pending = normalizeIndexes(pendingIndexes);
   const result: ReadBatch = {
     contract_version: FILE_CONTRACT_VERSION,
-    outcome: {
-      status: "rejected",
-      effectState: "none",
-      retry: "safe",
-      code: "RESULT_BUDGET_TOO_SMALL",
-      nextAction: "Reduce request count or path length, or increase max_bytes."
-    },
+    outcome: fixedOutcomeFor("RESULT_BUDGET_TOO_SMALL"),
     max_bytes: maxBytes,
     files: [],
-    pendingIndexes,
+    pendingIndexes: pending,
     totalBytes: 0,
     successCount: 0,
     failureCount: 0
@@ -477,7 +480,7 @@ function budgetFailure(maxBytes: number, requestCount: number): ReadManyResult {
     "V2 fs_read_many rejected: RESULT_BUDGET_TOO_SMALL; no request metadata fits within max_bytes=" +
     maxBytes +
     ". pendingIndexes: [" +
-    pendingIndexes.join(", ") +
+    pending.join(", ") +
     "].";
   const response: ReadManyResult = { result, contentText };
   if (!fits(response, maxBytes)) {
@@ -487,6 +490,89 @@ function budgetFailure(maxBytes: number, requestCount: number): ReadManyResult {
     );
   }
   return response;
+}
+
+function trimLastSuccessItem(
+  items: readonly ReadItem[],
+  pendingIndexes: readonly number[],
+  maxBytes: number
+): ReadItem | undefined {
+  const last = items[items.length - 1];
+  if (!last?.ok || typeof last.text !== "string") return undefined;
+
+  const lines = splitLines(last.text);
+  if (lines.length <= 1) return undefined;
+
+  const offset = last.offset ?? 0;
+  let low = 1;
+  let high = lines.length - 1;
+  let best = 0;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const text = lines.slice(0, middle).join("");
+    const candidate: ReadItem = {
+      ...last,
+      bytes: Buffer.byteLength(text, "utf8"),
+      text,
+      returnedLines: middle,
+      lineEnd: offset + middle,
+      complete: false,
+      nextOffset: offset + middle
+    };
+    const result = buildReadResult(
+      [...items.slice(0, -1), candidate],
+      pendingIndexes,
+      maxBytes
+    );
+    if (fits(result, maxBytes)) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  if (best === 0) return undefined;
+  const text = lines.slice(0, best).join("");
+  return {
+    ...last,
+    bytes: Buffer.byteLength(text, "utf8"),
+    text,
+    returnedLines: best,
+    lineEnd: offset + best,
+    complete: false,
+    nextOffset: offset + best
+  };
+}
+
+/**
+ * Single output exit for range reads. The exact final object (including isError and
+ * pending metadata) is measured. When over budget, trim the last successful range by
+ * whole lines, then move whole items to pending; never drop a processed index silently.
+ */
+function finalizeReadResult(
+  items: readonly ReadItem[],
+  pendingIndexes: readonly number[],
+  maxBytes: number
+): ReadManyResult {
+  let currentItems = [...items];
+  let currentPending = normalizeIndexes(pendingIndexes);
+
+  for (;;) {
+    if (currentItems.length === 0) return budgetFailure(currentPending, maxBytes);
+    const candidate = buildReadResult(currentItems, currentPending, maxBytes);
+    if (fits(candidate, maxBytes)) return candidate;
+
+    const trimmed = trimLastSuccessItem(currentItems, currentPending, maxBytes);
+    if (trimmed) {
+      currentItems = [...currentItems.slice(0, -1), trimmed];
+      continue;
+    }
+
+    const removed = currentItems[currentItems.length - 1]!;
+    currentItems = currentItems.slice(0, -1);
+    currentPending = normalizeIndexes([...currentPending, removed.index]);
+  }
 }
 
 /**
@@ -532,7 +618,9 @@ export async function readManyRanges(
         files.push(item);
         continue;
       }
-      if (files.length === 0) return budgetFailure(maxBytes, requests.length);
+      if (files.length === 0) {
+        return finalizeReadResult([], tailIndexes(requests.length, 0), maxBytes);
+      }
       pendingIndexes.push(...tailIndexes(requests.length, index));
       break;
     }
@@ -562,12 +650,12 @@ export async function readManyRanges(
           continue;
         }
       }
-      return budgetFailure(maxBytes, requests.length);
+      return finalizeReadResult([], tailIndexes(requests.length, 0), maxBytes);
     }
 
     pendingIndexes.push(...tailIndexes(requests.length, index));
     break;
   }
 
-  return buildReadResult(files, pendingIndexes, maxBytes);
+  return finalizeReadResult(files, pendingIndexes, maxBytes);
 }

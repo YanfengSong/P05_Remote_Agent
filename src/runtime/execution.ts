@@ -48,11 +48,12 @@ function recoveryHint(category: ErrorCategory): RecoveryHint {
 type ResultClassification = {
   failed: boolean;
   outcome?: Outcome;
+  truncated: boolean;
 };
 
 function classifyToolResult(result: unknown): ResultClassification {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
-    return { failed: false };
+    return { failed: false, truncated: false };
   }
 
   const record = result as {
@@ -61,17 +62,42 @@ function classifyToolResult(result: unknown): ResultClassification {
   };
   const isError = record.isError === true;
   let outcome: Outcome | undefined;
+  let structured: Record<string, unknown> | undefined;
   if (
     record.structuredContent &&
     typeof record.structuredContent === "object" &&
     !Array.isArray(record.structuredContent)
   ) {
-    const candidate = (record.structuredContent as Record<string, unknown>).outcome;
+    structured = record.structuredContent as Record<string, unknown>;
+    const candidate = structured.outcome;
     if (isOutcome(candidate)) outcome = candidate;
   }
 
+  const pending = Array.isArray(structured?.pendingIndexes) &&
+    structured.pendingIndexes.length > 0;
+  const incompleteFile = Array.isArray(structured?.files) &&
+    structured.files.some((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      const file = item as Record<string, unknown>;
+      return file.ok === true && file.complete === false;
+    });
+  const coverage = structured?.coverage;
+  const incompleteCoverage =
+    Boolean(coverage) &&
+    typeof coverage === "object" &&
+    !Array.isArray(coverage) &&
+    (coverage as Record<string, unknown>).complete === false;
+  const responseTruncated = structured?.responseTruncated === true;
+
   return {
     failed: isError || (outcome !== undefined && isOutcomeFailure(outcome)),
+    truncated:
+      pending ||
+      incompleteFile ||
+      incompleteCoverage ||
+      responseTruncated ||
+      (outcome !== undefined &&
+        (outcome.code === "READ_TRUNCATED" || outcome.code === "SEARCH_TRUNCATED")),
     ...(outcome ? { outcome } : {})
   };
 }
@@ -105,15 +131,15 @@ function resultAuditFields(
   "resultStatus" | "resultCode" | "resultEffectState" | "resultRetry" | "resultTruncated"
 > {
   const outcome = classification.outcome;
-  if (!outcome) return {};
+  if (!outcome) {
+    return classification.truncated ? { resultTruncated: true } : {};
+  }
   return {
     resultStatus: outcome.status,
     resultCode: outcome.code,
     resultEffectState: outcome.effectState,
     resultRetry: outcome.retry,
-    resultTruncated:
-      outcome.status === "partial" &&
-      (outcome.code === "READ_TRUNCATED" || outcome.code === "SEARCH_TRUNCATED")
+    resultTruncated: classification.truncated
   };
 }
 
