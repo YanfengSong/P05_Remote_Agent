@@ -206,7 +206,7 @@ assert.equal(patchPreview.structuredContent.files.length, 20);
 **问题：** E8及自查5/9。
 **Files：** files.ts、register-fs.ts、file-contracts.ts、write-target.ts（若需类型化错误）、output-schema/file-contracts测试。
 
-- [ ] 新增V2路径越界/保护路径/硬链接，以及搜索根不存在/非目录/符号链接/拒绝访问的fixture。文本与structuredContent不得包含测试根的解析后绝对路径。
+- [x] 新增V2路径越界/保护路径/硬链接，以及搜索根不存在/非目录/符号链接/拒绝访问的fixture。文本与structuredContent不得包含测试根的解析后绝对路径。
 ```ts
 assert.equal(result.isError, true);
 assert.ok(result.structuredContent.outcome);
@@ -214,12 +214,14 @@ assert.equal(JSON.stringify(result).includes(fixtureRoot), false);
 ```
 请求使用相对路径；保留用户自己明确传入的路径与泄漏解析后路径要分开判断。
 
-- [ ] V2 patch把前置write-target检查移入结构化异常边界，或调用共享的类型化策略预检。必须继续执行全部workspace/protected/hardlink检查；**不能直接删除安全检查**。
-- [ ] V2 search将根/业务输入错误映射为固定outcome。未开始扫描时coverage.complete=false、scannedFiles=0；增加明确 `stopReason:"not_started"`，不要把权限拒绝伪装为扫描io_error。普通扫描中I/O失败保留io_error及skip分类。
-- [ ] 固定错误表补齐NOT_DIRECTORY/INVALID_QUERY等实际代码，确认PATH_REFUSED为rejected/none/never_automatic；不得返回OS原始message/stack。
-- [ ] schema/协议级非法输入可以继续由SDK拒绝，无须冒充业务结果。认证与profile拒绝继续在原层阻断。legacy成功格式保持；对legacy原始路径泄漏作相同脱敏属于安全修正。
-- [ ] 增加readdir/stat/read的确定性失败注入、真实symlink/junction和oversized fixture。测试明确说明哪些是OSfixture、哪些是故障注入；不修改用户ACL来凑测试。
-- [ ] 提交：`fix: preserve structured V2 policy failures without leaking paths`。
+- [x] V2 patch把前置write-target检查移入结构化异常边界，或调用共享的类型化策略预检。必须继续执行全部workspace/protected/hardlink检查；**不能直接删除安全检查**。
+- [x] V2 search将根/业务输入错误映射为固定outcome。未开始扫描时coverage.complete=false、scannedFiles=0；增加明确 `stopReason:"not_started"`，不要把权限拒绝伪装为扫描io_error。普通扫描中I/O失败保留io_error及skip分类。
+- [x] 固定错误表补齐NOT_DIRECTORY/INVALID_QUERY等实际代码，确认PATH_REFUSED为rejected/none/never_automatic；不得返回OS原始message/stack。
+- [x] schema/协议级非法输入可以继续由SDK拒绝，无须冒充业务结果。认证与profile拒绝继续在原层阻断。legacy成功格式保持；对legacy原始路径泄漏作相同脱敏属于安全修正。
+- [x] 增加readdir/stat/read的确定性失败注入、真实symlink/junction和oversized fixture。测试明确说明哪些是OSfixture、哪些是故障注入；不修改用户ACL来凑测试。
+- [x] 提交：`fix: preserve structured V2 policy failures without leaking paths`。
+
+**M5 实施记录（2026-10-27）：** V2 `apply_patch_many` 移除 handler 的前置 `assertWorkspaceWriteTarget`，由 `patchTextFilesBatchV2`/共享预检在结构化边界内继续执行 workspace/protected/link/hardlink 检查；越界、保护路径和硬链接均返回带 `outcome`/`errorCode` 的 V2 结果且不泄漏 fixture 绝对路径。V2 `fs_search` 对 missing root、非目录、symlink/junction root、EACCES 注入统一返回 `coverage.stopReason="not_started"`、`scannedFiles=0` 和固定 outcome（NOT_FOUND/NOT_DIRECTORY/PATH_REFUSED/ACCESS_DENIED），扫描中的 readdir/stat/read 失败仍为 `io_error`。新增真实 junction/oversized fixture 与 readdir/stat/read 确定性注入；legacy search root 错误也改为固定脱敏文案。`file-contracts` 456 项、output-schema 311 项通过；isError 结果的 structuredContent 显式过 Zod schema。
 
 ## M6. 约束派生行数据的内存
 

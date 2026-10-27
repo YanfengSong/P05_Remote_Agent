@@ -250,9 +250,8 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
           edits: patch.edits
         };
       });
-      for (const patch of v2Patches) {
-        await assertWorkspaceWriteTarget(patch.path, workspaceRoot);
-      }
+      // V2 preflight performs the same workspace/protected/link/hardlink checks
+      // inside patchTextFilesBatchV2 so policy failures remain structured.
       const maxBytes = input.max_bytes ?? READ_LIMITS.defaultMaxBytes;
       const result = await patchTextFilesBatchV2(v2Patches, workspaceRoot, {
         dryRun: input.dry_run === true,

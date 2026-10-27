@@ -1513,6 +1513,9 @@ export type TextSearchV2Result = TextSearchResult & {
 
 /** Test-only read injection; MCP handlers never pass this. */
 export type SearchTestHooks = {
+  beforeRootStat?: (safeRoot: string) => Promise<void> | void;
+  beforeReaddir?: (directory: string) => Promise<void> | void;
+  beforeStat?: (filePath: string) => Promise<void> | void;
   beforeRead?: (filePath: string) => Promise<void> | void;
 };
 
@@ -1521,6 +1524,33 @@ export type TextSearchOptions = {
   maxResults?: number;
   testHooks?: SearchTestHooks;
 };
+
+function normalizedSearchPath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+async function isLinkEntry(fullPath: string): Promise<boolean> {
+  const real = await fs.realpath(fullPath);
+  return normalizedSearchPath(real) !== normalizedSearchPath(fullPath);
+}
+
+type SearchInputErrorCode =
+  | "PATH_REFUSED"
+  | "NOT_FOUND"
+  | "NOT_DIRECTORY"
+  | "ACCESS_DENIED"
+  | "INVALID_QUERY";
+
+class SearchInputError extends Error {
+  readonly code: SearchInputErrorCode;
+
+  constructor(code: SearchInputErrorCode, message: string) {
+    super(message);
+    this.name = "SearchInputError";
+    this.code = code;
+  }
+}
 
 const SEARCH_IGNORED_DIRECTORIES = new Set([
   ".git", ".p05", ".ssh", ".aws", "node_modules", "dist", ".vscode"
@@ -1536,19 +1566,49 @@ async function runSearch(
   baseDir: string,
   options: TextSearchOptions
 ): Promise<{ textResult: TextSearchResult; coverage: SearchCoverage; hadIoError: boolean }> {
-  if (!query.trim()) throw new Error("Search query must not be empty.");
+  if (!query.trim()) {
+    throw new SearchInputError("INVALID_QUERY", "Search query must not be empty.");
+  }
   if (Buffer.byteLength(query, "utf8") > 500) {
-    throw new Error("Search query exceeds the 500-byte limit.");
+    throw new SearchInputError("INVALID_QUERY", "Search query exceeds the 500-byte limit.");
   }
 
   const maxResults = Math.max(1, Math.min(Math.trunc(options.maxResults ?? 50), 100));
-  const safeRoot = await assertAccessiblePath(rootPath, "read", baseDir, baseDir);
-  const rootInfo = await fs.lstat(safeRoot);
+  let safeRoot: string;
+  try {
+    safeRoot = await assertAccessiblePath(rootPath, "read", baseDir, baseDir);
+  } catch {
+    throw new SearchInputError("PATH_REFUSED", "Search root is not allowed for reading.");
+  }
+
+  let rootInfo;
+  try {
+    await options.testHooks?.beforeRootStat?.(safeRoot);
+    rootInfo = await fs.lstat(safeRoot);
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    if (code === "EACCES" || code === "EPERM") {
+      throw new SearchInputError("ACCESS_DENIED", "Access denied.");
+    }
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new SearchInputError("NOT_FOUND", "Search root not found.");
+    }
+    throw new SearchInputError("NOT_FOUND", "Search root could not be inspected.");
+  }
   if (rootInfo.isSymbolicLink()) {
-    throw new Error("Search root cannot be a symbolic link.");
+    throw new SearchInputError("PATH_REFUSED", "Search root cannot be a symbolic link.");
   }
   if (!rootInfo.isDirectory()) {
-    throw new Error("Search root must be a directory.");
+    throw new SearchInputError("NOT_DIRECTORY", "Search root must be a directory.");
+  }
+  try {
+    const realRoot = await fs.realpath(safeRoot);
+    if (normalizedSearchPath(realRoot) !== normalizedSearchPath(safeRoot)) {
+      throw new SearchInputError("PATH_REFUSED", "Search root cannot be a symbolic link.");
+    }
+  } catch (error) {
+    if (error instanceof SearchInputError) throw error;
+    throw new SearchInputError("PATH_REFUSED", "Search root could not be resolved.");
   }
 
   const needle = options.caseSensitive ? query : query.toLocaleLowerCase();
@@ -1572,6 +1632,7 @@ async function runSearch(
     const directory = queue.shift()!;
     let entries;
     try {
+      await options.testHooks?.beforeReaddir?.(directory);
       entries = await fs.readdir(directory, { withFileTypes: true });
     } catch {
       skip("directory_read_error");
@@ -1593,8 +1654,21 @@ async function runSearch(
         continue;
       }
       if (entry.isDirectory()) {
-        if (!SEARCH_IGNORED_DIRECTORIES.has(name)) queue.push(fullPath);
-        else skip("generated_directory");
+        if (SEARCH_IGNORED_DIRECTORIES.has(name)) {
+          skip("generated_directory");
+          continue;
+        }
+        try {
+          if (await isLinkEntry(fullPath)) {
+            skip("symlink");
+            continue;
+          }
+        } catch {
+          skip("stat_error");
+          hadIoError = true;
+          continue;
+        }
+        queue.push(fullPath);
         continue;
       }
       if (!entry.isFile()) {
@@ -1612,6 +1686,7 @@ async function runSearch(
 
       let stat;
       try {
+        await options.testHooks?.beforeStat?.(fullPath);
         stat = await fs.stat(fullPath);
       } catch {
         skip("stat_error");
@@ -1734,24 +1809,50 @@ export async function searchTextFilesV2(
   baseDir = config.defaultCwd,
   options: TextSearchOptions = {}
 ): Promise<TextSearchV2Result> {
-  const { textResult, coverage, hadIoError } = await runSearch(
-    query,
-    rootPath,
-    baseDir,
-    options
-  );
-  const outcome = hadIoError
-    ? outcomeFor("SEARCH_IO_ERROR")
-    : coverage.complete
-      ? outcomeFor("SEARCH_COMPLETE")
-      : outcomeFor("SEARCH_TRUNCATED");
+  try {
+    const { textResult, coverage, hadIoError } = await runSearch(
+      query,
+      rootPath,
+      baseDir,
+      options
+    );
+    const outcome = hadIoError
+      ? outcomeFor("SEARCH_IO_ERROR")
+      : coverage.complete
+        ? outcomeFor("SEARCH_COMPLETE")
+        : outcomeFor("SEARCH_TRUNCATED");
 
-  return {
-    ...textResult,
-    contract_version: FILE_CONTRACT_VERSION,
-    coverage,
-    outcome
-  };
+    return {
+      ...textResult,
+      contract_version: FILE_CONTRACT_VERSION,
+      coverage,
+      outcome
+    };
+  } catch (error) {
+    if (!(error instanceof SearchInputError)) throw error;
+    return {
+      query,
+      root: rootPath,
+      scannedFiles: 0,
+      skippedFiles: 0,
+      totalBytesScanned: 0,
+      matchCount: 0,
+      matchedFiles: 0,
+      truncated: false,
+      results: [],
+      contract_version: FILE_CONTRACT_VERSION,
+      coverage: {
+        complete: false,
+        stopReason: "not_started",
+        scannedFiles: 0,
+        skippedByReason: {}
+      },
+      outcome: outcomeFor(error.code),
+      responseTruncated: false,
+      returnedFiles: 0,
+      returnedMatches: 0
+    };
+  }
 }
 
 export function renderSearchContent(result: TextSearchV2Result): string {

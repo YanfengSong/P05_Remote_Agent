@@ -1931,6 +1931,178 @@ try {
     query: "needle",
     max_bytes: READ_LIMITS.minMaxBytes
   }).success);
+
+  // ---------------------------------------------------------------- M5 structured V2 errors / redaction
+  const missingRoot = await searchTextFilesV2(
+    "needle",
+    "m5-missing-search-root",
+    FIXTURE
+  );
+  checkEqual("M5: missing search root is not_started", missingRoot.coverage.stopReason, "not_started");
+  checkEqual("M5: missing search root complete flag", missingRoot.coverage.complete, false);
+  checkEqual("M5: missing search root scannedFiles", missingRoot.scannedFiles, 0);
+  checkEqual("M5: missing search root outcome", missingRoot.outcome.code, "NOT_FOUND");
+  checkEqual("M5: missing search root is a failure", isOutcomeFailure(missingRoot.outcome), true);
+  check(
+    "M5: missing search root does not leak the fixture root",
+    !JSON.stringify(missingRoot).includes(FIXTURE)
+  );
+
+  const fileRoot = await searchTextFilesV2("needle", "plain.txt", FIXTURE);
+  checkEqual("M5: file search root is not_started", fileRoot.coverage.stopReason, "not_started");
+  checkEqual("M5: file search root outcome", fileRoot.outcome.code, "NOT_DIRECTORY");
+  checkEqual("M5: file search root is a failure", isOutcomeFailure(fileRoot.outcome), true);
+  check("M5: file search root does not leak the fixture root", !JSON.stringify(fileRoot).includes(FIXTURE));
+
+  const deniedRoot = await searchTextFilesV2(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    {
+      testHooks: {
+        beforeRootStat: () => {
+          throw Object.assign(new Error("synthetic access denial"), { code: "EACCES" });
+        }
+      }
+    }
+  );
+  checkEqual("M5: access denied root is not_started", deniedRoot.coverage.stopReason, "not_started");
+  checkEqual("M5: access denied root outcome", deniedRoot.outcome.code, "ACCESS_DENIED");
+  checkEqual("M5: access denied root is a failure", isOutcomeFailure(deniedRoot.outcome), true);
+
+  const readdirFailure = await searchTextFilesV2(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    {
+      testHooks: {
+        beforeReaddir: () => {
+          throw new Error("synthetic readdir failure");
+        }
+      }
+    }
+  );
+  checkEqual("M5: readdir failure stop reason", readdirFailure.coverage.stopReason, "io_error");
+  checkEqual("M5: readdir failure complete flag", readdirFailure.coverage.complete, false);
+  checkEqual("M5: readdir failure skip count", readdirFailure.coverage.skippedByReason.directory_read_error, 1);
+  checkEqual("M5: readdir failure outcome", readdirFailure.outcome.code, "SEARCH_IO_ERROR");
+  checkEqual("M5: readdir failure is a failure", isOutcomeFailure(readdirFailure.outcome), true);
+
+  const statFailure = await searchTextFilesV2(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    {
+      testHooks: {
+        beforeStat: (filePath) => {
+          if (filePath.endsWith("needle-a.txt")) {
+            throw new Error("synthetic stat failure");
+          }
+        }
+      }
+    }
+  );
+  checkEqual("M5: stat failure stop reason", statFailure.coverage.stopReason, "io_error");
+  checkEqual("M5: stat failure complete flag", statFailure.coverage.complete, false);
+  checkEqual("M5: stat failure skip count", statFailure.coverage.skippedByReason.stat_error, 1);
+  checkEqual("M5: stat failure outcome", statFailure.outcome.code, "SEARCH_IO_ERROR");
+
+  await writeFixture("search-skips/plain.txt", "nothing here\n");
+  await writeFixture("search-skips/big.bin", "");
+  await fs.truncate(
+    path.join(FIXTURE, "search-skips", "big.bin"),
+    config.maxReadBytes + 1
+  );
+  await writeFixture("search-skips-target/needle.txt", "needle hidden\n");
+  const searchSkipsLink = path.join(FIXTURE, "search-skips", "link");
+  const searchSkipsTarget = path.join(FIXTURE, "search-skips-target");
+  if (process.platform === "win32") {
+    execFileSync("cmd", ["/c", "mklink", "/J", searchSkipsLink, searchSkipsTarget], { stdio: "pipe" });
+  } else {
+    await fs.symlink(searchSkipsTarget, searchSkipsLink, "dir");
+  }
+  const skips = await searchTextFilesV2("needle", "search-skips", FIXTURE);
+  checkEqual("M5: oversized file skipped", skips.coverage.skippedByReason.oversized, 1);
+  checkEqual("M5: symlink skipped", skips.coverage.skippedByReason.symlink, 1);
+  checkEqual("M5: skipped link target is not searched", skips.matchCount, 0);
+  checkEqual("M5: skips still complete the scan", skips.coverage.complete, true);
+  checkEqual("M5: skips complete outcome", skips.outcome.code, "SEARCH_COMPLETE");
+
+  const searchLinkRoot = path.join(FIXTURE, "search-link-root");
+  const searchScope = path.join(FIXTURE, "search-scope");
+  if (process.platform === "win32") {
+    execFileSync("cmd", ["/c", "mklink", "/J", searchLinkRoot, searchScope], { stdio: "pipe" });
+  } else {
+    await fs.symlink(searchScope, searchLinkRoot, "dir");
+  }
+  const linkRoot = await searchTextFilesV2("needle", "search-link-root", FIXTURE);
+  checkEqual("M5: symlink search root is not_started", linkRoot.coverage.stopReason, "not_started");
+  checkEqual("M5: symlink search root outcome", linkRoot.outcome.code, "PATH_REFUSED");
+  checkEqual("M5: symlink search root is a failure", isOutcomeFailure(linkRoot.outcome), true);
+
+  let legacyMissingMessage = "";
+  try {
+    await searchTextFiles("needle", "m5-missing-search-root", FIXTURE);
+  } catch (error) {
+    legacyMissingMessage = error instanceof Error ? error.message : String(error);
+  }
+  check(
+    "M5: legacy search root error is fixed and redacted",
+    legacyMissingMessage === "Search root not found." &&
+      !legacyMissingMessage.includes(FIXTURE),
+    legacyMissingMessage
+  );
+
+  await writeFixture("m5-hardlink-source.txt", "value = 0;\n");
+  const hardlinkTarget = path.join(FIXTURE, "m5-hardlink.txt");
+  await fs.link(
+    path.join(FIXTURE, "m5-hardlink-source.txt"),
+    hardlinkTarget
+  );
+  const hardlinkHash = sha256(Buffer.from("value = 0;\n", "utf8"));
+  const hardlinkResult = await patchTextFilesBatchV2(
+    [{
+      path: "m5-hardlink.txt",
+      expectedSha256: hardlinkHash,
+      edits: [{ old_text: "0", new_text: "1" }]
+    }],
+    FIXTURE
+  );
+  checkEqual("M5: V2 hardlink is structured", hardlinkResult.files[0]?.errorCode, "HARDLINK_REFUSED");
+  checkEqual("M5: V2 hardlink outcome is a failure", isOutcomeFailure(hardlinkResult.outcome), true);
+  check(
+    "M5: V2 hardlink does not leak the fixture root",
+    !JSON.stringify(hardlinkResult).includes(FIXTURE)
+  );
+
+  const outsidePatch = await patchTextFilesBatchV2(
+    [{
+      path: "../" + path.basename(OUTSIDE) + "/secret.txt",
+      expectedSha256: hardlinkHash,
+      edits: [{ old_text: "outside", new_text: "changed" }]
+    }],
+    FIXTURE
+  );
+  checkEqual("M5: V2 outside patch is structured", outsidePatch.files[0]?.errorCode, "PATH_REFUSED");
+  check(
+    "M5: V2 outside patch does not leak the fixture root",
+    !JSON.stringify(outsidePatch).includes(FIXTURE)
+  );
+
+  const protectedPatch = await patchTextFilesBatchV2(
+    [{
+      path: ".env",
+      expectedSha256: hardlinkHash,
+      edits: [{ old_text: "SECRET", new_text: "changed" }]
+    }],
+    FIXTURE
+  );
+  checkEqual("M5: V2 protected path is structured", protectedPatch.files[0]?.errorCode, "PATH_REFUSED");
+  check(
+    "M5: V2 protected path does not leak the fixture root",
+    !JSON.stringify(protectedPatch).includes(FIXTURE)
+  );
+
   check("search schema: unknown contract rejected", !fsSearchInputSchema.safeParse({
     contract_version: 1,
     query: "needle"

@@ -123,7 +123,8 @@ export type SearchStopReason =
   | "result_limit"
   | "file_limit"
   | "byte_limit"
-  | "io_error";
+  | "io_error"
+  | "not_started";
 
 export type SearchCoverage = {
   complete: boolean;
@@ -241,6 +242,14 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
   TARGET_NOT_FOUND: {
     status: "error", effectState: "none", retry: "after_refresh", code: "TARGET_NOT_FOUND",
     nextAction: "Re-read the file before retrying."
+  },
+  NOT_DIRECTORY: {
+    status: "rejected", effectState: "none", retry: "never_automatic", code: "NOT_DIRECTORY",
+    nextAction: "Choose a directory path."
+  },
+  INVALID_QUERY: {
+    status: "rejected", effectState: "none", retry: "safe", code: "INVALID_QUERY",
+    nextAction: "Provide a valid non-empty search query within the limit."
   },
   READ_TOO_LARGE: {
     status: "rejected", effectState: "none", retry: "safe", code: "READ_TOO_LARGE",
@@ -568,7 +577,7 @@ export const applyPatchManyOutputSchema = z.object({
 
 export const searchCoverageSchema = z.object({
   complete: z.boolean(),
-  stopReason: z.enum(["exhausted", "result_limit", "file_limit", "byte_limit", "io_error"]),
+  stopReason: z.enum(["exhausted", "result_limit", "file_limit", "byte_limit", "io_error", "not_started"]),
   scannedFiles: z.number().int().nonnegative(),
   skippedByReason: z.record(z.string(), z.number().int().nonnegative())
 });

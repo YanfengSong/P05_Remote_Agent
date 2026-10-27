@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { CAPABILITIES } from "../capability/registry.js";
+import { applyPatchManyOutputSchema, fsSearchOutputSchema } from "../tools/file-contracts.js";
 import { serializedBytes } from "../tools/result-budget.js";
 import { VERSION } from "../version.js";
 
@@ -99,6 +100,15 @@ for (let index = 0; index < 20; index += 1) {
   await fs.writeFile(path.join(PATCH_BUDGET_DIR, name), patchBudgetOriginal, "utf8");
   patchBudgetPaths.push(path.join(path.basename(PATCH_BUDGET_DIR), name));
 }
+
+const HARDLINK_SOURCE = path.join(REPO, "_p05_output_schema_hardlink_source.txt");
+const HARDLINK_TARGET = path.join(REPO, "_p05_output_schema_hardlink.txt");
+await fs.rm(HARDLINK_TARGET, { force: true });
+await fs.writeFile(HARDLINK_SOURCE, "value = 0;\n", "utf8");
+await fs.link(HARDLINK_SOURCE, HARDLINK_TARGET);
+const HARDLINK_SHA = createHash("sha256")
+  .update(Buffer.from("value = 0;\n", "utf8"))
+  .digest("hex");
 
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
@@ -652,6 +662,89 @@ try {
     );
   }
 
+  const missingSearchRoot = await client.callTool({
+    name: "fs_search",
+    arguments: {
+      contract_version: 2,
+      query: "needle",
+      path: "m5-missing-search-root"
+    }
+  });
+  const missingSearchStructured = structuredOf(missingSearchRoot);
+  check(
+    "M5 MCP: missing search root is a structured error",
+    (missingSearchRoot as { isError?: boolean }).isError === true &&
+      (missingSearchStructured?.coverage as { stopReason?: unknown } | undefined)?.stopReason === "not_started" &&
+      (missingSearchStructured?.outcome as { code?: unknown } | undefined)?.code === "NOT_FOUND" &&
+      missingSearchStructured?.scannedFiles === 0,
+    JSON.stringify(missingSearchStructured).slice(0, 400)
+  );
+  check(
+    "M5 MCP: missing search root does not leak the host path",
+    !JSON.stringify(missingSearchRoot).includes(REPO),
+    JSON.stringify(missingSearchRoot).slice(0, 400)
+  );
+  check(
+    "M5 MCP: isError search structuredContent matches the advertised schema",
+    Boolean(missingSearchStructured) &&
+      fsSearchOutputSchema.safeParse(missingSearchStructured).success,
+    JSON.stringify(fsSearchOutputSchema.safeParse(missingSearchStructured).error?.issues ?? [])
+  );
+
+  const fileSearchRoot = await client.callTool({
+    name: "fs_search",
+    arguments: {
+      contract_version: 2,
+      query: "needle",
+      path: "README.md"
+    }
+  });
+  const fileSearchStructured = structuredOf(fileSearchRoot);
+  check(
+    "M5 MCP: file search root is NOT_DIRECTORY",
+    (fileSearchRoot as { isError?: boolean }).isError === true &&
+      (fileSearchStructured?.coverage as { stopReason?: unknown } | undefined)?.stopReason === "not_started" &&
+      (fileSearchStructured?.outcome as { code?: unknown } | undefined)?.code === "NOT_DIRECTORY",
+    JSON.stringify(fileSearchStructured).slice(0, 400)
+  );
+  check(
+    "M5 MCP: file search root does not leak the host path",
+    !JSON.stringify(fileSearchRoot).includes(REPO)
+  );
+
+  const hardlinkPatch = await client.callTool({
+    name: "apply_patch_many",
+    arguments: {
+      contract_version: 2,
+      patches: [{
+        path: path.basename(HARDLINK_TARGET),
+        expected_sha256: HARDLINK_SHA,
+        edits: [{ old_text: "0", new_text: "1" }]
+      }]
+    }
+  });
+  const hardlinkStructured = structuredOf(hardlinkPatch);
+  const hardlinkFiles = Array.isArray(hardlinkStructured?.files)
+    ? hardlinkStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "M5 MCP: V2 hardlink failure is structured",
+    (hardlinkPatch as { isError?: boolean }).isError === true &&
+      hardlinkFiles[0]?.errorCode === "HARDLINK_REFUSED" &&
+      Boolean(hardlinkStructured?.outcome),
+    JSON.stringify(hardlinkStructured).slice(0, 400)
+  );
+  check(
+    "M5 MCP: V2 hardlink failure does not leak the host path",
+    !JSON.stringify(hardlinkPatch).includes(REPO)
+  );
+  check(
+    "M5 MCP: isError patch structuredContent matches the advertised schema",
+    Boolean(hardlinkStructured) &&
+      applyPatchManyOutputSchema.safeParse(hardlinkStructured).success,
+    JSON.stringify(applyPatchManyOutputSchema.safeParse(hardlinkStructured).error?.issues ?? [])
+  );
+
   const e2Name = path.basename(M1_E2_FIXTURE);
   const mixedFailure = await client.callTool({
     name: "fs_read_many",
@@ -737,4 +830,6 @@ try {
   await fs.rm(M1_E2_FIXTURE, { force: true });
   await fs.rm(SEARCH_BUDGET_DIR, { recursive: true, force: true });
   await fs.rm(PATCH_BUDGET_DIR, { recursive: true, force: true });
+  await fs.rm(HARDLINK_SOURCE, { force: true });
+  await fs.rm(HARDLINK_TARGET, { force: true });
 }
