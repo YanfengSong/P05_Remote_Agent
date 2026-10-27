@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-27",
+  "base": "f16af7cf7443ffa9cae6d4770406371cb95a3b42",
+  "head": "7d491b9e433ee903a7b83ece0be55612d0cd6791",
+  "method": "Source imports through tsx; isolated temporary fixtures; no production runtime or functional source edits; diagnostics not passing regression tests",
+  "readWrite": [
+    {
+      "probe": "final-budget",
+      "reproduced": true,
+      "lineWidth": 1329,
+      "bytes": 4098,
+      "returned": 35,
+      "pending": [
+        1
+      ],
+      "code": "READ_TRUNCATED"
+    },
+    {
+      "probe": "failure-masked-by-pending",
+      "failures": 1,
+      "code": "READ_TRUNCATED",
+      "isError": false,
+      "pending": [
+        1
+      ],
+      "bytes": 689
+    },
+    {
+      "probe": "short-write-success",
+      "status": "committed",
+      "reportedBytes": 25,
+      "actualBytes": 12,
+      "reportedHashMatches": false
+    },
+    {
+      "probe": "append-during-final-read",
+      "status": "committed",
+      "externalPreserved": false
+    },
+    {
+      "probe": "missing-ancestor-lock-key",
+      "missingParentKeysEqual": false,
+      "existingParentKeysEqual": true
+    }
+  ],
+  "handlers": [
+    {
+      "probe": "search_missing_root",
+      "message": "ENOENT: no such file or directory, lstat '<fixture>\\missing-root'",
+      "leaksResolvedRoot": true
+    },
+    {
+      "probe": "search",
+      "resultBytes": 382616,
+      "maxAllowed": 262144,
+      "resultCount": 100,
+      "contentText": "Search result: scanned=100, matchedFiles=100, matches=500, skipped=0, truncated=true.\nCoverage: complete=false, stopReason=result_limit, scannedFiles=100, skippedByReason={}.\noutcome: partial/none/safe SEARCH_TRUNCATED. Narrow the path/query scope or raise max_results; the scan limit was reached.",
+      "outcome": {
+        "status": "partial",
+        "effectState": "none",
+        "retry": "safe",
+        "code": "SEARCH_TRUNCATED",
+        "nextAction": "Narrow the path/query scope or raise max_results; the scan limit was reached."
+      }
+    },
+    {
+      "probe": "patch",
+      "resultBytes": 260617,
+      "defaultAllowed": 65536,
+      "maxAllowed": 262144,
+      "status": "dry_run",
+      "files": 20,
+      "previewChars": 1021
+    }
+  ]
+}
