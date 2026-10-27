@@ -11,6 +11,11 @@ import {
   type CapabilityCatalog
 } from "../capability/registry.js";
 import type { LiveActivityStore } from "../monitor/live-activity.js";
+import {
+  isOutcome,
+  isOutcomeFailure,
+  type Outcome
+} from "../tools/file-contracts.js";
 import { classifyError, type ErrorCategory } from "./errors.js";
 
 export type ExecutionAuthorizationContext = {
@@ -38,6 +43,78 @@ function recoveryHint(category: ErrorCategory): RecoveryHint {
     case "unknown":
       return "inspect";
   }
+}
+
+type ResultClassification = {
+  failed: boolean;
+  outcome?: Outcome;
+};
+
+function classifyToolResult(result: unknown): ResultClassification {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return { failed: false };
+  }
+
+  const record = result as {
+    isError?: unknown;
+    structuredContent?: unknown;
+  };
+  const isError = record.isError === true;
+  let outcome: Outcome | undefined;
+  if (
+    record.structuredContent &&
+    typeof record.structuredContent === "object" &&
+    !Array.isArray(record.structuredContent)
+  ) {
+    const candidate = (record.structuredContent as Record<string, unknown>).outcome;
+    if (isOutcome(candidate)) outcome = candidate;
+  }
+
+  return {
+    failed: isError || (outcome !== undefined && isOutcomeFailure(outcome)),
+    ...(outcome ? { outcome } : {})
+  };
+}
+
+function outcomeErrorCategory(outcome: Outcome): ErrorCategory {
+  if (outcome.status === "unknown" || outcome.effectState === "unknown") {
+    return "unknown";
+  }
+  if (outcome.code === "READ_LIMIT_INVALID") return "config";
+  if (
+    outcome.code === "PATH_REFUSED" ||
+    outcome.code === "ACCESS_DENIED" ||
+    outcome.code === "SYMLINK_REFUSED" ||
+    outcome.code === "HARDLINK_REFUSED" ||
+    outcome.code === "NOT_REGULAR_FILE" ||
+    outcome.code === "IS_DIRECTORY"
+  ) {
+    return "policy";
+  }
+  return "tool";
+}
+
+function outcomeRecoveryHint(outcome: Outcome): RecoveryHint {
+  return outcome.retry === "never_automatic" ? "human" : "inspect";
+}
+
+function resultAuditFields(
+  classification: ResultClassification
+): Pick<
+  AuditEvent,
+  "resultStatus" | "resultCode" | "resultEffectState" | "resultRetry" | "resultTruncated"
+> {
+  const outcome = classification.outcome;
+  if (!outcome) return {};
+  return {
+    resultStatus: outcome.status,
+    resultCode: outcome.code,
+    resultEffectState: outcome.effectState,
+    resultRetry: outcome.retry,
+    resultTruncated:
+      outcome.status === "partial" &&
+      (outcome.code === "READ_TRUNCATED" || outcome.code === "SEARCH_TRUNCATED")
+  };
 }
 
 export class ExecutionRuntime {
@@ -187,6 +264,38 @@ export class ExecutionRuntime {
 
       const finished = Date.now();
       const finishedAt = new Date(finished).toISOString();
+      const classification = classifyToolResult(result);
+      const resultFields = resultAuditFields(classification);
+
+      if (classification.failed) {
+        const category = classification.outcome
+          ? outcomeErrorCategory(classification.outcome)
+          : "tool";
+        const hint = classification.outcome
+          ? outcomeRecoveryHint(classification.outcome)
+          : "inspect";
+        this.#audit.upsert({
+          ...base,
+          ...authorizationFields(),
+          phase: "complete",
+          state: "failed",
+          finishedAt,
+          durationMs: finished - started,
+          errorCategory: category,
+          recoveryHint: hint,
+          ...resultFields
+        });
+        this.#liveActivity?.upsert({
+          ...liveBase,
+          state: "failed",
+          phase: "complete",
+          finishedAt,
+          durationMs: finished - started,
+          errorCategory: category
+        });
+        return result;
+      }
+
       this.#audit.upsert({
         ...base,
         ...authorizationFields(),
@@ -194,7 +303,8 @@ export class ExecutionRuntime {
         state: "succeeded",
         finishedAt,
         durationMs: finished - started,
-        recoveryHint: "none"
+        recoveryHint: "none",
+        ...resultFields
       });
       this.#liveActivity?.upsert({
         ...liveBase,

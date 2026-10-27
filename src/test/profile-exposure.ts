@@ -368,6 +368,29 @@ for (const scenario of scenarios) {
         rangeFiles[0]?.complete === true
     );
 
+    const searchV2Result = await session.client.callTool({
+      name: "fs_search",
+      arguments: {
+        contract_version: 2,
+        query: "one-file-read-ok",
+        path: ".",
+        max_results: 5
+      }
+    });
+    const searchV2 = structuredOf(searchV2Result);
+    const searchCoverage = searchV2.coverage as {
+      complete?: unknown;
+      stopReason?: unknown;
+    } | undefined;
+    check(
+      "readonly: V2 search is exposed with coverage and no write permission",
+      searchV2Result.isError !== true &&
+        searchV2.contract_version === 2 &&
+        searchCoverage?.complete === true &&
+        searchCoverage?.stopReason === "exhausted" &&
+        (searchV2.outcome as { code?: unknown } | undefined)?.code === "SEARCH_COMPLETE"
+    );
+
     const legacyCall = await outcome(() => session.client.callTool({
       name: "fs_read",
       arguments: { path: singlePath }

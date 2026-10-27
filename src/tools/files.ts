@@ -2,16 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
-import { assertAccessiblePath } from "../security.js";
+import { assertAccessiblePath, protectionReason } from "../security.js";
 import type {
   Outcome,
   PatchBatchResult,
   PatchBatchStatus,
   PatchDiffSummary,
   PatchFileResult,
+  SearchCoverage,
+  SearchStopReason,
   TextEdit
 } from "./file-contracts.js";
-import { FILE_CONTRACT_VERSION, PATCH_LIMITS } from "./file-contracts.js";
+import { FILE_CONTRACT_VERSION, PATCH_LIMITS, outcomeFor } from "./file-contracts.js";
 import { applyEditsToText, PatchEditError, summarizeEdits } from "./patch-edits.js";
 import { canonicalWriteKey, withWriteLocks } from "./file-write-lock.js";
 
@@ -756,130 +758,7 @@ async function commitBatchOrThrow(
 }
 
 function patchOutcomeForCode(code: string): Outcome {
-  switch (code) {
-    case "STALE_REVISION":
-      return {
-        status: "conflict",
-        effectState: "none",
-        retry: "after_refresh",
-        code,
-        nextAction: "Re-read the listed files and rebuild the patch."
-      };
-    case "AMBIGUOUS_EDIT":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Make each old_text occur exactly once, or split the request."
-      };
-    case "OVERLAPPING_EDITS":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Remove overlapping edits; each byte range must be disjoint."
-      };
-    case "EMPTY_OLD_TEXT":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Provide non-empty old_text for every edit."
-      };
-    case "MISSING_EDIT":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Re-read the file and correct old_text."
-      };
-    case "INVALID_EDIT":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Provide 1-100 valid edits per file."
-      };
-    case "DUPLICATE_TARGET":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Use each canonical target path once per batch."
-      };
-    case "TOO_LARGE":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Reduce the resulting content below 1 MiB."
-      };
-    case "EXPECTED_SHA_REQUIRED":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "after_refresh",
-        code,
-        nextAction: "Re-read the file and provide expected_sha256."
-      };
-    case "TARGET_NOT_FOUND":
-      return {
-        status: "error",
-        effectState: "none",
-        retry: "after_refresh",
-        code,
-        nextAction: "Re-read the file before retrying."
-      };
-    case "READ_TOO_LARGE":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Use a file below the configured read limit."
-      };
-    case "SYMLINK_REFUSED":
-    case "HARDLINK_REFUSED":
-    case "NOT_REGULAR_FILE":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "never_automatic",
-        code,
-        nextAction: "Choose a regular workspace file without links."
-      };
-    case "PATH_REFUSED":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "never_automatic",
-        code,
-        nextAction: "Choose a path inside the active workspace."
-      };
-    case "INVALID_UTF8":
-      return {
-        status: "rejected",
-        effectState: "none",
-        retry: "never_automatic",
-        code,
-        nextAction: "Choose a valid UTF-8 text file."
-      };
-    default:
-      return {
-        status: "error",
-        effectState: "none",
-        retry: "safe",
-        code,
-        nextAction: "Correct the reported error and retry."
-      };
-  }
+  return outcomeFor(code);
 }
 
 function patchFailureFile(pathValue: string, code: string, message: string): PatchFileResult {
@@ -1163,6 +1042,23 @@ export type TextSearchResult = {
   results: TextSearchFileResult[];
 };
 
+export type TextSearchV2Result = TextSearchResult & {
+  contract_version: 2;
+  coverage: SearchCoverage;
+  outcome: Outcome;
+};
+
+/** Test-only read injection; MCP handlers never pass this. */
+export type SearchTestHooks = {
+  beforeRead?: (filePath: string) => Promise<void> | void;
+};
+
+export type TextSearchOptions = {
+  caseSensitive?: boolean;
+  maxResults?: number;
+  testHooks?: SearchTestHooks;
+};
+
 const SEARCH_IGNORED_DIRECTORIES = new Set([
   ".git", ".p05", ".ssh", ".aws", "node_modules", "dist", ".vscode"
 ]);
@@ -1171,12 +1067,12 @@ const MAX_SEARCH_ENTRIES = 10000;
 const MAX_SEARCH_BYTES = 32 * 1024 * 1024;
 const MAX_SEARCH_MATCHES_PER_FILE = 5;
 
-export async function searchTextFiles(
+async function runSearch(
   query: string,
-  rootPath = ".",
-  baseDir = config.defaultCwd,
-  options: { caseSensitive?: boolean; maxResults?: number } = {}
-): Promise<TextSearchResult> {
+  rootPath: string,
+  baseDir: string,
+  options: TextSearchOptions
+): Promise<{ textResult: TextSearchResult; coverage: SearchCoverage; hadIoError: boolean }> {
   if (!query.trim()) throw new Error("Search query must not be empty.");
   if (Buffer.byteLength(query, "utf8") > 500) {
     throw new Error("Search query exceeds the 500-byte limit.");
@@ -1195,83 +1091,98 @@ export async function searchTextFiles(
   const needle = options.caseSensitive ? query : query.toLocaleLowerCase();
   const queue = [safeRoot];
   const results: TextSearchFileResult[] = [];
+  const skippedByReason: Record<string, number> = {};
   let scannedFiles = 0;
   let skippedFiles = 0;
   let totalBytesScanned = 0;
   let totalMatchCount = 0;
   let visitedEntries = 0;
-  let truncated = false;
+  let limitStop: SearchStopReason | undefined;
+  let hadIoError = false;
 
-  while (queue.length > 0 && !truncated) {
+  const skip = (reason: string): void => {
+    skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1;
+    skippedFiles += 1;
+  };
+
+  while (queue.length > 0 && limitStop === undefined) {
     const directory = queue.shift()!;
     let entries;
     try {
       entries = await fs.readdir(directory, { withFileTypes: true });
     } catch {
-      skippedFiles += 1;
+      skip("directory_read_error");
+      hadIoError = true;
       continue;
     }
 
     for (const entry of entries) {
       visitedEntries += 1;
       if (visitedEntries > MAX_SEARCH_ENTRIES) {
-        truncated = true;
+        limitStop = "file_limit";
         break;
       }
 
       const name = entry.name.replace(/[. ]+$/, "").toLowerCase();
       const fullPath = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) {
-        skippedFiles += 1;
+        skip("symlink");
         continue;
       }
       if (entry.isDirectory()) {
         if (!SEARCH_IGNORED_DIRECTORIES.has(name)) queue.push(fullPath);
-        else skippedFiles += 1;
+        else skip("generated_directory");
         continue;
       }
       if (!entry.isFile()) {
-        skippedFiles += 1;
+        skip("non_file");
         continue;
       }
       if (scannedFiles >= MAX_SEARCH_FILES) {
-        truncated = true;
+        limitStop = "file_limit";
         break;
+      }
+      if (protectionReason(fullPath)) {
+        skip("protected");
+        continue;
       }
 
       let stat;
       try {
         stat = await fs.stat(fullPath);
       } catch {
-        skippedFiles += 1;
+        skip("stat_error");
+        hadIoError = true;
         continue;
       }
       if (stat.size > config.maxReadBytes) {
-        skippedFiles += 1;
+        skip("oversized");
         continue;
       }
       if (totalBytesScanned + stat.size > MAX_SEARCH_BYTES) {
-        truncated = true;
+        limitStop = "byte_limit";
         break;
       }
 
       const relativePath = path.relative(baseDir, fullPath) || ".";
       let text: string;
       try {
+        await options.testHooks?.beforeRead?.(fullPath);
         text = await readTextFile(relativePath, baseDir);
       } catch {
-        skippedFiles += 1;
+        skip("read_error");
+        hadIoError = true;
         continue;
       }
       const bytes = Buffer.byteLength(text, "utf8");
       if (totalBytesScanned + bytes > MAX_SEARCH_BYTES) {
-        truncated = true;
+        limitStop = "byte_limit";
         break;
       }
       scannedFiles += 1;
       totalBytesScanned += bytes;
       if (text.includes("\0")) {
-        skippedFiles += 1;
+        skip("binary");
         continue;
       }
 
@@ -1311,14 +1222,21 @@ export async function searchTextFiles(
         results.push(fileResult);
         totalMatchCount += fileResult.matchCount;
         if (results.length >= maxResults) {
-          truncated = true;
+          limitStop = "result_limit";
           break;
         }
       }
     }
   }
 
-  return {
+  const stopReason: SearchStopReason = limitStop ?? (hadIoError ? "io_error" : "exhausted");
+  const coverage: SearchCoverage = {
+    complete: stopReason === "exhausted",
+    stopReason,
+    scannedFiles,
+    skippedByReason
+  };
+  const textResult: TextSearchResult = {
     query,
     root: rootPath,
     scannedFiles,
@@ -1326,7 +1244,49 @@ export async function searchTextFiles(
     totalBytesScanned,
     matchCount: totalMatchCount,
     matchedFiles: results.length,
-    truncated,
+    truncated: limitStop !== undefined,
     results
+  };
+
+  return { textResult, coverage, hadIoError };
+}
+
+export async function searchTextFiles(
+  query: string,
+  rootPath = ".",
+  baseDir = config.defaultCwd,
+  options: TextSearchOptions = {}
+): Promise<TextSearchResult> {
+  return (await runSearch(query, rootPath, baseDir, options)).textResult;
+}
+
+/**
+ * V2 search keeps the legacy result fields and adds explicit coverage. A normal
+ * limit stop is partial/safe; any io_error is an actual failure even when some
+ * results were collected.
+ */
+export async function searchTextFilesV2(
+  query: string,
+  rootPath = ".",
+  baseDir = config.defaultCwd,
+  options: TextSearchOptions = {}
+): Promise<TextSearchV2Result> {
+  const { textResult, coverage, hadIoError } = await runSearch(
+    query,
+    rootPath,
+    baseDir,
+    options
+  );
+  const outcome = hadIoError
+    ? outcomeFor("SEARCH_IO_ERROR")
+    : coverage.complete
+      ? outcomeFor("SEARCH_COMPLETE")
+      : outcomeFor("SEARCH_TRUNCATED");
+
+  return {
+    ...textResult,
+    contract_version: FILE_CONTRACT_VERSION,
+    coverage,
+    outcome
   };
 }

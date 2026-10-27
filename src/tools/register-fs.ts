@@ -1,8 +1,8 @@
 import * as z from "zod/v4";
 import type { Exposer } from "../policy/expose.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { listDirectory, patchTextFile, patchTextFilesBatch, patchTextFilesBatchV2, readTextFile, searchTextFiles, writeTextFile, writeTextFilesBatch } from "./files.js";
-import { applyPatchManyInputSchema, applyPatchManyOutputSchema, fsReadManyInputSchema, fsReadManyOutputSchema, READ_LIMITS, type PatchBatchResult } from "./file-contracts.js";
+import { listDirectory, patchTextFile, patchTextFilesBatch, patchTextFilesBatchV2, readTextFile, searchTextFiles, searchTextFilesV2, writeTextFile, writeTextFilesBatch } from "./files.js";
+import { applyPatchManyInputSchema, applyPatchManyOutputSchema, fsReadManyInputSchema, fsReadManyOutputSchema, fsSearchInputSchema, fsSearchOutputSchema, isOutcomeFailure, READ_LIMITS, type PatchBatchResult } from "./file-contracts.js";
 import { readManyRanges } from "./read-ranges.js";
 import { structuredResult } from "./result.js";
 import { assertWorkspaceWriteTarget } from "./write-target.js";
@@ -97,7 +97,11 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
     if (input.requests !== undefined) {
       const maxBytes = input.max_bytes ?? READ_LIMITS.defaultMaxBytes;
       const bounded = await readManyRanges(workspaceRoot, input.requests, maxBytes);
-      return structuredResult(bounded.result, bounded.contentText);
+      return structuredResult(
+        bounded.result,
+        bounded.contentText,
+        isOutcomeFailure(bounded.result.outcome)
+      );
     }
 
     const paths = input.paths!;
@@ -155,40 +159,45 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("fs_search", {
     description:
-      "Search literal text recursively inside the active workspace. Prefer this over reading many files just to find a symbol or phrase. Skips protected paths, symbolic links, binary/oversized files and common generated directories; scans at most 5,000 files or 32 MiB and returns bounded line snippets.",
-    inputSchema: z.object({
-      query: z.string().min(1).max(500),
-      path: z.string().min(1).optional(),
-      case_sensitive: z.boolean().optional(),
-      max_results: z.number().int().min(1).max(100).optional()
-    }),
-    outputSchema: z.object({
-      query: z.string(),
-      root: z.string(),
-      scannedFiles: z.number().int().nonnegative(),
-      skippedFiles: z.number().int().nonnegative(),
-      totalBytesScanned: z.number().int().nonnegative(),
-      matchCount: z.number().int().nonnegative(),
-      matchedFiles: z.number().int().nonnegative(),
-      truncated: z.boolean(),
-      results: z.array(z.object({
-        path: z.string(),
-        matchCount: z.number().int().nonnegative(),
-        matches: z.array(z.object({
-          line: z.number().int().positive(),
-          occurrences: z.number().int().positive(),
-          snippet: z.string()
-        })),
-        matchesTruncated: z.boolean()
-      }))
-    })
-  }, async ({ query, path: searchPath, case_sensitive, max_results }) => {
+      "Search literal text recursively inside the active workspace. Skips protected paths, symbolic links, binary/oversized files and common generated directories. Legacy requests return bounded line snippets. V2 requests (contract_version:2) additionally return coverage {complete, stopReason, scannedFiles, skippedByReason} and an outcome; limit stops are partial/safe, while unreadable-path I/O errors are reported as errors.",
+    inputSchema: fsSearchInputSchema,
+    outputSchema: fsSearchOutputSchema
+  }, async (input) => {
     const workspaceRoot = workspaceManager.currentRoot();
+
+    if (input.contract_version === 2) {
+      const result = await searchTextFilesV2(
+        input.query,
+        input.path ?? ".",
+        workspaceRoot,
+        { caseSensitive: input.case_sensitive, maxResults: input.max_results }
+      );
+      const summary = [
+        "Search result: scanned=" + result.scannedFiles +
+          ", matchedFiles=" + result.matchedFiles +
+          ", matches=" + result.matchCount +
+          ", skipped=" + result.skippedFiles +
+          ", truncated=" + result.truncated + ".",
+        "Coverage: complete=" + result.coverage.complete +
+          ", stopReason=" + result.coverage.stopReason +
+          ", scannedFiles=" + result.coverage.scannedFiles +
+          ", skippedByReason=" + JSON.stringify(result.coverage.skippedByReason) + ".",
+        "outcome: " + result.outcome.status + "/" + result.outcome.effectState +
+          "/" + result.outcome.retry + " " + result.outcome.code + ". " +
+          result.outcome.nextAction
+      ].join("\n");
+      return structuredResult(
+        result,
+        summary,
+        isOutcomeFailure(result.outcome)
+      );
+    }
+
     const result = await searchTextFiles(
-      query,
-      searchPath ?? ".",
+      input.query,
+      input.path ?? ".",
       workspaceRoot,
-      { caseSensitive: case_sensitive, maxResults: max_results }
+      { caseSensitive: input.case_sensitive, maxResults: input.max_results }
     );
     const summary =
       "Search complete: scanned=" + result.scannedFiles +
@@ -325,7 +334,11 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
       const result = await patchTextFilesBatchV2(v2Patches, workspaceRoot, {
         dryRun: input.dry_run === true
       });
-      return structuredResult(result, renderPatchBatchContent(result));
+      return structuredResult(
+        result,
+        renderPatchBatchContent(result),
+        isOutcomeFailure(result.outcome)
+      );
     }
 
     const legacyPatches = patches.map((patch) => {

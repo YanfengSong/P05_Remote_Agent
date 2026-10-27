@@ -50,7 +50,12 @@ const auditEventSchema = z.object({
   finishedAt: z.string().optional(),
   durationMs: z.number().optional(),
   errorCategory: z.enum(ERROR_CATEGORIES).optional(),
-  recoveryHint: z.enum(["none", "retry", "inspect", "human"])
+  recoveryHint: z.enum(["none", "retry", "inspect", "human"]),
+  resultStatus: z.enum(["completed", "partial", "rejected", "conflict", "error", "unknown"]).optional(),
+  resultCode: z.string().optional(),
+  resultEffectState: z.enum(["none", "applied", "rolled_back", "partial", "unknown"]).optional(),
+  resultRetry: z.enum(["safe", "after_refresh", "never_automatic"]).optional(),
+  resultTruncated: z.boolean().optional()
 });
 
 const pluginViewSchema = z.object({

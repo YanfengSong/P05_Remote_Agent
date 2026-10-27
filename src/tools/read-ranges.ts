@@ -5,6 +5,7 @@ import { assertAccessiblePath } from "../security.js";
 import {
   FILE_CONTRACT_VERSION,
   READ_LIMITS,
+  outcomeFor as fixedOutcomeFor,
   type Outcome,
   type ReadBatch,
   type ReadErrorCode,
@@ -292,71 +293,29 @@ function outcomeFor(items: readonly ReadItem[], pendingIndexes: readonly number[
   const failures = items.filter((item) => !item.ok);
 
   if (pendingIndexes.length > 0) {
-    return {
-      status: "partial",
-      effectState: "none",
-      retry: "safe",
-      code: "READ_TRUNCATED",
-      nextAction: "Continue with nextOffset or pendingIndexes."
-    };
+    return fixedOutcomeFor("READ_TRUNCATED");
   }
 
   if (failures.length === 0) {
     if (items.some((item) => item.ok && item.complete === false)) {
-      return {
-        status: "partial",
-        effectState: "none",
-        retry: "safe",
-        code: "READ_TRUNCATED",
-        nextAction: "Continue with nextOffset or pendingIndexes."
-      };
+      return fixedOutcomeFor("READ_TRUNCATED");
     }
-    return {
-      status: "completed",
-      effectState: "none",
-      retry: "safe",
-      code: "READ_COMPLETE",
-      nextAction: "Use the returned sha256 with a follow-up file request or patch."
-    };
+    return fixedOutcomeFor("READ_COMPLETE");
   }
 
   if (successCount > 0) {
-    return {
-      status: "partial",
-      effectState: "none",
-      retry: "safe",
-      code: "READ_PARTIAL",
-      nextAction: "Retry the failed indexes after correcting the reported error."
-    };
+    return fixedOutcomeFor("READ_PARTIAL");
   }
 
   if (failures.some((item) => item.errorCode === "STALE_REVISION")) {
-    return {
-      status: "conflict",
-      effectState: "none",
-      retry: "after_refresh",
-      code: "STALE_REVISION",
-      nextAction: "Re-read the file and rebuild the request."
-    };
+    return fixedOutcomeFor("STALE_REVISION");
   }
 
   if (failures.length === 1 && failures[0]?.errorCode === "LINE_TOO_LARGE") {
-    return {
-      status: "error",
-      effectState: "none",
-      retry: "safe",
-      code: "LINE_TOO_LARGE",
-      nextAction: "Request a smaller range or use a dedicated large-file tool."
-    };
+    return fixedOutcomeFor("LINE_TOO_LARGE");
   }
 
-  return {
-    status: "error",
-    effectState: "none",
-    retry: "safe",
-    code: "READ_FAILED",
-    nextAction: "Correct the request or choose another file."
-  };
+  return fixedOutcomeFor("READ_FAILED");
 }
 
 function renderReadContent(result: ReadBatch): string {

@@ -60,6 +60,13 @@ const PATCH_EXPECTED_SHA = createHash("sha256")
   .update(Buffer.from(PATCH_EXPECTED_TEXT, "utf8"))
   .digest("hex");
 
+const AMBIGUOUS_FIXTURE = path.join(REPO, "_p05_output_schema_ambiguous_fixture.txt");
+const AMBIGUOUS_TEXT = "x x\n";
+await fs.writeFile(AMBIGUOUS_FIXTURE, AMBIGUOUS_TEXT, "utf8");
+const AMBIGUOUS_SHA = createHash("sha256")
+  .update(Buffer.from(AMBIGUOUS_TEXT, "utf8"))
+  .digest("hex");
+
 const client = new Client({ name: "p05-output-schema-test", version: VERSION });
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -227,6 +234,41 @@ try {
     "v2: plain-text content exposes continuation",
     textOf(limited).includes(`nextOffset=${limitedFirst.nextOffset}`)
   );
+  check(
+    "v2: normal truncation is not an MCP error",
+    (limited as { isError?: boolean }).isError !== true,
+    JSON.stringify({ isError: (limited as { isError?: boolean }).isError })
+  );
+
+  const staleRead = await client.callTool({
+    name: "fs_read_many",
+    arguments: {
+      contract_version: 2,
+      requests: [{
+        path: fixtureName,
+        offset: 0,
+        limit: 1,
+        expected_sha256: "0".repeat(64)
+      }]
+    }
+  });
+  const staleReadStructured = structuredOf(staleRead);
+  const staleReadFiles = Array.isArray(staleReadStructured?.files)
+    ? staleReadStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "v2 error: stale read is an MCP error",
+    (staleRead as { isError?: boolean }).isError === true,
+    JSON.stringify({ isError: (staleRead as { isError?: boolean }).isError })
+  );
+  check(
+    "v2 error: stale read keeps structured diagnostics",
+    staleReadStructured?.contract_version === 2 &&
+      (staleReadStructured?.outcome as { status?: unknown } | undefined)?.status === "conflict" &&
+      staleReadFiles[0]?.errorCode === "STALE_REVISION" &&
+      textOf(staleRead).includes("STALE_REVISION"),
+    JSON.stringify(staleReadStructured).slice(0, 500)
+  );
 
   const continuationOffset = limitedFirst.nextOffset as number;
   const continued = await client.callTool({
@@ -315,6 +357,45 @@ try {
   }
   check("v2: paths and requests are rejected at the protocol boundary", mixedRejected);
 
+  const searchV2 = await client.callTool({
+    name: "fs_search",
+    arguments: {
+      contract_version: 2,
+      query: "export function",
+      path: "src/tools",
+      max_results: 1
+    }
+  });
+  const searchV2Structured = structuredOf(searchV2);
+  const searchV2Coverage = searchV2Structured?.coverage as {
+    complete?: unknown;
+    stopReason?: unknown;
+    scannedFiles?: unknown;
+    skippedByReason?: unknown;
+  } | undefined;
+  check(
+    "search v2: coverage and outcome are returned",
+    searchV2Structured?.contract_version === 2 &&
+      searchV2Coverage?.complete === false &&
+      searchV2Coverage?.stopReason === "result_limit" &&
+      typeof searchV2Coverage?.scannedFiles === "number" &&
+      Boolean(searchV2Coverage?.skippedByReason) &&
+      (searchV2Structured?.outcome as { code?: unknown } | undefined)?.code === "SEARCH_TRUNCATED",
+    JSON.stringify(searchV2Structured).slice(0, 500)
+  );
+  check(
+    "search v2: normal limit truncation is not an MCP error",
+    (searchV2 as { isError?: boolean }).isError !== true,
+    JSON.stringify({ isError: (searchV2 as { isError?: boolean }).isError })
+  );
+  check(
+    "search v2: text client sees coverage and outcome",
+    textOf(searchV2).includes("Coverage: complete=false") &&
+      textOf(searchV2).includes("stopReason=result_limit") &&
+      textOf(searchV2).includes("SEARCH_TRUNCATED"),
+    textOf(searchV2).slice(0, 400)
+  );
+
   const patchFixtureName = path.basename(PATCH_FIXTURE);
   const patchEdits = [{ old_text: "beta", new_text: "BETA" }];
   const patchDryRun = await client.callTool({
@@ -338,6 +419,10 @@ try {
     patchDryRunStructured?.status === "dry_run" &&
       (patchDryRunStructured?.outcome as { effectState?: unknown } | undefined)?.effectState === "none",
     JSON.stringify(patchDryRunStructured).slice(0, 400)
+  );
+  check(
+    "patch v2: dry_run is not an MCP error",
+    (patchDryRun as { isError?: boolean }).isError !== true
   );
   check(
     "patch v2: dry_run returns expected hash",
@@ -383,8 +468,46 @@ try {
     JSON.stringify(patchCommitStructured).slice(0, 400)
   );
   check(
+    "patch v2: commit is not an MCP error",
+    (patchCommit as { isError?: boolean }).isError !== true
+  );
+  check(
     "patch v2: commit writes the expected content",
     await fs.readFile(PATCH_FIXTURE, "utf8") === PATCH_EXPECTED_TEXT
+  );
+
+  const ambiguousName = path.basename(AMBIGUOUS_FIXTURE);
+  const ambiguousPatch = await client.callTool({
+    name: "apply_patch_many",
+    arguments: {
+      contract_version: 2,
+      patches: [{
+        path: ambiguousName,
+        expected_sha256: AMBIGUOUS_SHA,
+        edits: [{ old_text: "x", new_text: "y" }]
+      }]
+    }
+  });
+  const ambiguousStructured = structuredOf(ambiguousPatch);
+  const ambiguousFiles = Array.isArray(ambiguousStructured?.files)
+    ? ambiguousStructured.files as Array<Record<string, unknown>>
+    : [];
+  check(
+    "patch v2 error: ambiguous edit is an MCP error",
+    (ambiguousPatch as { isError?: boolean }).isError === true,
+    JSON.stringify({ isError: (ambiguousPatch as { isError?: boolean }).isError })
+  );
+  check(
+    "patch v2 error: ambiguous edit keeps structured diagnostics",
+    ambiguousStructured?.status === "rejected" &&
+      (ambiguousStructured?.outcome as { code?: unknown } | undefined)?.code === "AMBIGUOUS_EDIT" &&
+      ambiguousFiles[0]?.errorCode === "AMBIGUOUS_EDIT" &&
+      textOf(ambiguousPatch).includes("AMBIGUOUS_EDIT"),
+    JSON.stringify(ambiguousStructured).slice(0, 500)
+  );
+  check(
+    "patch v2 error: ambiguous fixture is untouched",
+    await fs.readFile(AMBIGUOUS_FIXTURE, "utf8") === AMBIGUOUS_TEXT
   );
 
   const legacy = await client.callTool({
@@ -412,4 +535,5 @@ try {
   await client.close().catch(() => undefined);
   await fs.rm(V2_FIXTURE, { force: true });
   await fs.rm(PATCH_FIXTURE, { force: true });
+  await fs.rm(AMBIGUOUS_FIXTURE, { force: true });
 }

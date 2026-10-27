@@ -154,7 +154,11 @@ const {
   applyPatchManyInputSchema,
   applyPatchManyOutputSchema,
   fsReadManyInputSchema,
-  fsReadManyOutputSchema
+  fsReadManyOutputSchema,
+  fsSearchInputSchema,
+  fsSearchOutputSchema,
+  isOutcomeFailure,
+  outcomeFor
 } = await import("../tools/file-contracts.js");
 const {
   ReadRangeError,
@@ -170,9 +174,13 @@ const {
   patchTextFile,
   patchTextFilesBatch,
   patchTextFilesBatchV2,
+  searchTextFiles,
+  searchTextFilesV2,
   writeTextFile,
   writeTextFilesBatch
 } = await import("../tools/files.js");
+const { AuditStore } = await import("../audit/store.js");
+const { ExecutionRuntime } = await import("../runtime/execution.js");
 
 try {
   // ---------------------------------------------------------------- pure helpers
@@ -196,6 +204,27 @@ try {
       structuredContent: { text: "中" }
     })
   );
+
+  // ---------------------------------------------------------------- outcome mapping
+  const staleOutcome = outcomeFor("STALE_REVISION");
+  checkEqual("outcome: stale is conflict", staleOutcome.status, "conflict");
+  checkEqual("outcome: stale has no effect", staleOutcome.effectState, "none");
+  checkEqual("outcome: stale asks for refresh", staleOutcome.retry, "after_refresh");
+  const unknownOutcome = outcomeFor("ROLLBACK_UNCONFIRMED");
+  checkEqual("outcome: rollback unknown status", unknownOutcome.status, "unknown");
+  checkEqual("outcome: rollback unknown effect", unknownOutcome.effectState, "unknown");
+  checkEqual("outcome: rollback unknown retry", unknownOutcome.retry, "never_automatic");
+  checkEqual("outcome: read truncation is partial", outcomeFor("READ_TRUNCATED").status, "partial");
+  checkEqual("outcome: read truncation is not an error", isOutcomeFailure(outcomeFor("READ_TRUNCATED")), false);
+  checkEqual("outcome: read partial is a failure", isOutcomeFailure(outcomeFor("READ_PARTIAL")), true);
+  checkEqual("outcome: search truncation is not an error", isOutcomeFailure(outcomeFor("SEARCH_TRUNCATED")), false);
+  checkEqual("outcome: search io error is a failure", isOutcomeFailure(outcomeFor("SEARCH_IO_ERROR")), true);
+  const unknownCode = outcomeFor("SOMETHING_NEW");
+  checkEqual("outcome: unknown write code status", unknownCode.status, "unknown");
+  checkEqual("outcome: unknown write code effect", unknownCode.effectState, "unknown");
+  checkEqual("outcome: unknown write code retry", unknownCode.retry, "never_automatic");
+  checkEqual("outcome: unknown write code is a failure", isOutcomeFailure(unknownCode), true);
+  checkEqual("outcome: path refusal is policy-like", outcomeFor("PATH_REFUSED").retry, "never_automatic");
 
   // ---------------------------------------------------------------- input schema
   const request = { path: "plain.txt", offset: 0, limit: 1 };
@@ -1328,6 +1357,205 @@ try {
     "A1\n"
   );
   check("rollback: failed rollback reports unknown file", rollbackFailed.files[0]?.errorCode === "ROLLBACK_UNCONFIRMED");
+
+  // ---------------------------------------------------------------- search coverage
+  await writeFixture("search-scope/needle-a.txt", "needle alpha\n");
+  await writeFixture("search-scope/plain.txt", "nothing here\n");
+  await writeFixture("search-scope/sub/needle-b.txt", "needle beta\n");
+  await writeFixture("search-scope/binary.bin", Buffer.from("needle\u0000binary\n", "utf8"));
+  await writeFixture("search-scope/node_modules/generated.txt", "needle generated\n");
+  await writeFixture("search-scope/.env", "needle=secret\n");
+  await writeFixture("search-io/unreadable.txt", "nothing to find\n");
+
+  const fullSearch = await searchTextFilesV2(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    { maxResults: 10 }
+  );
+  checkEqual("search v2: contract marker", fullSearch.contract_version, 2);
+  checkEqual("search v2: complete coverage", fullSearch.coverage.complete, true);
+  checkEqual("search v2: exhausted stop reason", fullSearch.coverage.stopReason, "exhausted");
+  checkEqual("search v2: legacy truncated flag", fullSearch.truncated, false);
+  checkEqual("search v2: complete outcome", fullSearch.outcome.code, "SEARCH_COMPLETE");
+  checkEqual("search v2: complete is not an error", isOutcomeFailure(fullSearch.outcome), false);
+  checkEqual("search v2: two files match", fullSearch.matchedFiles, 2);
+  checkEqual("search v2: generated directory counted", fullSearch.coverage.skippedByReason.generated_directory, 1);
+  checkEqual("search v2: protected file counted", fullSearch.coverage.skippedByReason.protected, 1);
+  checkEqual("search v2: binary file counted", fullSearch.coverage.skippedByReason.binary, 1);
+  checkEqual(
+    "search v2: coverage scannedFiles mirrors legacy field",
+    fullSearch.coverage.scannedFiles,
+    fullSearch.scannedFiles
+  );
+  checkEqual(
+    "search v2: skipped reasons sum to skippedFiles",
+    Object.values(fullSearch.coverage.skippedByReason).reduce((total, count) => total + count, 0),
+    fullSearch.skippedFiles
+  );
+  check("search v2: output schema valid", fsSearchOutputSchema.safeParse(fullSearch).success);
+
+  const legacySearch = await searchTextFiles(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    { maxResults: 10 }
+  );
+  check(
+    "search legacy: output stays free of V2 fields",
+    !("coverage" in legacySearch) &&
+      !("outcome" in legacySearch) &&
+      !("contract_version" in legacySearch)
+  );
+  checkEqual("search legacy: same match count", legacySearch.matchedFiles, 2);
+  check("search legacy: output schema valid", fsSearchOutputSchema.safeParse(legacySearch).success);
+
+  const limitedSearch = await searchTextFilesV2(
+    "needle",
+    "search-scope",
+    FIXTURE,
+    { maxResults: 1 }
+  );
+  checkEqual("search v2: result limit is incomplete", limitedSearch.coverage.complete, false);
+  checkEqual("search v2: result limit stop reason", limitedSearch.coverage.stopReason, "result_limit");
+  checkEqual("search v2: result limit legacy flag", limitedSearch.truncated, true);
+  checkEqual("search v2: result limit is partial", limitedSearch.outcome.status, "partial");
+  checkEqual("search v2: result limit code", limitedSearch.outcome.code, "SEARCH_TRUNCATED");
+  checkEqual("search v2: result limit is not an error", isOutcomeFailure(limitedSearch.outcome), false);
+  checkEqual("search v2: result limit returns one file", limitedSearch.matchedFiles, 1);
+  check("search v2: limited output schema valid", fsSearchOutputSchema.safeParse(limitedSearch).success);
+
+  const unreadableHook = {
+    beforeRead: (fullPath: string) => {
+      if (fullPath.endsWith("unreadable.txt")) {
+        throw new Error("synthetic unreadable file");
+      }
+    }
+  };
+  const ioSearch = await searchTextFilesV2(
+    "needle",
+    "search-io",
+    FIXTURE,
+    { maxResults: 10, testHooks: unreadableHook }
+  );
+  checkEqual("search v2: io error has no matches", ioSearch.matchCount, 0);
+  checkEqual("search v2: io error is incomplete", ioSearch.coverage.complete, false);
+  checkEqual("search v2: io error stop reason", ioSearch.coverage.stopReason, "io_error");
+  checkEqual("search v2: io error skip count", ioSearch.coverage.skippedByReason.read_error, 1);
+  checkEqual("search v2: io error outcome", ioSearch.outcome.status, "error");
+  checkEqual("search v2: io error code", ioSearch.outcome.code, "SEARCH_IO_ERROR");
+  checkEqual("search v2: io error is a failure", isOutcomeFailure(ioSearch.outcome), true);
+  check("search v2: io output schema valid", fsSearchOutputSchema.safeParse(ioSearch).success);
+
+  const legacyIoSearch = await searchTextFiles(
+    "needle",
+    "search-io",
+    FIXTURE,
+    { maxResults: 10, testHooks: unreadableHook }
+  );
+  checkEqual("search legacy: io error does not change truncated flag", legacyIoSearch.truncated, false);
+  checkEqual("search legacy: io error is counted as skipped", legacyIoSearch.skippedFiles, 1);
+  check("search legacy: io output schema valid", fsSearchOutputSchema.safeParse(legacyIoSearch).success);
+
+  check("search schema: legacy request accepted", fsSearchInputSchema.safeParse({
+    query: "needle"
+  }).success);
+  check("search schema: V2 request accepted", fsSearchInputSchema.safeParse({
+    contract_version: 2,
+    query: "needle",
+    max_results: 10
+  }).success);
+  check("search schema: unknown contract rejected", !fsSearchInputSchema.safeParse({
+    contract_version: 1,
+    query: "needle"
+  }).success);
+  check("search schema: empty query rejected", !fsSearchInputSchema.safeParse({
+    query: ""
+  }).success);
+
+  // ---------------------------------------------------------------- audit classification
+  const audit = new AuditStore(40);
+  const runtime = new ExecutionRuntime(audit, () => "test-workspace");
+
+  const runOutcome = async (
+    outcome: ReturnType<typeof outcomeFor>,
+    isError: boolean
+  ): Promise<{ record: Awaited<ReturnType<typeof audit.recent>>[number]; returned: unknown }> => {
+    const result = {
+      content: [{ type: "text", text: "diagnostic" }],
+      structuredContent: { outcome },
+      ...(isError ? { isError: true } : {})
+    };
+    const returned = await runtime.run("workspace_current", async () => result);
+    return { record: audit.recent(1)[0]!, returned };
+  };
+
+  const truncatedRun = await runOutcome(outcomeFor("READ_TRUNCATED"), false);
+  check("audit: runtime returns truncated result without throwing", Boolean(truncatedRun.returned));
+  checkEqual("audit: read truncation succeeds", truncatedRun.record.state, "succeeded");
+  checkEqual("audit: read truncation keeps partial status", truncatedRun.record.resultStatus, "partial");
+  checkEqual("audit: read truncation keeps code", truncatedRun.record.resultCode, "READ_TRUNCATED");
+  checkEqual("audit: read truncation marks truncated", truncatedRun.record.resultTruncated, true);
+  checkEqual("audit: read truncation recovery is none", truncatedRun.record.recoveryHint, "none");
+  checkEqual("audit: read truncation has no error category", truncatedRun.record.errorCategory, undefined);
+
+  const partialRun = await runOutcome(outcomeFor("READ_PARTIAL"), true);
+  checkEqual("audit: read partial fails", partialRun.record.state, "failed");
+  checkEqual("audit: read partial code", partialRun.record.resultCode, "READ_PARTIAL");
+  checkEqual("audit: read partial category", partialRun.record.errorCategory, "tool");
+  checkEqual("audit: read partial recovery", partialRun.record.recoveryHint, "inspect");
+  checkEqual("audit: read partial phase", partialRun.record.phase, "complete");
+
+  const conflictRun = await runOutcome(outcomeFor("STALE_REVISION"), true);
+  checkEqual("audit: conflict fails", conflictRun.record.state, "failed");
+  checkEqual("audit: conflict status", conflictRun.record.resultStatus, "conflict");
+  checkEqual("audit: conflict retry hint", conflictRun.record.resultRetry, "after_refresh");
+  checkEqual("audit: conflict recovery", conflictRun.record.recoveryHint, "inspect");
+
+  const unknownRun = await runOutcome(outcomeFor("ROLLBACK_UNCONFIRMED"), true);
+  checkEqual("audit: unknown effect fails", unknownRun.record.state, "failed");
+  checkEqual("audit: unknown effect status", unknownRun.record.resultStatus, "unknown");
+  checkEqual("audit: unknown effect state", unknownRun.record.resultEffectState, "unknown");
+  checkEqual("audit: unknown effect retry", unknownRun.record.resultRetry, "never_automatic");
+  checkEqual("audit: unknown effect category", unknownRun.record.errorCategory, "unknown");
+  checkEqual("audit: unknown effect asks for human recovery", unknownRun.record.recoveryHint, "human");
+
+  const rejectedRun = await runOutcome(outcomeFor("PATH_REFUSED"), true);
+  checkEqual("audit: rejected path fails", rejectedRun.record.state, "failed");
+  checkEqual("audit: rejected path status", rejectedRun.record.resultStatus, "rejected");
+  checkEqual("audit: rejected path category", rejectedRun.record.errorCategory, "policy");
+  checkEqual("audit: rejected path retry", rejectedRun.record.resultRetry, "never_automatic");
+  checkEqual("audit: rejected path recovery", rejectedRun.record.recoveryHint, "human");
+
+  const errorRun = await runOutcome(outcomeFor("READ_FAILED"), true);
+  checkEqual("audit: ordinary read error fails", errorRun.record.state, "failed");
+  checkEqual("audit: ordinary read error status", errorRun.record.resultStatus, "error");
+  checkEqual("audit: ordinary read error category", errorRun.record.errorCategory, "tool");
+  checkEqual("audit: ordinary read error recovery", errorRun.record.recoveryHint, "inspect");
+
+  const searchIoRun = await runOutcome(outcomeFor("SEARCH_IO_ERROR"), true);
+  checkEqual("audit: search io error fails", searchIoRun.record.state, "failed");
+  checkEqual("audit: search io error code", searchIoRun.record.resultCode, "SEARCH_IO_ERROR");
+  checkEqual("audit: search io error category", searchIoRun.record.errorCategory, "tool");
+
+  const searchTruncatedRun = await runOutcome(outcomeFor("SEARCH_TRUNCATED"), false);
+  checkEqual("audit: search truncation succeeds", searchTruncatedRun.record.state, "succeeded");
+  checkEqual("audit: search truncation status", searchTruncatedRun.record.resultStatus, "partial");
+  checkEqual("audit: search truncation code", searchTruncatedRun.record.resultCode, "SEARCH_TRUNCATED");
+  checkEqual("audit: search truncation flag", searchTruncatedRun.record.resultTruncated, true);
+  checkEqual("audit: search truncation recovery", searchTruncatedRun.record.recoveryHint, "none");
+
+  const bareError = {
+    content: [{ type: "text", text: "diagnostic" }],
+    isError: true
+  };
+  const bareReturned = await runtime.run("workspace_current", async () => bareError);
+  checkEqual("audit: bare MCP error returns its diagnostic result", bareReturned, bareError);
+  const bareRecord = audit.recent(1)[0]!;
+  checkEqual("audit: bare MCP error fails", bareRecord.state, "failed");
+  checkEqual("audit: bare MCP error category", bareRecord.errorCategory, "tool");
+  checkEqual("audit: bare MCP error recovery", bareRecord.recoveryHint, "inspect");
+  checkEqual("audit: bare MCP error has no invented outcome", bareRecord.resultStatus, undefined);
 
   // ---------------------------------------------------------------- output schema
   check(

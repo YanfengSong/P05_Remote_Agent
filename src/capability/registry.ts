@@ -15,7 +15,7 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
 
   { name: "fs_read", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read a UTF-8 text file inside the active workspace." },
   { name: "fs_read_many", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read up to 20 independent workspace files, or explicit V2 line ranges with raw-byte SHA-256 versions, totalLines, nextOffset, pendingIndexes and a bounded 64 KiB default MCP result budget." },
-  { name: "fs_search", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Search literal text recursively with bounded snippets while skipping protected paths and generated directories." },
+  { name: "fs_search", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Search literal text recursively with bounded snippets; V2 reports coverage, stopReason and skipped-by-reason counts while skipping protected paths, links and generated directories." },
   { name: "fs_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List direct children of a directory inside the active workspace." },
   { name: "fs_write", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace a UTF-8 text file inside the active workspace." },
   { name: "fs_write_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace up to 20 files in one preflighted batch with expected-hash guards and rollback on ordinary write failures." },

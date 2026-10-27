@@ -153,7 +153,7 @@ for (const span of spans.reverse()) {
 - 所有编辑先对同一原文定位；空 `old_text`、缺失、歧义（含重叠出现）、编辑重叠和规范化路径重复均拒绝。`dry_run` 返回预期新 hash、原 hash、预期字节数与有界 diff 预览，不写入。
 - `withWriteLocks` 使用规范化路径，排序获取、去重、逆序释放；`fs_write`、`fs_write_many`、`apply_patch`、`apply_patch_many` 共用一个进程内锁。提交前在同一锁内再次核对原始 hash；这是 P05 进程内互斥，不是 OS 文件锁，外部进程竞争仍在。
 - 批次预检在任何写入前完成。发布失败后只回滚仍等于本次写出 hash 的既有文件；回滚前发现外部改写、创建文件被外部修改或回滚失败时保留现场，返回 `effectState=unknown`、`retry=never_automatic`、`ROLLBACK_UNCONFIRMED`。成功回滚返回 `rolled_back`。legacy 分支仍抛出 MCP `isError`，不吞掉失败。
-- `file-contracts.ts` 当前 266 项检查，覆盖三处编辑同原文、dry_run 零写入、第二个目标过期零写入、大小写别名、1 MiB 候选上限、并发锁、发布失败/回滚失败/回滚前外部改写；`output-schema.ts` 通过真实 MCP 客户端验证 V2 dry_run/commit 的输出 schema 与文本 diff。`npm run verify` 通过。
+- A2 用例覆盖三处编辑同原文、dry_run 零写入、第二个目标过期零写入、大小写别名、1 MiB 候选上限、并发锁、发布失败/回滚失败/回滚前外部改写；`output-schema.ts` 通过真实 MCP 客户端验证 V2 dry_run/commit 的输出 schema 与文本 diff。`npm run verify` 通过。
 - V2 结构化失败仍未接入 `isError` 与审计失败分类；该统一映射仍属于 A3。`patchTextFile` 的歧义检查同步收紧为从 `start + 1` 查找，避免接受重叠重复出现。
 
 ## A3. 搜索覆盖范围与执行审计
@@ -172,7 +172,7 @@ export function outcomeFor(code: string): Outcome;
 ```
 Outcome 从 file-contracts.ts 导入。complete 表示声明的可搜索范围已遍历完，不表示受保护路径也被读取；排除项始终计数。
 
-- [ ] 新增有限 fixture：命中不足、命中过多、不可读文件、二进制/生成目录；验证没有命中且 io_error 时 complete=false。新增审计断言：结构化 conflict/rejected/error/unknown 不能产生 succeeded。
+- [x] 新增有限 fixture：命中不足、命中过多、不可读文件、二进制/生成目录；验证没有命中且 io_error 时 complete=false。新增审计断言：结构化 conflict/rejected/error/unknown 不能产生 succeeded。
 ```ts
 import { outcomeFor } from "../tools/file-contracts.js";
 assert.equal(outcomeFor("STALE_REVISION").status, "conflict");
@@ -180,17 +180,24 @@ assert.equal(outcomeFor("STALE_REVISION").effectState, "none");
 assert.equal(outcomeFor("ROLLBACK_UNCONFIRMED").retry, "never_automatic");
 assert.equal(outcomeFor("READ_TRUNCATED").status, "partial");
 ```
-- [ ] 跑统一命令，确认新字段和审计断言失败。
-- [ ] 实现固定错误码映射，未知写入错误默认 unknown/never_automatic；读取普通 I/O error 使用 error/none/safe，权限错误 rejected/none/never_automatic。V2 搜索返回 coverage 和有界 nextAction，旧请求保留原输出。
+- [x] 跑统一命令，确认新字段和审计断言失败。
+- [x] 实现固定错误码映射，未知写入错误默认 unknown/never_automatic；读取普通 I/O error 使用 error/none/safe，权限错误 rejected/none/never_automatic。V2 搜索返回 coverage 和有界 nextAction，旧请求保留原输出。
 ```ts
 const stale: Outcome = {
   status: "conflict", effectState: "none", retry: "after_refresh",
   code: "STALE_REVISION", nextAction: "Read the current file and rebuild the patch."
 };
 ```
-- [ ] 在执行结果分类处解释新契约，不改变所有旧工具的成功判断；读取 partial 记录成功但带截断元信息，写入 unknown 记录失败且恢复建议不包含自动重试。
-- [ ] 跑 file-contracts、output-schema、profile-exposure；确认 readonly 仍无写权限、新字段不泄漏绝对宿主路径。
-- [ ] 提交：`rtk git commit -m "feat: report search coverage and actionable tool outcomes"`。
+- [x] 在执行结果分类处解释新契约，不改变所有旧工具的成功判断；读取 partial 记录成功但带截断元信息，写入 unknown 记录失败且恢复建议不包含自动重试。
+- [x] 跑 file-contracts、output-schema、profile-exposure；确认 readonly 仍无写权限、新字段不泄漏绝对宿主路径。
+- [x] 提交：`rtk git commit -m "feat: report search coverage and actionable tool outcomes"`。
+
+**A3 实施记录（2026-10-27）：**
+- `fs_search` V2（`contract_version:2`）保留旧输出字段并增加 `coverage {complete, stopReason, scannedFiles, skippedByReason}` 与 `outcome`。停止原因区分 `exhausted`、`result_limit`、`file_limit`（含入口上限）、`byte_limit`、`io_error`；受保护文件、符号链接、生成目录、二进制、超大文件、不可读路径分别计数。旧请求仍只返回原字段，旧 `truncated` 语义保持为“达到扫描/结果上限”。
+- `file-contracts.ts` 统一 `outcomeFor(code)` 与 `isOutcomeFailure(outcome)`。正常读取/搜索截断（`READ_TRUNCATED`、`SEARCH_TRUNCATED`）为 partial/none/safe，MCP 不置错、审计成功并记录 `resultStatus=partial`、`resultTruncated=true`；`READ_PARTIAL`、`SEARCH_IO_ERROR`、`conflict`、`rejected`、`error`、`unknown` 都置 MCP `isError` 并审计失败。未知写入错误默认 unknown/unknown/never_automatic。
+- `structuredResult` 支持可选 `isError`；A1/A2/A3 的 V2 handler 用统一 outcome 计算，legacy handler 不改变成功/抛错行为。真实 stdio MCP 客户端已验证 `isError=true` 时仍能读取 `structuredContent.outcome`、逐文件 `errorCode` 和文本诊断；正常截断保持 `isError=false`。
+- `ExecutionRuntime` 在 `verify` 后检查 `isError` 和 `structuredContent.outcome`，结构化失败不抛异常但仍记 `failed`，不再出现“已捕获失败显示 succeeded”。`AuditEvent` 增加可选 `resultStatus/resultCode/resultEffectState/resultRetry/resultTruncated`，`activity_recent`/`recovery_status` schema 同步；未知写入效果使用 `recoveryHint=human`，不给出自动重试建议。
+- `file-contracts.ts` 当前 365 项检查，覆盖搜索 coverage/跳过统计/io_error、outcome 映射、审计成功与失败分类；`output-schema.ts` 256 项、`profile-exposure.ts` 266 项通过；完整 `npm run verify` 通过。A4 与阶段 B 未启动。
 
 ## A4. 集成与效率证据
 

@@ -57,4 +57,9 @@ export type AuditEvent = {
   durationMs?: number;
   errorCategory?: ErrorCategory;
   recoveryHint: RecoveryHint;
+  resultStatus?: "completed" | "partial" | "rejected" | "conflict" | "error" | "unknown";
+  resultCode?: string;
+  resultEffectState?: "none" | "applied" | "rolled_back" | "partial" | "unknown";
+  resultRetry?: "safe" | "after_refresh" | "never_automatic";
+  resultTruncated?: boolean;
 };
