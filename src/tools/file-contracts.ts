@@ -283,6 +283,10 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
     status: "rejected", effectState: "none", retry: "never_automatic", code: "READ_LIMIT_INVALID",
     nextAction: "Correct the local read limit configuration."
   },
+  WRITE_LIMIT_INVALID: {
+    status: "rejected", effectState: "none", retry: "never_automatic", code: "WRITE_LIMIT_INVALID",
+    nextAction: "Correct the local write limit configuration."
+  },
   NOT_FOUND: {
     status: "error", effectState: "none", retry: "after_refresh", code: "NOT_FOUND",
     nextAction: "Re-read the path before retrying."

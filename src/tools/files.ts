@@ -16,6 +16,12 @@ import type {
 import { FILE_CONTRACT_VERSION, PATCH_LIMITS, outcomeFor } from "./file-contracts.js";
 import { applyEditsToText, PatchEditError, summarizeEdits } from "./patch-edits.js";
 import { canonicalWriteKey, withWriteLocks } from "./file-write-lock.js";
+import {
+  FileIoError,
+  readBoundedSnapshot,
+  validatePositiveFileLimit,
+  writeAllAtStart
+} from "./file-io.js";
 
 /**
  * fs errors are returned to a remote client, so they are mapped to short messages: the
@@ -30,22 +36,55 @@ function describeError(error: unknown, fallback: string): Error {
   return new Error(fallback);
 }
 
+function describeFileIoReadError(error: unknown, limit: number): Error {
+  if (error instanceof FileIoError) {
+    switch (error.code) {
+      case "INVALID_LIMIT":
+        return new Error("The server read limit is invalid; reading is disabled.");
+      case "IS_DIRECTORY":
+        return new Error("Path is not a file.");
+      case "NOT_REGULAR_FILE":
+        return new Error("Path is not a file.");
+      case "TOO_LARGE":
+        return new Error(`File exceeds maxReadBytes (${limit}).`);
+      default:
+        return new Error("Could not read the file.");
+    }
+  }
+  return describeError(error, "Could not read the file.");
+}
+
+function fileWriteLimit(): number {
+  try {
+    return validatePositiveFileLimit(config.maxWriteBytes, "maxWriteBytes");
+  } catch {
+    throw new Error("The server write limit is invalid; writing is disabled.");
+  }
+}
+
 export async function readTextFile(filePath: string, baseDir = config.defaultCwd): Promise<string> {
   const safePath = await assertAccessiblePath(filePath, "read", baseDir, baseDir);
-  let stat;
+  let limit: number;
   try {
-    stat = await fs.stat(safePath);
+    limit = validatePositiveFileLimit(config.maxReadBytes, "maxReadBytes");
+  } catch {
+    throw new Error("The server read limit is invalid; reading is disabled.");
+  }
+
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    handle = await fs.open(safePath, "r");
   } catch (error) {
     throw describeError(error, "Could not read the file.");
   }
-  if (!stat.isFile()) throw new Error("Path is not a file.");
-  if (stat.size > config.maxReadBytes) {
-    throw new Error(`File exceeds maxReadBytes (${config.maxReadBytes}).`);
-  }
+
   try {
-    return await fs.readFile(safePath, "utf8");
+    const snapshot = await readBoundedSnapshot(handle, limit);
+    return snapshot.bytes.toString("utf8");
   } catch (error) {
-    throw describeError(error, "Could not read the file.");
+    throw describeFileIoReadError(error, limit);
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 
@@ -61,9 +100,10 @@ export async function writeTextFile(
   baseDir = config.defaultCwd
 ): Promise<{ bytes: number }> {
   const safePath = await assertAccessiblePath(filePath, "write", baseDir, baseDir);
+  const maxWriteBytes = fileWriteLimit();
   const bytes = Buffer.byteLength(content, "utf8");
-  if (bytes > config.maxWriteBytes) {
-    throw new Error(`Content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
+  if (bytes > maxWriteBytes) {
+    throw new Error(`Content exceeds maxWriteBytes (${maxWriteBytes}).`);
   }
 
   const lockKey = await canonicalWriteKey(safePath);
@@ -110,6 +150,7 @@ export async function patchTextFile(
   baseDir = config.defaultCwd
 ): Promise<PatchTextResult> {
   const safePath = await assertAccessiblePath(filePath, "write", baseDir, baseDir);
+  const maxWriteBytes = fileWriteLimit();
   if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) {
     throw new Error("expected_sha256 must be a 64-character hexadecimal SHA-256.");
   }
@@ -137,8 +178,8 @@ export async function patchTextFile(
 
     const updated = current.slice(0, first) + newText + current.slice(first + oldText.length);
     const bytes = Buffer.byteLength(updated, "utf8");
-    if (bytes > config.maxWriteBytes) {
-      throw new Error(`Patched content exceeds maxWriteBytes (${config.maxWriteBytes}).`);
+    if (bytes > maxWriteBytes) {
+      throw new Error(`Patched content exceeds maxWriteBytes (${maxWriteBytes}).`);
     }
 
     try {
@@ -252,10 +293,33 @@ function sha256Buffer(value: Buffer): string {
 
 function safeBatchError(error: unknown, fallback: string): string {
   if (error instanceof BatchOperationError) return error.message;
+  if (error instanceof FileIoError) return error.message;
   if ((error as { code?: string })?.code) {
     return describeError(error, fallback).message;
   }
   return error instanceof Error ? error.message : fallback;
+}
+
+function batchReadLimit(): number {
+  try {
+    return validatePositiveFileLimit(config.maxReadBytes, "maxReadBytes");
+  } catch {
+    throw new BatchOperationError(
+      "READ_LIMIT_INVALID",
+      "The server read limit is invalid; batch reading is disabled."
+    );
+  }
+}
+
+function batchWriteLimit(): number {
+  try {
+    return validatePositiveFileLimit(config.maxWriteBytes, "maxWriteBytes");
+  } catch {
+    throw new BatchOperationError(
+      "WRITE_LIMIT_INVALID",
+      "The server write limit is invalid; batch writing is disabled."
+    );
+  }
 }
 
 function decodeUtf8(buffer: Buffer, label: string): string {
@@ -266,23 +330,14 @@ function decodeUtf8(buffer: Buffer, label: string): string {
   return text;
 }
 
+function batchSnapshotLimit(): number {
+  return Math.min(batchReadLimit(), MAX_BATCH_SNAPSHOT_BYTES);
+}
+
 async function readHandleAtStart(
   handle: Awaited<ReturnType<typeof fs.open>>
 ): Promise<Buffer> {
-  const stat = await handle.stat();
-  if (!stat.isFile()) throw new Error("Batch target is not a regular file.");
-  if (stat.size > config.maxReadBytes) {
-    throw new Error("Batch target exceeds maxReadBytes (" + config.maxReadBytes + ").");
-  }
-
-  const buffer = Buffer.alloc(stat.size);
-  let offset = 0;
-  while (offset < buffer.length) {
-    const result = await handle.read(buffer, offset, buffer.length - offset, offset);
-    if (result.bytesRead === 0) break;
-    offset += result.bytesRead;
-  }
-  return buffer.subarray(0, offset);
+  return (await readBoundedSnapshot(handle, batchSnapshotLimit())).bytes;
 }
 
 async function prepareBatchOperations(
@@ -300,6 +355,8 @@ async function prepareBatchOperations(
   const prepared: PreparedBatchOperation[] = [];
   let totalUpdatedBytes = 0;
   let totalSnapshotBytes = 0;
+  const readLimit = batchReadLimit();
+  const writeLimit = batchWriteLimit();
 
   for (const operation of operations) {
     let safePath: string;
@@ -348,7 +405,7 @@ async function prepareBatchOperations(
     let originalText: string | undefined;
     let originalSha256: string | undefined;
     try {
-      const stat = await fs.lstat(safePath);
+      const stat = await fs.lstat(safePath, { bigint: true });
       if (stat.isSymbolicLink()) {
         throw new BatchOperationError(
           "SYMLINK_REFUSED",
@@ -363,21 +420,47 @@ async function prepareBatchOperations(
           operation.path
         );
       }
-      if (stat.nlink > 1) {
+      if (stat.nlink > 1n) {
         throw new BatchOperationError(
           "HARDLINK_REFUSED",
           "Batch target " + operation.path + " has multiple hard links; refusing mutation.",
           operation.path
         );
       }
-      if (stat.size > config.maxReadBytes) {
+
+      const remainingSnapshot = MAX_BATCH_SNAPSHOT_BYTES - totalSnapshotBytes;
+      if (remainingSnapshot <= 0) {
         throw new BatchOperationError(
-          "READ_TOO_LARGE",
-          "Batch target " + operation.path + " exceeds maxReadBytes (" + config.maxReadBytes + ").",
+          "TOO_LARGE",
+          "Batch rollback snapshot exceeds the 8 MiB safety limit."
+        );
+      }
+      const perFileLimit = Math.min(readLimit, remainingSnapshot);
+      if (stat.size > BigInt(perFileLimit)) {
+        throw new BatchOperationError(
+          "TOO_LARGE",
+          "Batch target " + operation.path +
+            " exceeds the remaining batch snapshot limit (" + perFileLimit + " bytes).",
           operation.path
         );
       }
-      originalBuffer = await fs.readFile(safePath);
+
+      let handle: Awaited<ReturnType<typeof fs.open>>;
+      handle = await fs.open(safePath, "r");
+      try {
+        const snapshot = await readBoundedSnapshot(handle, perFileLimit);
+        if (snapshot.stat.dev !== stat.dev || snapshot.stat.ino !== stat.ino) {
+          throw new BatchOperationError(
+            "READ_UNSTABLE",
+            "Batch target " + operation.path + " changed while it was being inspected; retry.",
+            operation.path
+          );
+        }
+        originalBuffer = snapshot.bytes;
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+
       try {
         originalText = decodeUtf8(originalBuffer, "Batch target " + operation.path);
       } catch (error) {
@@ -390,6 +473,22 @@ async function prepareBatchOperations(
       originalSha256 = sha256Buffer(originalBuffer);
     } catch (error) {
       if (error instanceof BatchOperationError) throw error;
+      if (error instanceof FileIoError) {
+        const code = error.code === "TOO_LARGE"
+          ? "TOO_LARGE"
+          : error.code === "FILE_UNSTABLE"
+            ? "READ_UNSTABLE"
+            : error.code === "IS_DIRECTORY" || error.code === "NOT_REGULAR_FILE"
+              ? "NOT_REGULAR_FILE"
+              : error.code === "INVALID_LIMIT"
+                ? "READ_LIMIT_INVALID"
+                : "WRITE_FAILED";
+        throw new BatchOperationError(
+          code,
+          "Batch target " + operation.path + ": " + error.message,
+          operation.path
+        );
+      }
       if ((error as { code?: string })?.code === "ENOENT") {
         existed = false;
       } else {
@@ -479,11 +578,11 @@ async function prepareBatchOperations(
     }
 
     const updatedBuffer = Buffer.from(updatedText, "utf8");
-    if (updatedBuffer.byteLength > config.maxWriteBytes) {
+    if (updatedBuffer.byteLength > writeLimit) {
       throw new BatchOperationError(
         "TOO_LARGE",
         "Batch target " + operation.path +
-          " exceeds maxWriteBytes (" + config.maxWriteBytes + ").",
+          " exceeds maxWriteBytes (" + writeLimit + ").",
         operation.path
       );
     }
@@ -537,12 +636,13 @@ async function commitBatchOperationsDetailed(
   let currentOperation: PreparedBatchOperation | undefined;
 
   try {
-    // Open all targets before changing any existing file. New files use "wx" so a
-    // concurrently-created target is never silently overwritten.
+    // Open all targets before changing any existing file. New files use "wx+" so a
+    // concurrently-created target is never silently overwritten and can be read back
+    // through the same handle.
     for (const operation of prepared) {
       let handle: Awaited<ReturnType<typeof fs.open>>;
       try {
-        handle = await fs.open(operation.safePath, operation.existed ? "r+" : "wx");
+        handle = await fs.open(operation.safePath, operation.existed ? "r+" : "wx+");
       } catch (error) {
         throw new BatchOperationError(
           "WRITE_FAILED",
@@ -586,19 +686,57 @@ async function commitBatchOperationsDetailed(
       }
 
       // Include the current target before the first mutation so partial writes can be
-      // rolled back if truncate/write/sync fails.
+      // rolled back if truncate/write/sync fails. Write first, then truncate any old
+      // tail: a zero-progress write does not destroy the previous file contents.
       attempted.push(operation);
-      if (operation.existed) await entry.handle.truncate(0);
-      if (operation.updatedBuffer.byteLength > 0) {
-        await entry.handle.write(
-          operation.updatedBuffer,
-          0,
-          operation.updatedBuffer.byteLength,
-          0
+      await writeAllAtStart(entry.handle, operation.updatedBuffer);
+      await entry.handle.truncate(operation.updatedBuffer.byteLength);
+      await entry.handle.sync();
+
+      const observed = await readBoundedSnapshot(
+        entry.handle,
+        operation.updatedBuffer.byteLength
+      );
+      if (!observed.bytes.equals(operation.updatedBuffer)) {
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": write verification failed.",
+          operation.path
         );
       }
-      await entry.handle.sync();
+      const pathStat = await fs.stat(operation.safePath, { bigint: true });
+      if (pathStat.dev !== observed.stat.dev || pathStat.ino !== observed.stat.ino) {
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": path identity changed during write.",
+          operation.path
+        );
+      }
       await hooks?.afterWrite?.(operation.path, index);
+    }
+
+    // Recheck every observable target before declaring the batch committed.
+    for (const entry of opened) {
+      const operation = entry.operation;
+      const observed = await readBoundedSnapshot(
+        entry.handle,
+        operation.updatedBuffer.byteLength
+      );
+      if (!observed.bytes.equals(operation.updatedBuffer)) {
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": final write verification failed.",
+          operation.path
+        );
+      }
+      const pathStat = await fs.stat(operation.safePath, { bigint: true });
+      if (pathStat.dev !== observed.stat.dev || pathStat.ino !== observed.stat.ino) {
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": final path identity changed.",
+          operation.path
+        );
+      }
     }
 
     return {
@@ -641,14 +779,10 @@ async function commitBatchOperationsDetailed(
         }
 
         await entry.handle.truncate(0);
-        if (operation.originalBuffer && operation.originalBuffer.byteLength > 0) {
-          await entry.handle.write(
-            operation.originalBuffer,
-            0,
-            operation.originalBuffer.byteLength,
-            0
-          );
-        }
+        await writeAllAtStart(
+          entry.handle,
+          operation.originalBuffer ?? Buffer.alloc(0)
+        );
         await entry.handle.sync();
 
         const restored = await readHandleAtStart(entry.handle);
@@ -684,7 +818,12 @@ async function commitBatchOperationsDetailed(
 
         let current: Buffer;
         try {
-          current = await fs.readFile(operation.safePath);
+          const readHandle = await fs.open(operation.safePath, "r");
+          try {
+            current = (await readBoundedSnapshot(readHandle, batchSnapshotLimit())).bytes;
+          } finally {
+            await readHandle.close().catch(() => undefined);
+          }
         } catch (readError) {
           if ((readError as { code?: string })?.code === "ENOENT") {
             rolledBack.push(operation.path);

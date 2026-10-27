@@ -15,6 +15,7 @@ import {
   type ReadSlice
 } from "./file-contracts.js";
 import { toolResultBytes } from "./result-budget.js";
+import { FileIoError, readBoundedSnapshot } from "./file-io.js";
 
 export class ReadRangeError extends Error {
   readonly code: ReadErrorCode;
@@ -111,45 +112,31 @@ async function readSnapshot(safePath: string, limit: number): Promise<Buffer> {
   }
 
   try {
-    const before = await handle.stat();
-    if (!before.isFile()) {
-      throw before.isDirectory()
-        ? new ReadRangeError("IS_DIRECTORY", "Path is a directory, not a file.")
-        : new ReadRangeError("NOT_FILE", "Path is not a regular file.");
-    }
-    if (before.size > limit) {
-      throw new ReadRangeError(
-        "READ_TOO_LARGE",
-        `File exceeds the read limit of ${limit} bytes.`
-      );
-    }
-
-    const buffer = Buffer.allocUnsafe(before.size);
-    let offset = 0;
-    while (offset < buffer.length) {
-      const result = await handle.read(buffer, offset, buffer.length - offset, offset);
-      if (result.bytesRead === 0) break;
-      offset += result.bytesRead;
-    }
-
-    if (offset !== buffer.length) {
-      throw new ReadRangeError(
-        "READ_UNSTABLE",
-        "File changed while it was being read; retry."
-      );
-    }
-
-    const after = await handle.stat();
-    if (after.size !== before.size) {
-      throw new ReadRangeError(
-        "READ_UNSTABLE",
-        "File changed while it was being read; retry."
-      );
-    }
-
-    return buffer;
+    return (await readBoundedSnapshot(handle, limit)).bytes;
   } catch (error) {
-    throw error instanceof ReadRangeError ? error : mapFileSystemError(error);
+    if (error instanceof FileIoError) {
+      switch (error.code) {
+        case "INVALID_LIMIT":
+          throw new ReadRangeError("READ_LIMIT_INVALID", "The server read limit is invalid.");
+        case "IS_DIRECTORY":
+          throw new ReadRangeError("IS_DIRECTORY", "Path is a directory, not a file.");
+        case "NOT_REGULAR_FILE":
+          throw new ReadRangeError("NOT_FILE", "Path is not a regular file.");
+        case "TOO_LARGE":
+          throw new ReadRangeError(
+            "READ_TOO_LARGE",
+            `File exceeds the read limit of ${limit} bytes.`
+          );
+        case "FILE_UNSTABLE":
+          throw new ReadRangeError(
+            "READ_UNSTABLE",
+            "File changed while it was being read; retry."
+          );
+        default:
+          throw new ReadRangeError("READ_FAILED", "Could not read the file.");
+      }
+    }
+    throw mapFileSystemError(error);
   } finally {
     await handle.close().catch(() => undefined);
   }

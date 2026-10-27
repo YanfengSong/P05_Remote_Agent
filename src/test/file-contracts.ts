@@ -1542,6 +1542,177 @@ try {
   );
   check("rollback: failed rollback reports unknown file", rollbackFailed.files[0]?.errorCode === "ROLLBACK_UNCONFIRMED");
 
+  // ---------------------------------------------------------------- M2 bounded I/O / complete writes
+  type MutableFs = { open: (...args: any[]) => Promise<any> };
+  const mutableFs = fs as unknown as MutableFs;
+
+  const m2Expected = "value = 123;\n";
+  const m2ExpectedHash = sha256(Buffer.from(m2Expected, "utf8"));
+  const m2Entries = () => [{
+    path: "m2-target.txt",
+    expectedSha256: sha256(Buffer.from("value = 0;\n", "utf8")),
+    edits: [{ old_text: "0", new_text: "123" }]
+  }];
+
+  await writeFixture("m2-target.txt", "value = 0;\n");
+  {
+    const originalOpen = mutableFs.open;
+    const target = path.resolve(FIXTURE, "m2-target.txt");
+    mutableFs.open = async (file, flags, ...args) => {
+      const handle = await originalOpen.call(fs, file, flags, ...args);
+      if (path.resolve(String(file)) === target && flags === "r+") {
+        const write = handle.write.bind(handle);
+        handle.write = (buffer: Buffer, offset: number, length: number, position: number) =>
+          write(buffer, offset, Math.min(3, length), position);
+      }
+      return handle;
+    };
+    try {
+      const result = await patchTextFilesBatchV2(m2Entries(), FIXTURE);
+      checkEqual("M2: short writes still commit", result.status, "committed");
+      checkEqual("M2: short write result hash", result.files[0]?.sha256, m2ExpectedHash);
+      checkEqual(
+        "M2: short write file content",
+        await fs.readFile(path.join(FIXTURE, "m2-target.txt"), "utf8"),
+        m2Expected
+      );
+    } finally {
+      mutableFs.open = originalOpen;
+    }
+  }
+
+  await writeFixture("m2-target.txt", "value = 0;\n");
+  {
+    const originalOpen = mutableFs.open;
+    const target = path.resolve(FIXTURE, "m2-target.txt");
+    mutableFs.open = async (file, flags, ...args) => {
+      const handle = await originalOpen.call(fs, file, flags, ...args);
+      if (path.resolve(String(file)) === target && flags === "r+") {
+        handle.write = async (buffer: Buffer) => ({ bytesWritten: 0, buffer });
+      }
+      return handle;
+    };
+    try {
+      const result = await patchTextFilesBatchV2(m2Entries(), FIXTURE);
+      check("M2: zero progress is not committed", result.status !== "committed");
+      checkEqual(
+        "M2: zero progress preserves the original bytes",
+        await fs.readFile(path.join(FIXTURE, "m2-target.txt"), "utf8"),
+        "value = 0;\n"
+      );
+    } finally {
+      mutableFs.open = originalOpen;
+    }
+  }
+
+  await writeFixture("m2-target.txt", "value = 0;\n");
+  {
+    const originalOpen = mutableFs.open;
+    const target = path.resolve(FIXTURE, "m2-target.txt");
+    let writes = 0;
+    mutableFs.open = async (file, flags, ...args) => {
+      const handle = await originalOpen.call(fs, file, flags, ...args);
+      if (path.resolve(String(file)) === target && flags === "r+") {
+        const write = handle.write.bind(handle);
+        handle.write = async (buffer: Buffer, offset: number, length: number, position: number) => {
+          writes += 1;
+          if (writes === 1) return write(buffer, offset, Math.min(2, length), position);
+          throw new Error("synthetic interrupted write");
+        };
+      }
+      return handle;
+    };
+    try {
+      const result = await patchTextFilesBatchV2([{
+        path: "m2-target.txt",
+        expectedSha256: sha256(Buffer.from("value = 0;\n", "utf8")),
+        edits: [{ old_text: "value", new_text: "VALUE" }]
+      }], FIXTURE);
+      checkEqual("M2: interrupted write status", result.status, "unknown");
+      checkEqual("M2: interrupted write effect", result.outcome.effectState, "unknown");
+      checkEqual("M2: interrupted write retry", result.outcome.retry, "never_automatic");
+      check(
+        "M2: interrupted partial file is preserved",
+        (await fs.readFile(path.join(FIXTURE, "m2-target.txt"), "utf8")).startsWith("VA")
+      );
+    } finally {
+      mutableFs.open = originalOpen;
+    }
+  }
+
+  await writeFixture("m2-target.txt", "value = 0;\n");
+  {
+    const originalOpen = mutableFs.open;
+    const target = path.resolve(FIXTURE, "m2-target.txt");
+    let syncCalls = 0;
+    mutableFs.open = async (file, flags, ...args) => {
+      const handle = await originalOpen.call(fs, file, flags, ...args);
+      if (path.resolve(String(file)) === target && flags === "r+") {
+        const sync = handle.sync.bind(handle);
+        const write = handle.write.bind(handle);
+        handle.write = (buffer: Buffer, offset: number, length: number, position: number) =>
+          write(buffer, offset, Math.min(3, length), position);
+        handle.sync = async () => {
+          syncCalls += 1;
+          if (syncCalls === 1) throw new Error("synthetic sync failure");
+          return sync();
+        };
+      }
+      return handle;
+    };
+    try {
+      const result = await patchTextFilesBatchV2(m2Entries(), FIXTURE);
+      checkEqual("M2: sync failure rolls back", result.status, "rolled_back");
+      checkEqual("M2: sync failure effect", result.outcome.effectState, "rolled_back");
+      checkEqual(
+        "M2: sync failure restores original bytes",
+        await fs.readFile(path.join(FIXTURE, "m2-target.txt"), "utf8"),
+        "value = 0;\n"
+      );
+    } finally {
+      mutableFs.open = originalOpen;
+    }
+  }
+
+  await writeFixture("m2-target.txt", "value = 0;\n");
+  {
+    const originalOpen = mutableFs.open;
+    const target = path.resolve(FIXTURE, "m2-target.txt");
+    let wrote = false;
+    let appended = false;
+    mutableFs.open = async (file, flags, ...args) => {
+      const handle = await originalOpen.call(fs, file, flags, ...args);
+      if (path.resolve(String(file)) === target && flags === "r+") {
+        const write = handle.write.bind(handle);
+        const read = handle.read.bind(handle);
+        handle.write = async (...writeArgs: any[]) => {
+          const result = await write(...writeArgs);
+          wrote = true;
+          return result;
+        };
+        handle.read = async (buffer: Buffer, offset: number, length: number, position: number) => {
+          if (wrote && !appended) {
+            appended = true;
+            await fs.appendFile(target, "EXTERNAL APPEND\n", "utf8");
+          }
+          return read(buffer, offset, length, position);
+        };
+      }
+      return handle;
+    };
+    try {
+      const result = await patchTextFilesBatchV2(m2Entries(), FIXTURE);
+      checkEqual("M2: append during final read is uncertain", result.status, "unknown");
+      checkEqual("M2: append during final read effect", result.outcome.effectState, "unknown");
+      check(
+        "M2: append during final read is preserved",
+        (await fs.readFile(path.join(FIXTURE, "m2-target.txt"), "utf8")).includes("EXTERNAL APPEND")
+      );
+    } finally {
+      mutableFs.open = originalOpen;
+    }
+  }
+
   // ---------------------------------------------------------------- search coverage
   await writeFixture("search-scope/needle-a.txt", "needle alpha\n");
   await writeFixture("search-scope/plain.txt", "nothing here\n");

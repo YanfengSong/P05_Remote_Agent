@@ -115,7 +115,7 @@ export function writeAllAtStart(handle: FileHandle, bytes: Buffer): Promise<void
 ```
 调用方管理句柄的打开/关闭。新 FileIoError 带固定 code，远端映射不包含原始 OS error.message。
 
-- [ ] 新增短写（每次最多3字节）、零进展、写到一半抛错、sync失败、回滚短写、读取期间增长/缩短/同尺寸修改的测试；每个故障有明确触发次数断言。
+- [x] 新增短写（每次最多3字节）、零进展、写到一半抛错、sync失败、回滚短写、读取期间增长/缩短/同尺寸修改的测试；每个故障有明确触发次数断言。
 ```ts
 assert.equal(committed.status, "committed");
 assert.deepEqual(await fs.readFile(target), expectedBytes);
@@ -125,7 +125,7 @@ assert.equal(interrupted.outcome.retry, "never_automatic");
 ```
 committed 使用最终能完成的多次短写；zeroProgress/interrupted 是独立 fixture，后者已发生部分写入且不能确认原样恢复。
 
-- [ ] 实现完整写入循环，并对返回计数作零进展/非法值检查：
+- [x] 实现完整写入循环，并对返回计数作零进展/非法值检查：
 ```ts
 let offset = 0;
 while (offset < bytes.length) {
@@ -139,13 +139,15 @@ while (offset < bytes.length) {
 ```
 生产实现将该固定错误转为 FileIoError。提交和回滚都用同一原语；不得因部分写入以预期 buffer 的 hash 冒充实测成功。
 
-- [ ] readBoundedSnapshot 在分配前验证 limit 为安全非负整数，检查常规文件和 size；按明确位置读取，不读超过limit；短读、额外EOF探测发现增长、前后 size/mtimeNs/ctimeNs/dev/ino 改变都报不稳定。保留残余的同字节/同元数据竞争限制。
-- [ ] 本地 config.maxReadBytes/maxWriteBytes 验证为安全正整数。V2读取使用 min(config,8MiB)；legacy不擅自收紧正常配置的原额度；batch预检在分配前同时应用剩余8MiB总快照额度。
-- [ ] 将批量预检、readHandleAtStart、回滚新文件检查、legacy readTextFile 的 stat+readFile 换成有界读取。后者由搜索复用，不能只修新范围读取而留下搜索无限读取入口。保持既有UTF-8行为差异和路径策略，勿隐式更改legacy解码契约。
-- [ ] 新建文件使用 `wx+` 以同时保留排他创建与同句柄读回能力；既有文件保持r+。写完sync后从同句柄读取并核对长度/hash；尽可能核对路径与句柄的文件身份。在判定整个批次committed前复核各目标的可观察状态。
-- [ ] 任何已触碰文件效果无法确认时保留现场并返回 unknown/never_automatic。不能仅因当前内容是预期前缀就认定可安全恢复。未经触碰的预检失败为none；成功恢复须实际验证原始hash。
-- [ ] 增长发生在最终读取期间的 E4 应拒绝或unknown且保留外部追加；增长发生在最后检查之后仍有残余窗口，不能把多做一次stat当作OS锁。
-- [ ] 提交：`fix: bound file snapshots and verify complete batch writes`。
+- [x] readBoundedSnapshot 在分配前验证 limit 为安全非负整数，检查常规文件和 size；按明确位置读取，不读超过limit；短读、额外EOF探测发现增长、前后 size/mtimeNs/ctimeNs/dev/ino 改变都报不稳定。保留残余的同字节/同元数据竞争限制。
+- [x] 本地 config.maxReadBytes/maxWriteBytes 验证为安全正整数。V2读取使用 min(config,8MiB)；legacy不擅自收紧正常配置的原额度；batch预检在分配前同时应用剩余8MiB总快照额度。
+- [x] 将批量预检、readHandleAtStart、回滚新文件检查、legacy readTextFile 的 stat+readFile 换成有界读取。后者由搜索复用，不能只修新范围读取而留下搜索无限读取入口。保持既有UTF-8行为差异和路径策略，勿隐式更改legacy解码契约。
+- [x] 新建文件使用 `wx+` 以同时保留排他创建与同句柄读回能力；既有文件保持r+。写完sync后从同句柄读取并核对长度/hash；尽可能核对路径与句柄的文件身份。在判定整个批次committed前复核各目标的可观察状态。
+- [x] 任何已触碰文件效果无法确认时保留现场并返回 unknown/never_automatic。不能仅因当前内容是预期前缀就认定可安全恢复。未经触碰的预检失败为none；成功恢复须实际验证原始hash。
+- [x] 增长发生在最终读取期间的 E4 应拒绝或unknown且保留外部追加；增长发生在最后检查之后仍有残余窗口，不能把多做一次stat当作OS锁。
+- [x] 提交：`fix: bound file snapshots and verify complete batch writes`。
+
+**M2 实施记录（2026-10-27）：** 新增 `file-io.ts`（`readBoundedSnapshot`、`writeAllAtStart`、`validatePositiveFileLimit`）及 19 项 `file-io` 故障测试；批量预检、提交、回滚、新文件清理和 legacy `readTextFile` 均改用有界读取，完整写入循环拒绝零进展/非法短写。提交写入后从同句柄读回并核对长度/hash 及路径身份，新文件使用 `wx+`。E3/E4 短写、零进展、中断、sync 失败和最终读取期间外部追加测试均通过；`file-contracts` 407 项、file-io 19 项、output-schema 261、profile-exposure 266、foundation 58 通过。
 
 ## M3. 规范路径锁与锁内预检
 
