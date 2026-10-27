@@ -16,6 +16,7 @@ import {
 } from "./file-contracts.js";
 import { toolResultBytes } from "./result-budget.js";
 import { FileIoError, readBoundedSnapshot } from "./file-io.js";
+import { selectLineWindow } from "./text-lines.js";
 
 export class ReadRangeError extends Error {
   readonly code: ReadErrorCode;
@@ -173,8 +174,8 @@ export async function readRange(root: string, request: ReadRequest): Promise<Rea
   }
 
   const text = decodeUtf8Strict(buffer);
-  const lines = splitLines(text);
-  const totalLines = lines.length;
+  const window = selectLineWindow(text, request.offset, request.limit);
+  const totalLines = window.totalLines;
 
   if (request.offset > totalLines) {
     throw new ReadRangeError(
@@ -184,9 +185,7 @@ export async function readRange(root: string, request: ReadRequest): Promise<Rea
     );
   }
 
-  const end = Math.min(request.offset + request.limit, totalLines);
-  const selected = lines.slice(request.offset, end);
-  const rangeText = selected.join("");
+  const end = request.offset + window.returnedLines;
   const complete = end >= totalLines;
 
   return {
@@ -194,10 +193,10 @@ export async function readRange(root: string, request: ReadRequest): Promise<Rea
     sha256: digest,
     totalLines,
     offset: request.offset,
-    returnedLines: selected.length,
+    returnedLines: window.returnedLines,
     lineStart: request.offset + 1,
-    lineEnd: request.offset + selected.length,
-    text: rangeText,
+    lineEnd: end,
+    text: window.text,
     complete,
     ...(complete ? {} : { nextOffset: end })
   };

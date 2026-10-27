@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, "..", "..");
@@ -170,6 +170,7 @@ const {
 const { serializedBytes, toolResultBytes } = await import("../tools/result-budget.js");
 const { PatchEditError, applyEditsToText, summarizeEdits } = await import("../tools/patch-edits.js");
 const { withWriteLocks, canonicalWriteKey } = await import("../tools/file-write-lock.js");
+const { selectLineWindow, iterateLines } = await import("../tools/text-lines.js");
 const { config } = await import("../config.js");
 const {
   patchTextFile,
@@ -191,6 +192,64 @@ try {
   checkEqual("splitLines: no final newline", splitLines("a\nb"), ["a\n", "b"]);
   checkEqual("splitLines: blank line", splitLines("a\n\n"), ["a\n", "\n"]);
   checkEqual("splitLines: only newline", splitLines("\n"), ["\n"]);
+
+  const denseWindow = selectLineWindow("\n".repeat(200_000), 199_998, 2);
+  checkEqual("text-lines: dense newline totalLines", denseWindow.totalLines, 200_000);
+  checkEqual("text-lines: dense newline returnedLines", denseWindow.returnedLines, 2);
+  checkEqual("text-lines: dense newline text", denseWindow.text, "\n\n");
+  checkEqual(
+    "text-lines: empty file",
+    selectLineWindow("", 0, 10),
+    { totalLines: 0, text: "", returnedLines: 0 }
+  );
+  checkEqual(
+    "text-lines: trailing newline does not add a line",
+    selectLineWindow("a\n", 0, 1),
+    { totalLines: 1, text: "a\n", returnedLines: 1 }
+  );
+  checkEqual(
+    "text-lines: CRLF window",
+    selectLineWindow("a\r\nb\r\n", 1, 1),
+    { totalLines: 2, text: "b\r\n", returnedLines: 1 }
+  );
+  checkEqual(
+    "text-lines: final line without newline",
+    selectLineWindow("a\nb", 1, 1),
+    { totalLines: 2, text: "b", returnedLines: 1 }
+  );
+  checkEqual(
+    "text-lines: Chinese window",
+    selectLineWindow("第一行\n第二行\n", 1, 1),
+    { totalLines: 2, text: "第二行\n", returnedLines: 1 }
+  );
+  checkEqual(
+    "text-lines: iterator retains newlines",
+    [...iterateLines("a\r\nb")],
+    ["a\r\n", "b"]
+  );
+
+  const textLinesModule = pathToFileURL(
+    path.join(REPO, "dist", "tools", "text-lines.js")
+  ).href;
+  const stressCode = `
+const { selectLineWindow } = await import(${JSON.stringify(textLinesModule)});
+const value = String.fromCharCode(10).repeat(8 * 1024 * 1024);
+const window = selectLineWindow(value, 8 * 1024 * 1024 - 2, 2);
+if (window.totalLines !== 8 * 1024 * 1024 || window.returnedLines !== 2 || window.text !== String.fromCharCode(10).repeat(2)) {
+  throw new Error("dense newline window mismatch");
+}
+console.log("TEXT_LINES_STRESS_OK");
+`;
+  const stressOutput = execFileSync(
+    process.execPath,
+    ["--max-old-space-size=64", "--input-type=module", "-e", stressCode],
+    { cwd: REPO, stdio: "pipe" }
+  ).toString("utf8");
+  check(
+    "text-lines: 8 MiB dense newline fixture completes under a 64 MiB heap",
+    stressOutput.includes("TEXT_LINES_STRESS_OK"),
+    stressOutput.slice(0, 200)
+  );
 
   checkEqual(
     "serializedBytes: UTF-8 JSON bytes",
@@ -1913,6 +1972,23 @@ try {
   checkEqual("search legacy: io error does not change truncated flag", legacyIoSearch.truncated, false);
   checkEqual("search legacy: io error is counted as skipped", legacyIoSearch.skippedFiles, 1);
   check("search legacy: io output schema valid", fsSearchOutputSchema.safeParse(legacyIoSearch).success);
+
+  await writeFixture("search-lines/multi.txt", "needle needle\r\nsecond needle\r\n");
+  await writeFixture("search-lines/many.txt", "needle\n".repeat(6));
+  const lineSearch = await searchTextFilesV2(
+    "needle",
+    "search-lines",
+    FIXTURE,
+    { maxResults: 10 }
+  );
+  const multiLine = lineSearch.results.find((entry) => entry.path.endsWith("multi.txt"));
+  const manyLine = lineSearch.results.find((entry) => entry.path.endsWith("many.txt"));
+  checkEqual("search lines: CRLF line numbers", multiLine?.matches.map((match) => match.line), [1, 2]);
+  checkEqual("search lines: occurrence counts", multiLine?.matches.map((match) => match.occurrences), [2, 1]);
+  checkEqual("search lines: per-file match count", manyLine?.matchCount, 6);
+  checkEqual("search lines: bounded snippet count", manyLine?.matches.length, 5);
+  checkEqual("search lines: matchesTruncated", manyLine?.matchesTruncated, true);
+  checkEqual("search lines: total observed matches", lineSearch.matchCount, 9);
 
   check("search schema: legacy request accepted", fsSearchInputSchema.safeParse({
     query: "needle"

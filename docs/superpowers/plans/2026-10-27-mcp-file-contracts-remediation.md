@@ -236,17 +236,19 @@ export function* iterateLines(text: string): Generator<string>;
 ```
 迭代行保留换行符，调用搜索处再按旧语义去除LF/CRLF。空文件0行、尾换行不生成额外空行。
 
-- [ ] 使用换行密集的有界fixture，读取末尾少量行，校验totalLines、offset和结果；保留中文/BOM/CRLF测试。
+- [x] 使用换行密集的有界fixture，读取末尾少量行，校验totalLines、offset和结果；保留中文/BOM/CRLF测试。
 ```ts
 const window = selectLineWindow("\n".repeat(200_000), 199_998, 2);
 assert.equal(window.totalLines, 200_000);
 assert.equal(window.returnedLines, 2);
 assert.equal(window.text, "\n\n");
 ```
-- [ ] 单次扫描统计总行数并记录请求窗口起止字符位置；只构造请求范围，不为全文件创建字符串数组。预算裁剪最多处理请求的2000行，也可用字符边界索引。
-- [ ] 搜索逐行迭代，保持line编号、大小写匹配、occurrences和matchesTruncated原语义；不能把纯重构引入计数变化。
-- [ ] 在独立子进程做接近8MiB的密集换行压力用例，设置受控heap上限并记录结果；不以精确RSS数值作脆弱断言，不在真实Runtime内制造OOM。
-- [ ] 提交：`perf: scan text ranges without materializing every line`。
+- [x] 单次扫描统计总行数并记录请求窗口起止字符位置；只构造请求范围，不为全文件创建字符串数组。预算裁剪最多处理请求的2000行，也可用字符边界索引。
+- [x] 搜索逐行迭代，保持line编号、大小写匹配、occurrences和matchesTruncated原语义；不能把纯重构引入计数变化。
+- [x] 在独立子进程做接近8MiB的密集换行压力用例，设置受控heap上限并记录结果；不以精确RSS数值作脆弱断言，不在真实Runtime内制造OOM。
+- [x] 提交：`perf: scan text ranges without materializing every line`。
+
+**M6 实施记录（2026-10-27）：** 新增 `text-lines.ts` 的 `selectLineWindow`/`iterateLines`；`readRange` 只单次扫描并切出请求窗口，搜索按行迭代并在调用处去除 CR/LF，保持行号、occurrences 和 matchesTruncated 语义。新增 200k 密集换行、空文件、尾换行、CRLF、中文、无尾换行、逐行迭代和 CRLF 搜索计数测试；独立 Node 子进程以 64 MiB heap 处理 8 MiB 密集换行 fixture 成功，不依赖 RSS 阈值。`file-contracts` 472 项、output-schema 311 项通过。
 
 ## M7. 真实证据、端到端审计与收尾
 

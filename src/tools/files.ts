@@ -23,6 +23,7 @@ import {
   writeAllAtStart
 } from "./file-io.js";
 import { toolResultBytes } from "./result-budget.js";
+import { iterateLines } from "./text-lines.js";
 
 /**
  * fs errors are returned to a remote client, so they are mapped to short messages: the
@@ -1724,15 +1725,18 @@ async function runSearch(
         continue;
       }
 
-      const lines = text.split(/\r?\n/);
       const fileResult: TextSearchFileResult = {
         path: relativePath,
         matchCount: 0,
         matches: [],
         matchesTruncated: false
       };
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index]!;
+      let lineNumber = 0;
+      for (const rawLine of iterateLines(text)) {
+        lineNumber += 1;
+        const line = rawLine.endsWith("\n")
+          ? rawLine.slice(0, -1).replace(/\r$/, "")
+          : rawLine;
         const haystack = options.caseSensitive ? line : line.toLocaleLowerCase();
         let offset = 0;
         let occurrences = 0;
@@ -1747,7 +1751,7 @@ async function runSearch(
         fileResult.matchCount += occurrences;
         if (fileResult.matches.length < MAX_SEARCH_MATCHES_PER_FILE) {
           fileResult.matches.push({
-            line: index + 1,
+            line: lineNumber,
             occurrences,
             snippet: line.length > 240 ? line.slice(0, 237) + "..." : line
           });
