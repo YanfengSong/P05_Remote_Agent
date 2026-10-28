@@ -21,7 +21,7 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("fs_read_many", {
     description:
-      "Read UTF-8 text files in one call. Legacy form {paths} reads 1-20 whole files with per-path errors and a 1 MiB total content limit. V2 form {contract_version:2, requests:[{path,offset,limit,expected_sha256?}], max_bytes?} returns versioned line ranges with raw-byte sha256, totalLines, text, complete, nextOffset and pendingIndexes; the whole MCP result is bounded by max_bytes (default 64 KiB, maximum 256 KiB).",
+      "Read UTF-8 text files in one call; every path must be a regular file (use fs_list for directories). Legacy form {paths} reads 1-20 whole files with per-path errors and a 1 MiB total content limit. V2 form {contract_version:2, requests:[{path,offset,limit,expected_sha256?}], max_bytes?} returns versioned line ranges with raw-byte sha256, totalLines, text, complete, nextOffset and pendingIndexes; the whole MCP result is bounded by max_bytes (default 64 KiB, maximum 256 KiB). Large text files up to the configured range cap are streamed.",
     inputSchema: fsReadManyInputSchema,
     outputSchema: fsReadManyOutputSchema
   }, async (input) => {
@@ -93,7 +93,7 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
 
   exposer.expose("fs_search", {
     description:
-      "Search literal text recursively inside the active workspace. Skips protected paths, symbolic links, binary/oversized files and common generated directories. Legacy requests return bounded line snippets. V2 requests (contract_version:2) additionally return coverage {complete, stopReason, scannedFiles, skippedByReason}, an outcome and a response budget; max_bytes defaults to 64 KiB with a 256 KiB hard cap. Limit stops are partial/safe, while unreadable-path I/O errors are reported as errors.",
+      "Search literal text inside the active workspace. Legacy requests require a directory path. V2 requests (contract_version:2) accept either a directory or one regular file; a file path searches only that file. Searches skip protected paths, symbolic links, binary/oversized files and common generated directories. Legacy requests return bounded line snippets. V2 additionally returns coverage {complete, stopReason, scannedFiles, skippedByReason}, an outcome and a response budget; max_bytes defaults to 64 KiB with a 256 KiB hard cap. Limit stops are partial/safe, while unreadable-path I/O errors are reported as errors.",
     inputSchema: fsSearchInputSchema,
     outputSchema: fsSearchOutputSchema
   }, async (input) => {
@@ -293,7 +293,7 @@ export function registerFsTools(exposer: Exposer, workspaceManager: WorkspaceMan
   });
 
   exposer.expose("fs_list", {
-    description: "List direct children of a directory inside the active workspace.",
+    description: "List direct children of a directory inside the active workspace. Entries are labeled [DIR] or [FILE]; use fs_read_many for file contents.",
     inputSchema: z.object({ path: z.string().min(1) }),
     outputSchema: z.object({ entries: z.array(z.string()) })
   }, async ({ path }) => {

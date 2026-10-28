@@ -174,6 +174,7 @@ const { withWriteLocks, canonicalWriteKey } = await import("../tools/file-write-
 const { selectLineWindow, iterateLines } = await import("../tools/text-lines.js");
 const { config } = await import("../config.js");
 const {
+  listDirectory,
   patchTextFile,
   patchTextFilesBatch,
   patchTextFilesBatchV2,
@@ -3023,11 +3024,55 @@ console.log("TEXT_LINES_STRESS_OK");
     !JSON.stringify(missingRoot).includes(FIXTURE)
   );
 
-  const fileRoot = await searchTextFilesV2("needle", "plain.txt", FIXTURE);
-  checkEqual("M5: file search root is not_started", fileRoot.coverage.stopReason, "not_started");
-  checkEqual("M5: file search root outcome", fileRoot.outcome.code, "NOT_DIRECTORY");
-  checkEqual("M5: file search root is a failure", isOutcomeFailure(fileRoot.outcome), true);
-  check("M5: file search root does not leak the fixture root", !JSON.stringify(fileRoot).includes(FIXTURE));
+  const fileRoot = await searchTextFilesV2("needle", "search-scope/needle-a.txt", FIXTURE);
+  checkEqual("M5: V2 file search root complete", fileRoot.coverage.complete, true);
+  checkEqual("M5: V2 file search root scannedFiles", fileRoot.scannedFiles, 1);
+  checkEqual("M5: V2 file search root finds match", fileRoot.matchCount, 1);
+  checkEqual("M5: V2 file search root outcome", fileRoot.outcome.code, "SEARCH_COMPLETE");
+  check(
+    "M5: V2 file search root does not leak the fixture root",
+    !JSON.stringify(fileRoot).includes(FIXTURE)
+  );
+
+  let legacyFileRootError = "";
+  try {
+    await searchTextFiles("needle", "search-scope/needle-a.txt", FIXTURE);
+  } catch (error) {
+    legacyFileRootError = error instanceof Error ? error.message : String(error);
+  }
+  check(
+    "M5: legacy file search root remains directory-only",
+    legacyFileRootError.includes("directory"),
+    legacyFileRootError
+  );
+
+  let listFileError = "";
+  try {
+    await listDirectory("plain.txt", FIXTURE);
+  } catch (error) {
+    listFileError = error instanceof Error ? error.message : String(error);
+  }
+  check(
+    "M5: fs_list on a file points to fs_read_many",
+    listFileError.includes("not a directory") && listFileError.includes("fs_read_many"),
+    listFileError
+  );
+
+  const directoryRead = await readManyRanges(
+    FIXTURE,
+    [{ path: "directory", offset: 0, limit: 1 }],
+    65536
+  );
+  checkEqual(
+    "M5: fs_read_many directory error code",
+    directoryRead.result.files[0]?.errorCode,
+    "IS_DIRECTORY"
+  );
+  check(
+    "M5: fs_read_many directory hint points to fs_list",
+    directoryRead.result.outcome.nextAction.includes("fs_list"),
+    directoryRead.result.outcome.nextAction
+  );
 
   const deniedRoot = await searchTextFilesV2(
     "needle",

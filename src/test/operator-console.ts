@@ -1074,6 +1074,42 @@ try {
     mcpDetail
   );
 
+  const readDetail = summarizeToolInput("fs_read_many", {
+    contract_version: 2,
+    max_bytes: 65536,
+    requests: [
+      { path: "./docs/a.md", offset: 10, limit: 5, expected_sha256: "a".repeat(64) },
+      { path: "docs/b.md", offset: 0, limit: 2 }
+    ]
+  }) ?? "";
+  check(
+    "operator: V2 read summary records version, budget and line windows",
+    readDetail.includes("v2") &&
+      readDetail.includes("requests=2") &&
+      readDetail.includes("max_bytes=65536") &&
+      readDetail.includes("a.md[10+5]") &&
+      readDetail.includes("b.md[0+2]"),
+    readDetail
+  );
+  check(
+    "operator: V2 read summary does not expose file content or hashes",
+    !readDetail.includes("a".repeat(64)) && !readDetail.includes("alpha"),
+    readDetail
+  );
+  const manyReadDetail = summarizeToolInput("fs_read_many", {
+    contract_version: 2,
+    requests: Array.from({ length: 20 }, (_, index) => ({
+      path: `docs/${index}.md`,
+      offset: index,
+      limit: 10
+    }))
+  }) ?? "";
+  check(
+    "operator: V2 read summary is bounded",
+    manyReadDetail.length <= 500 && manyReadDetail.includes("(+15 more)"),
+    manyReadDetail
+  );
+
   const previousStateDir = process.env.P05_STATE_DIR;
   const previousOperatorRoot = process.env.P05_OPERATOR_ROOT;
   const previousRuntimeSlots = process.env.P05_RUNTIME_SLOTS;

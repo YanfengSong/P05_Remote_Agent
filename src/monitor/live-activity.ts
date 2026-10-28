@@ -7,6 +7,7 @@ import type {
   AuditTransport
 } from "../audit/types.js";
 import type { ErrorCategory } from "../runtime/errors.js";
+import path from "node:path";
 
 export type LiveActivityState = "running" | "succeeded" | "failed";
 
@@ -111,6 +112,30 @@ export function summarizeToolInput(
       return stringValue(value, "path");
 
     case "fs_read_many": {
+      if (Array.isArray(value.requests)) {
+        const requests = value.requests.filter((item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item)
+        );
+        const windows = requests.slice(0, 5).map((item) => {
+          const target = typeof item.path === "string" ? path.normalize(item.path) : "?";
+          const offset = typeof item.offset === "number" ? item.offset : 0;
+          const limit = typeof item.limit === "number" ? item.limit : 0;
+          return `${shorten(target, 100)}[${offset}+${limit}]`;
+        });
+        const suffix = requests.length > windows.length
+          ? ` (+${requests.length - windows.length} more)`
+          : "";
+        const maxBytes = typeof value.max_bytes === "number" ? value.max_bytes : undefined;
+        return shorten(
+          [
+            "v2",
+            `requests=${requests.length}`,
+            maxBytes !== undefined ? `max_bytes=${maxBytes}` : undefined,
+            ...windows
+          ].filter(Boolean).join(" · ") + suffix,
+          500
+        );
+      }
       const paths = Array.isArray(value.paths)
         ? value.paths.filter((item): item is string => typeof item === "string")
         : [];

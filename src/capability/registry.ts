@@ -14,9 +14,9 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = [
   { name: "plugin_list", minProfile: "readonly", risk: "read", scope: "platform", summary: "List installed application plugins, versions and active-workspace availability." },
 
   { name: "fs_read", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read a UTF-8 text file inside the active workspace." },
-  { name: "fs_read_many", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read up to 20 independent workspace files, or explicit V2 line ranges with raw-byte SHA-256 versions, totalLines, nextOffset, pendingIndexes and a bounded 64 KiB default MCP result budget." },
-  { name: "fs_search", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Search literal text recursively with bounded snippets; V2 reports coverage, stopReason, skipped-by-reason counts and a bounded response budget." },
-  { name: "fs_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List direct children of a directory inside the active workspace." },
+  { name: "fs_read_many", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Read up to 20 regular workspace files, or explicit V2 line ranges with raw-byte SHA-256 versions, totalLines, nextOffset, pendingIndexes, large-file streaming and a bounded MCP result budget; use fs_list for directories." },
+  { name: "fs_search", minProfile: "readonly", risk: "read", scope: "workspace", summary: "Search literal text with bounded snippets; legacy requires a directory, while V2 accepts a directory or one regular file. V2 reports coverage, stopReason, skipped-by-reason counts and a bounded response budget." },
+  { name: "fs_list", minProfile: "readonly", risk: "read", scope: "workspace", summary: "List direct children of a directory inside the active workspace; entries are labeled [DIR]/[FILE], and fs_read_many reads files." },
   { name: "fs_write", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace a UTF-8 text file inside the active workspace." },
   { name: "fs_write_many", minProfile: "developer", risk: "write", scope: "workspace", summary: "Create or replace up to 20 files in one preflighted batch with expected-hash guards and rollback on ordinary write failures." },
   { name: "apply_patch", minProfile: "developer", risk: "write", scope: "workspace", summary: "Patch one exact text occurrence with an expected SHA-256 concurrency guard." },

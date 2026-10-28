@@ -247,7 +247,7 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
   },
   NOT_DIRECTORY: {
     status: "rejected", effectState: "none", retry: "never_automatic", code: "NOT_DIRECTORY",
-    nextAction: "Choose a directory path."
+    nextAction: "Use the parent directory for search, or fs_read_many/fs_read for a single file; V2 search also accepts one file path."
   },
   INVALID_QUERY: {
     status: "rejected", effectState: "none", retry: "safe", code: "INVALID_QUERY",
@@ -271,7 +271,7 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
   },
   NOT_FILE: {
     status: "rejected", effectState: "none", retry: "never_automatic", code: "NOT_FILE",
-    nextAction: "Choose a regular workspace file."
+    nextAction: "Use fs_list for a directory; fs_read_many/fs_read expect a regular file."
   },
   INVALID_REQUEST: {
     status: "rejected", effectState: "none", retry: "safe", code: "INVALID_REQUEST",
@@ -307,7 +307,7 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
   },
   IS_DIRECTORY: {
     status: "rejected", effectState: "none", retry: "never_automatic", code: "IS_DIRECTORY",
-    nextAction: "Choose a regular file."
+    nextAction: "Use fs_list for a directory; fs_read_many/fs_read expect a regular file."
   },
   OFFSET_OUT_OF_RANGE: {
     status: "rejected", effectState: "none", retry: "safe", code: "OFFSET_OUT_OF_RANGE",

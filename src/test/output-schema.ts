@@ -837,21 +837,34 @@ try {
     name: "fs_search",
     arguments: {
       contract_version: 2,
-      query: "needle",
-      path: "README.md"
+      query: "P05",
+      path: "README.md",
+      max_results: 5,
+      max_bytes: 65536
     }
   });
   const fileSearchStructured = structuredOf(fileSearchRoot);
   check(
-    "M5 MCP: file search root is NOT_DIRECTORY",
-    (fileSearchRoot as { isError?: boolean }).isError === true &&
-      (fileSearchStructured?.coverage as { stopReason?: unknown } | undefined)?.stopReason === "not_started" &&
-      (fileSearchStructured?.outcome as { code?: unknown } | undefined)?.code === "NOT_DIRECTORY",
+    "M5 MCP: V2 search accepts a single file root",
+    (fileSearchRoot as { isError?: boolean }).isError !== true &&
+      (fileSearchStructured?.coverage as { complete?: unknown } | undefined)?.complete === true &&
+      fileSearchStructured?.scannedFiles === 1,
     JSON.stringify(fileSearchStructured).slice(0, 400)
   );
   check(
-    "M5 MCP: file search root does not leak the host path",
+    "M5 MCP: V2 file search root does not leak the host path",
     !JSON.stringify(fileSearchRoot).includes(REPO)
+  );
+
+  const legacyFileSearchRoot = await client.callTool({
+    name: "fs_search",
+    arguments: { query: "P05", path: "README.md" }
+  });
+  check(
+    "M5 MCP: legacy search still rejects a file root",
+    (legacyFileSearchRoot as { isError?: boolean }).isError === true &&
+      textOf(legacyFileSearchRoot).toLowerCase().includes("directory"),
+    textOf(legacyFileSearchRoot).slice(0, 300)
   );
 
   const hardlinkPatch = await client.callTool({
@@ -919,11 +932,25 @@ try {
 
   const auditResult = await client.callTool({
     name: "activity_recent",
-    arguments: { limit: 30 }
+    arguments: { limit: 50 }
   });
   const auditEvents = Array.isArray(structuredOf(auditResult)?.events)
     ? structuredOf(auditResult)!.events as Array<Record<string, unknown>>
     : [];
+  const v2ReadAudit = auditEvents.find((event) =>
+    event.capability === "fs_read_many" &&
+    typeof event.inputSummary === "string" &&
+    event.inputSummary.includes("requests=") &&
+    event.inputSummary.includes("v2")
+  );
+  check(
+    "M8 MCP: V2 read audit records a bounded path/window summary",
+    Boolean(v2ReadAudit) &&
+      typeof v2ReadAudit?.inputSummary === "string" &&
+      v2ReadAudit.inputSummary.length <= 500 &&
+      !v2ReadAudit.inputSummary.includes(REPO),
+    JSON.stringify(v2ReadAudit ?? {})
+  );
   const mixedAudit = auditEvents.find((event) =>
     event.capability === "fs_read_many" &&
     event.resultCode === "NOT_FOUND"

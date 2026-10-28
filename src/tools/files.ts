@@ -44,9 +44,9 @@ function describeFileIoReadError(error: unknown, limit: number): Error {
       case "INVALID_LIMIT":
         return new Error("The server read limit is invalid; reading is disabled.");
       case "IS_DIRECTORY":
-        return new Error("Path is not a file.");
+        return new Error("Path is a directory; use fs_list to list its contents.");
       case "NOT_REGULAR_FILE":
-        return new Error("Path is not a file.");
+        return new Error("Path is not a regular file; use fs_list for directories.");
       case "TOO_LARGE":
         return new Error(`File exceeds maxReadBytes (${limit}).`);
       default:
@@ -133,6 +133,15 @@ export async function writeTextFile(
  */
 export async function listDirectory(dirPath: string, baseDir = config.defaultCwd): Promise<string[]> {
   const safePath = await assertAccessiblePath(dirPath, "read", baseDir, baseDir);
+  let info;
+  try {
+    info = await fs.stat(safePath);
+  } catch (error) {
+    throw describeError(error, "Could not inspect the directory.");
+  }
+  if (!info.isDirectory()) {
+    throw new Error("Path is a file, not a directory; use fs_read_many to read it.");
+  }
   try {
     const entries = await fs.readdir(safePath, { withFileTypes: true });
     return entries.map((entry) => `${entry.isDirectory() ? "[DIR]" : "[FILE]"} ${entry.name}`);
@@ -1699,6 +1708,8 @@ export type TextSearchOptions = {
   caseSensitive?: boolean;
   maxResults?: number;
   testHooks?: SearchTestHooks;
+  /** V2 accepts one file as the search root; legacy search remains directory-only. */
+  allowFileRoot?: boolean;
 };
 
 function normalizedSearchPath(value: string): string {
@@ -1772,6 +1783,49 @@ function resolveSearchFileLimit(configured: number = config.maxSearchFileBytes):
   return configured;
 }
 
+function searchTextContent(
+  text: string,
+  relativePath: string,
+  needle: string,
+  caseSensitive: boolean
+): TextSearchFileResult {
+  const fileResult: TextSearchFileResult = {
+    path: relativePath,
+    matchCount: 0,
+    matches: [],
+    matchesTruncated: false
+  };
+  let lineNumber = 0;
+  for (const rawLine of iterateLines(text)) {
+    lineNumber += 1;
+    const line = rawLine.endsWith("\n")
+      ? rawLine.slice(0, -1).replace(/\r$/, "")
+      : rawLine;
+    const haystack = caseSensitive ? line : line.toLocaleLowerCase();
+    let offset = 0;
+    let occurrences = 0;
+    while (offset <= haystack.length - needle.length) {
+      const found = haystack.indexOf(needle, offset);
+      if (found < 0) break;
+      occurrences += 1;
+      offset = found + Math.max(needle.length, 1);
+    }
+    if (occurrences === 0) continue;
+
+    fileResult.matchCount += occurrences;
+    if (fileResult.matches.length < MAX_SEARCH_MATCHES_PER_FILE) {
+      fileResult.matches.push({
+        line: lineNumber,
+        occurrences,
+        snippet: line.length > 240 ? line.slice(0, 237) + "..." : line
+      });
+    } else {
+      fileResult.matchesTruncated = true;
+    }
+  }
+  return fileResult;
+}
+
 async function runSearch(
   query: string,
   rootPath: string,
@@ -1788,6 +1842,7 @@ async function runSearch(
   const maxResults = Math.max(1, Math.min(Math.trunc(options.maxResults ?? 50), 100));
   const maxSearchBytes = resolveSearchScanLimit();
   const maxSearchFileBytes = resolveSearchFileLimit();
+  const needle = options.caseSensitive ? query : query.toLocaleLowerCase();
   let safeRoot: string;
   try {
     safeRoot = await assertAccessiblePath(rootPath, "read", baseDir, baseDir);
@@ -1813,7 +1868,90 @@ async function runSearch(
     throw new SearchInputError("PATH_REFUSED", "Search root cannot be a symbolic link.");
   }
   if (!rootInfo.isDirectory()) {
-    throw new SearchInputError("NOT_DIRECTORY", "Search root must be a directory.");
+    if (!options.allowFileRoot || !rootInfo.isFile()) {
+      throw new SearchInputError(
+        "NOT_DIRECTORY",
+        "Search root must be a directory, or a single regular file for V2."
+      );
+    }
+    if (protectionReason(safeRoot)) {
+      throw new SearchInputError("PATH_REFUSED", "Search root is protected.");
+    }
+
+    const relativePath = path.relative(baseDir, safeRoot) || ".";
+    const skippedByReason: Record<string, number> = {};
+    const results: TextSearchFileResult[] = [];
+    let scannedFiles = 0;
+    let skippedFiles = 0;
+    let totalBytesScanned = 0;
+    let totalMatchCount = 0;
+    let limitStop: SearchStopReason | undefined;
+    let hadIoError = false;
+    let text: string | undefined;
+
+    if (rootInfo.size > maxSearchFileBytes) {
+      skippedByReason.oversized = 1;
+      skippedFiles = 1;
+    } else if (rootInfo.size > maxSearchBytes) {
+      limitStop = "byte_limit";
+    } else {
+      try {
+        await options.testHooks?.beforeRead?.(safeRoot);
+        text = await readTextFile(relativePath, baseDir, maxSearchFileBytes);
+      } catch {
+        hadIoError = true;
+      }
+    }
+
+    if (text !== undefined) {
+      const bytes = Buffer.byteLength(text, "utf8");
+      if (totalBytesScanned + bytes > maxSearchBytes) {
+        limitStop = "byte_limit";
+      } else {
+        scannedFiles += 1;
+        totalBytesScanned += bytes;
+        if (text.includes("\0")) {
+          skippedByReason.binary = 1;
+          skippedFiles = 1;
+        } else {
+          const fileResult = searchTextContent(
+            text,
+            relativePath,
+            needle,
+            options.caseSensitive === true
+          );
+          if (fileResult.matchCount > 0) {
+            results.push(fileResult);
+            totalMatchCount += fileResult.matchCount;
+            if (results.length >= maxResults) limitStop = "result_limit";
+          }
+        }
+      }
+    }
+
+    const stopReason: SearchStopReason =
+      limitStop ?? (hadIoError ? "io_error" : "exhausted");
+    const coverage: SearchCoverage = {
+      complete: stopReason === "exhausted",
+      stopReason,
+      scannedFiles,
+      skippedByReason
+    };
+    return {
+      textResult: {
+        query,
+        root: rootPath,
+        scannedFiles,
+        skippedFiles,
+        totalBytesScanned,
+        matchCount: totalMatchCount,
+        matchedFiles: results.length,
+        truncated: limitStop !== undefined,
+        results
+      },
+      coverage,
+      hadIoError
+    };
   }
   try {
     const realRoot = await fs.realpath(safeRoot);
@@ -1825,7 +1963,6 @@ async function runSearch(
     throw new SearchInputError("PATH_REFUSED", "Search root could not be resolved.");
   }
 
-  const needle = options.caseSensitive ? query : query.toLocaleLowerCase();
   const queue = [safeRoot];
   const results: TextSearchFileResult[] = [];
   const skippedByReason: Record<string, number> = {};
@@ -1938,40 +2075,12 @@ async function runSearch(
         continue;
       }
 
-      const fileResult: TextSearchFileResult = {
-        path: relativePath,
-        matchCount: 0,
-        matches: [],
-        matchesTruncated: false
-      };
-      let lineNumber = 0;
-      for (const rawLine of iterateLines(text)) {
-        lineNumber += 1;
-        const line = rawLine.endsWith("\n")
-          ? rawLine.slice(0, -1).replace(/\r$/, "")
-          : rawLine;
-        const haystack = options.caseSensitive ? line : line.toLocaleLowerCase();
-        let offset = 0;
-        let occurrences = 0;
-        while (offset <= haystack.length - needle.length) {
-          const found = haystack.indexOf(needle, offset);
-          if (found < 0) break;
-          occurrences += 1;
-          offset = found + Math.max(needle.length, 1);
-        }
-        if (occurrences === 0) continue;
-
-        fileResult.matchCount += occurrences;
-        if (fileResult.matches.length < MAX_SEARCH_MATCHES_PER_FILE) {
-          fileResult.matches.push({
-            line: lineNumber,
-            occurrences,
-            snippet: line.length > 240 ? line.slice(0, 237) + "..." : line
-          });
-        } else {
-          fileResult.matchesTruncated = true;
-        }
-      }
+      const fileResult = searchTextContent(
+        text,
+        relativePath,
+        needle,
+        options.caseSensitive === true
+      );
 
       if (fileResult.matchCount > 0) {
         results.push(fileResult);
@@ -2054,7 +2163,7 @@ export async function searchTextFilesV2(
       query,
       rootPath,
       baseDir,
-      options
+      { ...options, allowFileRoot: true }
     );
     const outcome = hadIoError
       ? outcomeFor("SEARCH_IO_ERROR")
