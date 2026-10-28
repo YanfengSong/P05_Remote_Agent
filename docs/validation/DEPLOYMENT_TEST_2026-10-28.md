@@ -4,7 +4,7 @@
 
 - Branch: `codex/v2-agent-workflow-pilot`
 - Tested HEAD: `5ef4e88` (F6)
-- Full code verification before deployment: `npm run verify` → 1,861 checks; benchmark last run
+- Full code verification before deployment: `npm run verify` → 1,863 checks; benchmark last run
   on the unaffected F5 path → 69 checks/40 runs. F6 and the large-file/search capacity change
   did not alter benchmark scenarios.
 - No feature work, no code re-review, no push/merge.
@@ -141,8 +141,11 @@ read-only probe. A 1 GiB scan is not free; narrow `path` remains preferable for 
 - `max_bytes` still only controls response payload (64 KiB default/256 KiB hard cap). A
   streamed large-file read may return a page with `nextOffset`; that is expected and
   independent of the file-size cap.
-- Production A/B were restarted on the new build; Runtime A PID 10140 (17:27:57) and Runtime B
-  PID 37936 (17:28:00), both `/readyz=ready`.
+- Production A/B were restarted on the new build; Runtime A PID 13492 (17:34:57) and Runtime B
+  PID 37496 (17:34:59), both `/readyz=ready`.
+- If a scope contains only oversized files, search still reports `SEARCH_COMPLETE` because the
+  directory scan completed, but `skippedByReason.oversized` is non-zero and `nextAction` now
+  says those files were not searched and points to `fs_read_many` or the per-file search limit.
 
 ## Residual risks
 
