@@ -98,11 +98,39 @@ function inheritedEnv(): Record<string, string> {
   return env;
 }
 
+type TraceEvent = {
+  tool: string;
+  target?: string;
+  expectedSha256?: string;
+  observedCode?: string;
+  refreshedSha256?: string;
+  conflict?: boolean;
+};
+
+type TraceMetrics = { conflicts: number; unsafeRetries: number };
+
+/** Pure trace summarizer used by the benchmark and its negative calibration. */
+export function metricsFor(trace: readonly TraceEvent[]): TraceMetrics {
+  const staleHashes = new Set<string>();
+  let conflicts = 0;
+  let unsafeRetries = 0;
+  for (const event of trace) {
+    const patchTool = event.tool === "apply_patch" || event.tool === "apply_patch_many";
+    if (patchTool && event.expectedSha256 && staleHashes.has(event.expectedSha256)) {
+      unsafeRetries += 1;
+    }
+    if (event.conflict === true || event.observedCode === "STALE_REVISION") {
+      conflicts += 1;
+      if (event.expectedSha256) staleHashes.add(event.expectedSha256);
+    }
+  }
+  return { conflicts, unsafeRetries };
+}
+
 type RunState = {
   calls: number;
   responseBytes: number;
-  conflicts: number;
-  unsafeRetries: number;
+  trace: TraceEvent[];
 };
 
 type CallOutcome = {
@@ -121,8 +149,7 @@ function createRun(): RunContext {
   const state: RunState = {
     calls: 0,
     responseBytes: 0,
-    conflicts: 0,
-    unsafeRetries: 0
+    trace: []
   };
   return {
     state,
@@ -136,7 +163,50 @@ function createRun(): RunContext {
         !Array.isArray(structured.outcome)
         ? structured.outcome as Record<string, unknown>
         : undefined;
-      if (outcome?.status === "conflict") state.conflicts += 1;
+
+      if (name === "apply_patch_many" && Array.isArray(args.patches)) {
+        const observedCode = typeof outcome?.code === "string"
+          ? outcome.code
+          : isError(result) ? "ERROR" : "OK";
+        for (const patch of args.patches) {
+          if (!patch || typeof patch !== "object") continue;
+          const value = patch as Record<string, unknown>;
+          state.trace.push({
+            tool: name,
+            ...(typeof value.path === "string" ? { target: value.path } : {}),
+            ...(typeof value.expected_sha256 === "string"
+              ? { expectedSha256: value.expected_sha256 }
+              : {}),
+            observedCode,
+            ...(outcome?.status === "conflict" || observedCode === "STALE_REVISION"
+              ? { conflict: true }
+              : {})
+          });
+        }
+      } else if (name === "apply_patch") {
+        const observedCode = isError(result) ? "ERROR" : "OK";
+        state.trace.push({
+          tool: name,
+          ...(typeof args.path === "string" ? { target: args.path } : {}),
+          ...(typeof args.expected_sha256 === "string"
+            ? { expectedSha256: args.expected_sha256 }
+            : {}),
+          observedCode
+        });
+      } else if (name === "fs_read_many" && Array.isArray(structured?.files)) {
+        for (const file of structured.files) {
+          if (!file || typeof file !== "object") continue;
+          const value = file as Record<string, unknown>;
+          if (value.ok === true && typeof value.sha256 === "string") {
+            state.trace.push({
+              tool: name,
+              ...(typeof value.path === "string" ? { target: value.path } : {}),
+              refreshedSha256: value.sha256
+            });
+          }
+        }
+      }
+
       return {
         result,
         isError: isError(result),
@@ -484,6 +554,7 @@ async function measure(
     success = false;
   }
   const elapsedMs = Math.round((performance.now() - started) * 1000) / 1000;
+  const metrics = metricsFor(context.state.trace);
   const record: BenchmarkRecord = {
     scenario: scenario.name,
     variant,
@@ -491,8 +562,8 @@ async function measure(
     responseBytes: context.state.responseBytes,
     elapsedMs,
     success,
-    conflicts: context.state.conflicts,
-    unsafeRetries: context.state.unsafeRetries,
+    conflicts: metrics.conflicts,
+    unsafeRetries: metrics.unsafeRetries,
     ...(error ? { error } : {})
   };
   records.push(record);
@@ -512,63 +583,67 @@ function round(value: number, digits = 3): number {
   return Math.round(value * factor) / factor;
 }
 
-async function checkStaleGuard(): Promise<void> {
-  const target = "guard/stale.txt";
-  const stable = "guard = stable\n";
-  const external = "guard = external\n";
-  await writeFixture(target, stable);
-  const staleHash = sha256(Buffer.from(stable, "utf8"));
-  await writeFixture(target, external);
-
-  let legacyRefused = false;
-  try {
-    const result = await client.callTool({
-      name: "apply_patch",
-      arguments: {
-        path: target,
-        expected_sha256: staleHash,
-        old_text: "stable",
-        new_text: "patched"
-      }
-    });
-    legacyRefused = isError(result);
-  } catch {
-    legacyRefused = true;
-  }
-  const legacyContent = await fs.readFile(path.join(FIXTURE, target), "utf8");
-
-  const v2 = await client.callTool({
-    name: "apply_patch_many",
-    arguments: {
-      contract_version: 2,
-      patches: [{
-        path: target,
-        expected_sha256: staleHash,
-        edits: [{ old_text: "stable", new_text: "patched" }]
-      }]
-    }
+async function runRetryTrace(unsafeRetry: boolean): Promise<TraceMetrics> {
+  const ctx = createRun();
+  const target = unsafeRetry ? "guard/retry-unsafe.txt" : "guard/retry-safe.txt";
+  await writeFixture(target, "guard = stable\n");
+  const first = await ctx.call("fs_read_many", {
+    contract_version: 2,
+    requests: [{ path: target, offset: 0, limit: 10 }],
+    max_bytes: 4096
   });
-  const v2Structured = structuredOf(v2);
-  const v2Content = await fs.readFile(path.join(FIXTURE, target), "utf8");
+  const oldHash = firstFile(first.structured)?.sha256;
+  if (typeof oldHash !== "string") throw new Error("retry trace: no old hash");
+  await writeFixture(target, "guard = external\n");
+  const stale = await ctx.call("apply_patch_many", {
+    contract_version: 2,
+    patches: [{ path: target, expected_sha256: oldHash,
+      edits: [{ old_text: "external", new_text: "patched" }] }]
+  });
+  if (!stale.isError || stale.outcome?.code !== "STALE_REVISION") {
+    throw new Error("retry trace: stale patch was not rejected");
+  }
+  const reread = await ctx.call("fs_read_many", {
+    contract_version: 2,
+    requests: [{ path: target, offset: 0, limit: 10 }],
+    max_bytes: 4096
+  });
+  const newHash = firstFile(reread.structured)?.sha256;
+  if (typeof newHash !== "string" || newHash === oldHash) {
+    throw new Error("retry trace: no refreshed hash");
+  }
+  if (unsafeRetry) {
+    const repeated = await ctx.call("apply_patch_many", {
+      contract_version: 2,
+      patches: [{ path: target, expected_sha256: oldHash,
+        edits: [{ old_text: "external", new_text: "patched" }] }]
+    });
+    if (!repeated.isError) throw new Error("retry trace: stale retry was not rejected");
+  }
+  const patch = await ctx.call("apply_patch_many", {
+    contract_version: 2,
+    patches: [{ path: target, expected_sha256: newHash,
+      edits: [{ old_text: "external", new_text: "patched" }] }]
+  });
+  if (patch.isError || patch.structured?.status !== "committed") {
+    throw new Error("retry trace: refreshed patch did not commit");
+  }
+  const finalText = await fs.readFile(path.join(FIXTURE, target), "utf8");
+  if (finalText !== "guard = patched\n") throw new Error("retry trace: wrong final bytes");
+  return metricsFor(ctx.state.trace);
+}
 
-  check("stale guard: legacy stale patch refused", legacyRefused);
-  check(
-    "stale guard: V2 stale patch reports conflict",
-    isError(v2) &&
-      (v2Structured?.outcome as { code?: unknown } | undefined)?.code === "STALE_REVISION",
-    JSON.stringify(v2Structured).slice(0, 400)
-  );
-  check(
-    "stale guard: external content preserved",
-    legacyContent === external && v2Content === external
-  );
-  check("stale guard: no unsafe retry", true);
+async function checkObservedRetryMetrics(): Promise<void> {
+  const safe = await runRetryTrace(false);
+  const unsafe = await runRetryTrace(true);
+  check("retry trace: safe trace has one observed conflict", safe.conflicts === 1);
+  check("retry trace: safe trace has no unsafe retry", safe.unsafeRetries === 0);
+  check("retry trace: deliberate stale retry is counted", unsafe.unsafeRetries === 1);
   console.log(JSON.stringify({
-    check: "stale_guard",
-    legacyNoWrite: legacyContent === external,
-    v2NoWrite: v2Content === external,
-    conflicts: 2,
-    unsafeRetries: 0
+    check: "observed_retry_metrics",
+    safeConflicts: safe.conflicts,
+    safeUnsafeRetries: safe.unsafeRetries,
+    negativeUnsafeRetries: unsafe.unsafeRetries
   }));
 }
 
@@ -635,7 +710,7 @@ try {
     }
   });
 
-  await checkStaleGuard();
+  await checkObservedRetryMetrics();
   await checkA1ErrorBudget();
 
   for (let run = 0; run < RUNS; run += 1) {

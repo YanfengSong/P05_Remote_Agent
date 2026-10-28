@@ -800,6 +800,18 @@ try {
     truncatedAudit?.state === "succeeded" && truncatedAudit?.resultTruncated === true,
     JSON.stringify(truncatedAudit ?? {})
   );
+  const searchAudit = auditEvents.find((event) =>
+    event.capability === "fs_search" &&
+    typeof event.inputSummary === "string" &&
+    event.inputSummary.includes("m5-missing-search-root")
+  );
+  check(
+    "M7 MCP: structured search failure is audited by capability and input",
+    searchAudit?.state === "failed" &&
+      searchAudit?.resultCode === "NOT_FOUND" &&
+      searchAudit?.recoveryHint === "inspect",
+    JSON.stringify(searchAudit ?? {})
+  );
 
   const legacy = await client.callTool({
     name: "fs_read_many",

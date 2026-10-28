@@ -183,6 +183,8 @@ const {
 } = await import("../tools/files.js");
 const { AuditStore } = await import("../audit/store.js");
 const { ExecutionRuntime } = await import("../runtime/execution.js");
+const { registerFsTools } = await import("../tools/register-fs.js");
+const { setPatchCommitHooksForTests } = await import("../tools/files.js");
 
 try {
   // ---------------------------------------------------------------- pure helpers
@@ -2287,6 +2289,74 @@ console.log("TEXT_LINES_STRESS_OK");
   checkEqual("audit: bare MCP error category", bareRecord.errorCategory, "tool");
   checkEqual("audit: bare MCP error recovery", bareRecord.recoveryHint, "inspect");
   checkEqual("audit: bare MCP error has no invented outcome", bareRecord.resultStatus, undefined);
+
+  await writeFixture("m7-unknown.txt", "value = 0;\n");
+  const unknownHash = sha256(Buffer.from("value = 0;\n", "utf8"));
+  const handlers = new Map<string, (input: any) => Promise<any>>();
+  registerFsTools(
+    {
+      expose(name: string, _config: unknown, handler: (input: any) => Promise<any>) {
+        handlers.set(name, handler);
+      },
+      report() { return {}; }
+    } as any,
+    { currentRoot: () => FIXTURE } as any
+  );
+  const unknownAudit = new AuditStore(20);
+  const unknownRuntime = new ExecutionRuntime(unknownAudit, () => "test-workspace");
+  setPatchCommitHooksForTests({
+    afterWrite: async (targetPath) => {
+      if (targetPath === "m7-unknown.txt") {
+        await fs.writeFile(path.join(FIXTURE, targetPath), "EXTERNAL\n", "utf8");
+        throw new Error("synthetic external change");
+      }
+    }
+  });
+  try {
+    const unknownResult = await unknownRuntime.run(
+      "apply_patch_many",
+      () => handlers.get("apply_patch_many")!({
+        contract_version: 2,
+        patches: [{
+          path: "m7-unknown.txt",
+          expected_sha256: unknownHash,
+          edits: [{ old_text: "0", new_text: "1" }]
+        }]
+      })
+    );
+    const unknownStructured = (unknownResult as {
+      structuredContent?: Record<string, unknown>;
+    }).structuredContent!;
+    checkEqual("M7: unknown write is MCP error", (unknownResult as { isError?: boolean }).isError, true);
+    checkEqual("M7: unknown write status", unknownStructured.status, "unknown");
+    checkEqual(
+      "M7: unknown write effect",
+      (unknownStructured.outcome as { effectState?: unknown }).effectState,
+      "unknown"
+    );
+    checkEqual(
+      "M7: unknown write retry",
+      (unknownStructured.outcome as { retry?: unknown }).retry,
+      "never_automatic"
+    );
+    checkEqual(
+      "M7: unknown write preserves external bytes",
+      await fs.readFile(path.join(FIXTURE, "m7-unknown.txt"), "utf8"),
+      "EXTERNAL\n"
+    );
+    check(
+      "M7: unknown structuredContent matches schema",
+      applyPatchManyOutputSchema.safeParse(unknownStructured).success,
+      JSON.stringify(applyPatchManyOutputSchema.safeParse(unknownStructured).error?.issues ?? [])
+    );
+    const unknownEvent = unknownAudit.recent(1)[0]!;
+    checkEqual("M7: unknown write audit failed", unknownEvent.state, "failed");
+    checkEqual("M7: unknown write audit code", unknownEvent.resultCode, "ROLLBACK_UNCONFIRMED");
+    checkEqual("M7: unknown write audit retry", unknownEvent.resultRetry, "never_automatic");
+    checkEqual("M7: unknown write audit recovery", unknownEvent.recoveryHint, "human");
+  } finally {
+    setPatchCommitHooksForTests(undefined);
+  }
 
   // ---------------------------------------------------------------- output schema
   check(

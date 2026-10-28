@@ -238,6 +238,15 @@ export type PatchBatchV2Options = {
   hooks?: BatchCommitHooks;
 };
 
+let testPatchCommitHooks: BatchCommitHooks | undefined;
+
+/** Test-only injection; never populated by MCP handlers or input schemas. */
+export function setPatchCommitHooksForTests(
+  hooks: BatchCommitHooks | undefined
+): void {
+  testPatchCommitHooks = hooks;
+}
+
 class BatchOperationError extends Error {
   readonly code: string;
   readonly targetPath?: string;
@@ -1463,7 +1472,10 @@ export async function patchTextFilesBatchV2(
           maxBytes
         ).result;
       }
-      const outcome = await commitBatchOperationsDetailed(prepared, options.hooks);
+      const outcome = await commitBatchOperationsDetailed(
+        prepared,
+        options.hooks ?? testPatchCommitHooks
+      );
       const result = outcome.ok
         ? patchCommitSuccessResult(outcome.results, prepared, maxBytes)
         : patchCommitFailureResult(outcome.failure, prepared, maxBytes);

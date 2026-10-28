@@ -255,9 +255,9 @@ assert.equal(window.text, "\n\n");
 **问题：** 自查8/9/10/11；确保以上缺陷有不可假通过的回归。
 **Files：** file-contracts-benchmark.ts、output-schema.ts、file-contracts.ts、package.json、PROJECT_STATUS.md、原验证文档和新修复验证文档。
 
-- [ ] 给基准增加实际执行轨迹，最少记录tool、目标、expected hash、观测code、刷新得到的hash。由轨迹统计conflicts和unsafeRetries；删除字面true断言和硬编码conflicts=2。
-- [ ] 增加真实场景：读取旧hash→fixture外部改写→提交旧hash被拒→重新读取→用新hash修改成功。所有操作来自实际MCP调用；最后独立读取文件确认内容。
-- [ ] 负向校准指标：在隔离fixture中故意再提交一次已经被拒的旧hash，计数器必须得到unsafeRetries=1；正常驱动不得出现该重试。这里unsafe指不合规的重试尝试，不声称该尝试绕过了服务端hash保护。
+- [x] 给基准增加实际执行轨迹，最少记录tool、目标、expected hash、观测code、刷新得到的hash。由轨迹统计conflicts和unsafeRetries；删除字面true断言和硬编码conflicts=2。
+- [x] 增加真实场景：读取旧hash→fixture外部改写→提交旧hash被拒→重新读取→用新hash修改成功。所有操作来自实际MCP调用；最后独立读取文件确认内容。
+- [x] 负向校准指标：在隔离fixture中故意再提交一次已经被拒的旧hash，计数器必须得到unsafeRetries=1；正常驱动不得出现该重试。这里unsafe指不合规的重试尝试，不声称该尝试绕过了服务端hash保护。
 ```ts
 assert.equal(metricsFor(safeTrace).unsafeRetries, 0);
 assert.equal(metricsFor(deliberatelyStaleRetryTrace).unsafeRetries, 1);
@@ -265,13 +265,15 @@ assert.equal(metricsFor(safeTrace).conflicts, observedConflictResponses);
 ```
 metricsFor是新增的纯轨迹汇总函数；safeTrace和故意重试trace由真实fixture调用产生。legacy冲突通过明确的fixture断言分类，不把任意异常都计为版本冲突。
 
-- [ ] 真实MCP失败后再查询activity_recent/recovery_status，按capability与唯一调用标识/事件ID关联，不因查询自身产生事件而误取“最新一条”。覆盖单项策略错误、错误+pending、正常截断和unknown写入。
-- [ ] unknown写入使用仅测试进程的I/O依赖注入与真实Exposer/ExecutionRuntime；生产MCP schema不新增注入参数。isError响应的structuredContent也显式用对应Zod schema校验，不能只依赖SDK调用未抛错。
-- [ ] 运行有针对性的所有新增测试，随后完整 `rtk npm run verify`，再独立 `rtk npm run test:benchmark`。确保进程PATH使用项目内置Node/npm，若环境需调整只修改本次进程。
-- [ ] 新验证文档逐条列E1—E8及原自查1—11的关闭/接受残余风险、测试名、实际命令和结果。重新生成受修复影响的40次基准数据，不复用旧时间。
-- [ ] 文档说明：A4除isError预算计量修正外未改变工具语义；响应字节下降不等于磁盘I/O或模型耗时下降；benchmark独立门禁有意不加入每次test:compiled。
-- [ ] 兼容性说明保留legacy重叠歧义拒绝，明确这是安全收紧；不恢复旧有不明确匹配行为。
-- [ ] 核对 `rtk proxy git diff --check`、工作区状态和提交列表；提交：`test: verify remediation with observed retries and MCP audit evidence`。
+- [x] 真实MCP失败后再查询activity_recent/recovery_status，按capability与唯一调用标识/事件ID关联，不因查询自身产生事件而误取“最新一条”。覆盖单项策略错误、错误+pending、正常截断和unknown写入。
+- [x] unknown写入使用仅测试进程的I/O依赖注入与真实Exposer/ExecutionRuntime；生产MCP schema不新增注入参数。isError响应的structuredContent也显式用对应Zod schema校验，不能只依赖SDK调用未抛错。
+- [x] 运行有针对性的所有新增测试，随后完整 `rtk npm run verify`，再独立 `rtk npm run test:benchmark`。确保进程PATH使用项目内置Node/npm，若环境需调整只修改本次进程。
+- [x] 新验证文档逐条列E1—E8及原自查1—11的关闭/接受残余风险、测试名、实际命令和结果。重新生成受修复影响的40次基准数据，不复用旧时间。
+- [x] 文档说明：A4除isError预算计量修正外未改变工具语义；响应字节下降不等于磁盘I/O或模型耗时下降；benchmark独立门禁有意不加入每次test:compiled。
+- [x] 兼容性说明保留legacy重叠歧义拒绝，明确这是安全收紧；不恢复旧有不明确匹配行为。
+- [x] 核对 `rtk proxy git diff --check`、工作区状态和提交列表；提交：`test: verify remediation with observed retries and MCP audit evidence`。
+
+**M7 实施记录（2026-10-28）：** benchmark 增加 `TraceEvent`/`metricsFor`：从实际 MCP 调用记录 tool、target、expected/refreshed hash、observedCode；safe trace 观测到 1 次 conflict、0 次 unsafe retry，隔离 negative trace 故意复用旧 hash 得到 unsafeRetries=1，删除字面 true 和硬编码冲突数。真实 MCP `activity_recent` 已按 capability/inputSummary 验证单项搜索失败、错误+pending、正常截断；unknown 写入通过仅测试进程的文件 I/O hook、真实 `registerFsTools` handler 与 `ExecutionRuntime` 触发，structuredContent 被 `applyPatchManyOutputSchema` 显式校验，审计为 failed/ROLLBACK_UNCONFIRMED/never_automatic/human。新增 `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`，逐项记录 E1—E8、原自查 1—11、命令、实际计数和残余风险；原 A4 文档增加 remediation rerun 数据与“响应字节不等于磁盘 I/O/模型耗时”说明。完整 `npm run verify` 与独立 `npm run test:benchmark` 在 M7 实现后重新通过。
 
 ## 最终验收门槛
 

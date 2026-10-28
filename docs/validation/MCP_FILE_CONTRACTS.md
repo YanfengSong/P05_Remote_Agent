@@ -121,4 +121,24 @@ rtk proxy git diff --check
 - `responseBytes` 统计 MCP 工具结果对象，不含 JSON-RPC 信封；不同客户端或协议版本可能增加少量信封开销。
 - 计时包含本地 stdio 往返、审计落盘和 fixture 校验；绝对值受本机文件系统、Windows Defender 和 warm-up 影响。表中同时给出 min–max。
 - “验证失败后的修复”使用本地确定性 fixture 校验，不代表 `project_validate`、业务工程验证器或 CI 的行为。
-- A4 没有改变工具行为、Runtime 生命周期或阶段 B 的默认禁用状态；本验证未重启 Runtime、未推送、未合并。
+- 除 A1 `isError` 预算计量修正外，A4 未改变工具语义、Runtime 生命周期或阶段 B 的默认禁用状态；本验证未重启 Runtime、未推送、未合并。
+
+## 2026-10-27 remediation rerun (M7)
+
+The A4 table above is the pre-remediation record. After M1—M6, the benchmark was regenerated from actual MCP calls (40 runs, 5 per scenario/variant):
+
+| Scenario | Variant | Calls | Response bytes | Median ms |
+| --- | --- | ---: | ---: | ---: |
+| Large-file location | legacy | 1 | 104,273 | 7.149 |
+| Large-file location | V2 | 2 | 2,342 | 19.620 |
+| Same-file multi-edit | legacy | 4 | 1,097 | 36.479 |
+| Same-file multi-edit | V2 | 2 | 2,064 | 39.770 |
+| 500-file config search | legacy | 1 | 484 | 404.965 |
+| 500-file config search | V2 | 1 | 1,176 | 487.695 |
+| Validation failure repair | legacy | 3 | 791 | 33.306 |
+| Validation failure repair | V2 | 3 | 2,953 | 24.871 |
+
+- Final marker: `FILE_CONTRACTS_BENCHMARK_OK (66 checks, 40 runs)`.
+- Observed retry trace: `{"safeConflicts":1,"safeUnsafeRetries":0,"negativeUnsafeRetries":1}`. The negative trace deliberately reuses the already rejected hash and is counted; the safe trace does not.
+- A4 changed only the `isError` budget accounting in addition to documentation/tests; response bytes are not disk-I/O, model-latency or token measurements.
+- `test:benchmark` remains a separate evidence command, intentionally not part of every `test:compiled`.

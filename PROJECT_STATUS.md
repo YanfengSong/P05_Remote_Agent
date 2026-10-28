@@ -1,8 +1,8 @@
 # Project Status
 
-Updated: 2026-10-27
+Updated: 2026-10-28
 
-## Current deployment progress - 2026-10-27
+## Current deployment progress - 2026-10-28
 
 This snapshot takes precedence over the historical baseline and validation counts below.
 The reviewed source is the user-designated latest checkout, `D:\Project_Git\P05_V2_Deployment`.
@@ -24,6 +24,11 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   variant, real stdio MCP client, actual response bytes and local round-trip time. See
   `docs/validation/MCP_FILE_CONTRACTS.md`. This is a protocol benchmark only; no model was
   involved, so no model latency or token-saving conclusion is made.
+- A1—A4 remediation (M1—M7): final read-budget finalization, bounded snapshots and complete
+  writes, canonical missing-ancestor locks with locked preflight/dry_run, R03 budgets for
+  V2 search/patch, structured/redacted V2 path failures, line-window scanning without
+  full-file arrays, and observed retry/audit evidence. See
+  `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`.
 - Batch file reading, bounded literal search, batch writes, batch patches and
   `git_workspace_audit` remain available; legacy calls keep their prior output shapes.
 - Mutation batches preflight paths and expected hashes, reject ambiguous targets, and attempt
@@ -34,7 +39,7 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   schema regressions cover the current tool surface.
 - Machine-local `.env.bak*` files are ignored alongside existing `.env` and `.p05/` exclusions.
 
-### Verification on 2026-10-27
+### Verification on 2026-10-28
 
 Typecheck and build passed. All suites listed by `npm run verify` were exercised successfully
 with the repo-local Node v22.23.1:
@@ -45,23 +50,25 @@ with the repo-local Node v22.23.1:
 | Profile exposure | 266 |
 | HTTP Reviewer | 80 |
 | Foundation | 58 |
-| File contracts | 367 |
+| File contracts | 482 |
 | Git mutations / workspace audit | 27 |
 | Operator Console | 93 |
-| Output schemas | 257 |
+| Output schemas | 312 |
 | Plugin framework | 35 |
 | Plugin API v1 | 4 |
 | State synchronization | 11 |
-| **Total** | **1,533** |
+| File I/O primitives | 19 |
+| **Total** | **1,722** |
 
 Downstream smoke passed as part of `npm run verify`. `npm run verify` ran
 `check`, `build`, `test:compiled` and `test:sync` to completion.
 
 The A4 benchmark is a separate evidence command (`npm run test:benchmark`), not part of the
 per-commit correctness gate. It reported 40 measured runs, `FILE_CONTRACTS_BENCHMARK_OK
-(67 checks, 40 runs)`, 5/5 correctness in every scenario/variant, zero unsafe retries in the
-normal workflows, a passing stale-version no-write guard, and an A1 error response maximum of
-939 bytes under `max_bytes=4096` including `isError`.
+(66 checks, 40 runs)`, 5/5 correctness in every scenario/variant, zero unsafe retries in the
+normal workflows, a safe retry trace with one observed conflict and a deliberately stale
+negative trace with one unsafe retry, and an A1 error response maximum of 939 bytes under
+`max_bytes=4096` including `isError`.
 
 ### Open operational follow-up
 
