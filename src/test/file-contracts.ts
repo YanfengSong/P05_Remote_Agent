@@ -1933,6 +1933,240 @@ console.log("TEXT_LINES_STRESS_OK");
     "B0\n"
   );
 
+  // ---------------------------------------------------------------- F6 created-side-effect on identity failure
+  type F6MutableFs = { open: (...args: any[]) => Promise<any> };
+  const f6Fs = fs as unknown as F6MutableFs;
+  const f6Path = (name: string): string => path.resolve(FIXTURE, name);
+  const f6Eio = (): Error =>
+    Object.assign(new Error("EIO: injected stat failure"), { code: "EIO" });
+
+  const f6Single = "f6-single.txt";
+  const f6SingleTarget = f6Path(f6Single);
+  await fs.rm(f6SingleTarget, { force: true });
+  let f6SingleStats = 0;
+  let f6SingleClosed = false;
+  const f6SingleOpen = f6Fs.open;
+  f6Fs.open = async (file, flags, ...args) => {
+    const handle = await f6SingleOpen.call(fs, file, flags, ...args);
+    if (path.resolve(String(file)) === f6SingleTarget && String(flags) === "wx+") {
+      const close = handle.close.bind(handle);
+      handle.stat = async () => {
+        f6SingleStats += 1;
+        throw f6Eio();
+      };
+      handle.close = async (...closeArgs: any[]) => {
+        f6SingleClosed = true;
+        return close(...closeArgs);
+      };
+    }
+    return handle;
+  };
+  let f6SingleMessage = "";
+  try {
+    await writeTextFilesBatch([{ path: f6Single, content: "f6 payload" }], FIXTURE);
+  } catch (error) {
+    f6SingleMessage = error instanceof Error ? error.message : String(error);
+  } finally {
+    f6Fs.open = f6SingleOpen;
+  }
+  check(
+    "F6 single stat failure: reports possible creation side effect",
+    f6SingleMessage.includes("created") &&
+      f6SingleMessage.includes("identity could not be confirmed") &&
+      f6SingleMessage.includes("Inspect") &&
+      !f6SingleMessage.includes("before any change was applied"),
+    f6SingleMessage
+  );
+  checkEqual("F6 single stat failure: one identity query", f6SingleStats, 1);
+  check("F6 single stat failure: handle is closed", f6SingleClosed);
+  check(
+    "F6 single stat failure: created empty file is preserved",
+    (await fs.stat(f6SingleTarget)).size === 0
+  );
+
+  const f6Persistent = "f6-persistent.txt";
+  const f6PersistentTarget = f6Path(f6Persistent);
+  await fs.rm(f6PersistentTarget, { force: true });
+  let f6PersistentStats = 0;
+  let f6PersistentClosed = false;
+  const f6PersistentOpen = f6Fs.open;
+  f6Fs.open = async (file, flags, ...args) => {
+    const handle = await f6PersistentOpen.call(fs, file, flags, ...args);
+    if (path.resolve(String(file)) === f6PersistentTarget && String(flags) === "wx+") {
+      const close = handle.close.bind(handle);
+      handle.stat = async () => {
+        f6PersistentStats += 1;
+        throw f6Eio();
+      };
+      handle.close = async (...closeArgs: any[]) => {
+        f6PersistentClosed = true;
+        return close(...closeArgs);
+      };
+    }
+    return handle;
+  };
+  let f6PersistentMessage = "";
+  try {
+    await writeTextFilesBatch([{ path: f6Persistent, content: "persistent" }], FIXTURE);
+  } catch (error) {
+    f6PersistentMessage = error instanceof Error ? error.message : String(error);
+  } finally {
+    f6Fs.open = f6PersistentOpen;
+  }
+  check(
+    "F6 persistent stat failure: diagnosed as unknown creation",
+    f6PersistentMessage.includes("identity could not be confirmed") &&
+      !f6PersistentMessage.includes("before any change was applied"),
+    f6PersistentMessage
+  );
+  checkEqual("F6 persistent stat failure: one identity query", f6PersistentStats, 1);
+  check("F6 persistent stat failure: handle is closed", f6PersistentClosed);
+  check(
+    "F6 persistent stat failure: file is preserved",
+    (await fs.stat(f6PersistentTarget)).size === 0
+  );
+
+  const f6Replaced = "f6-replaced.txt";
+  const f6ReplacedMoved = "f6-replaced-moved.txt";
+  const f6ReplacedTarget = f6Path(f6Replaced);
+  await fs.rm(f6ReplacedTarget, { force: true });
+  await fs.rm(f6Path(f6ReplacedMoved), { force: true });
+  const f6ReplacedOpen = f6Fs.open;
+  f6Fs.open = async (file, flags, ...args) => {
+    const handle = await f6ReplacedOpen.call(fs, file, flags, ...args);
+    if (path.resolve(String(file)) === f6ReplacedTarget && String(flags) === "wx+") {
+      handle.stat = async () => {
+        await fs.rename(f6ReplacedTarget, f6Path(f6ReplacedMoved));
+        await fs.writeFile(f6ReplacedTarget, "EXTERNAL REPLACEMENT\n", "utf8");
+        throw f6Eio();
+      };
+    }
+    return handle;
+  };
+  let f6ReplacedMessage = "";
+  try {
+    await writeTextFilesBatch([{ path: f6Replaced, content: "f6 payload" }], FIXTURE);
+  } catch (error) {
+    f6ReplacedMessage = error instanceof Error ? error.message : String(error);
+  } finally {
+    f6Fs.open = f6ReplacedOpen;
+  }
+  check(
+    "F6 replaced during identity failure: diagnosed as unknown",
+    f6ReplacedMessage.includes("identity could not be confirmed"),
+    f6ReplacedMessage
+  );
+  checkEqual(
+    "F6 replaced during identity failure: replacement is preserved",
+    await fs.readFile(f6ReplacedTarget, "utf8"),
+    "EXTERNAL REPLACEMENT\n"
+  );
+  checkEqual(
+    "F6 replaced during identity failure: moved inode is preserved",
+    (await fs.stat(f6Path(f6ReplacedMoved))).size,
+    0
+  );
+
+  const f6Existing = "f6-existing.txt";
+  const f6ExistingTarget = f6Path(f6Existing);
+  await writeFixture(f6Existing, "ORIGINAL\n");
+  let f6ExistingStats = 0;
+  let f6ExistingClosed = false;
+  const f6ExistingOpen = f6Fs.open;
+  f6Fs.open = async (file, flags, ...args) => {
+    const handle = await f6ExistingOpen.call(fs, file, flags, ...args);
+    if (path.resolve(String(file)) === f6ExistingTarget && String(flags) === "r+") {
+      const close = handle.close.bind(handle);
+      handle.stat = async () => {
+        f6ExistingStats += 1;
+        throw f6Eio();
+      };
+      handle.close = async (...closeArgs: any[]) => {
+        f6ExistingClosed = true;
+        return close(...closeArgs);
+      };
+    }
+    return handle;
+  };
+  let f6ExistingMessage = "";
+  try {
+    await writeTextFilesBatch([{
+      path: f6Existing,
+      content: "REPLACED\n",
+      expectedSha256: sha256(Buffer.from("ORIGINAL\n", "utf8"))
+    }], FIXTURE);
+  } catch (error) {
+    f6ExistingMessage = error instanceof Error ? error.message : String(error);
+  } finally {
+    f6Fs.open = f6ExistingOpen;
+  }
+  check(
+    "F6 existing stat failure: reports no content written",
+    f6ExistingMessage.includes("no content was written") &&
+      f6ExistingMessage.includes("before any change was applied"),
+    f6ExistingMessage
+  );
+  checkEqual("F6 existing stat failure: one identity query", f6ExistingStats, 1);
+  check("F6 existing stat failure: handle is closed", f6ExistingClosed);
+  checkEqual(
+    "F6 existing stat failure: original bytes are unchanged",
+    await fs.readFile(f6ExistingTarget, "utf8"),
+    "ORIGINAL\n"
+  );
+
+  const f6MultiA = "f6-multi-a.txt";
+  const f6MultiB = "f6-multi-b.txt";
+  await fs.rm(f6Path(f6MultiA), { force: true });
+  await fs.rm(f6Path(f6MultiB), { force: true });
+  const f6MultiOpen = f6Fs.open;
+  const f6MultiClosed = new Set<string>();
+  f6Fs.open = async (file, flags, ...args) => {
+    const handle = await f6MultiOpen.call(fs, file, flags, ...args);
+    const name = path.basename(String(file));
+    if (String(flags) === "wx+" && (name === f6MultiA || name === f6MultiB)) {
+      const close = handle.close.bind(handle);
+      handle.close = async (...closeArgs: any[]) => {
+        f6MultiClosed.add(name);
+        return close(...closeArgs);
+      };
+      if (name === f6MultiB) {
+        handle.stat = async () => {
+          throw f6Eio();
+        };
+      }
+    }
+    return handle;
+  };
+  let f6MultiMessage = "";
+  try {
+    await writeTextFilesBatch([
+      { path: f6MultiA, content: "a" },
+      { path: f6MultiB, content: "b" }
+    ], FIXTURE);
+  } catch (error) {
+    f6MultiMessage = error instanceof Error ? error.message : String(error);
+  } finally {
+    f6Fs.open = f6MultiOpen;
+  }
+  check(
+    "F6 multi-target: identifies the unconfirmed creation",
+    f6MultiMessage.includes(f6MultiB) &&
+      f6MultiMessage.includes("rollback was incomplete"),
+    f6MultiMessage
+  );
+  check("F6 multi-target: both handles are closed", f6MultiClosed.size === 2);
+  let f6MultiAMissing = false;
+  try {
+    await fs.stat(f6Path(f6MultiA));
+  } catch {
+    f6MultiAMissing = true;
+  }
+  check("F6 multi-target: confirmed empty file is cleaned up", f6MultiAMissing);
+  check(
+    "F6 multi-target: unconfirmed creation is preserved",
+    (await fs.stat(f6Path(f6MultiB))).size === 0
+  );
+
   // ---------------------------------------------------------------- M2 bounded I/O / complete writes
   type MutableFs = { open: (...args: any[]) => Promise<any> };
   const mutableFs = fs as unknown as MutableFs;

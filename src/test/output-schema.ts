@@ -1,5 +1,5 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/client";
@@ -572,6 +572,60 @@ try {
       combinedSearchStructured?.metadataOmitted === true,
     `${serializedBytes(combinedSearchError)} bytes`
   );
+
+  const F6_FAULT_TARGET = path.join(REPO, "_p05_output_schema_f6_fault.txt");
+  const F6_FAULT_STATE = path.join(REPO, "_p05_output_schema_f6_state");
+  await fs.rm(F6_FAULT_TARGET, { force: true });
+  await fs.rm(F6_FAULT_STATE, { recursive: true, force: true });
+  await fs.mkdir(F6_FAULT_STATE, { recursive: true });
+  const faultEnv = inheritedEnv();
+  faultEnv.P05_F6_FAULT_TARGET = path.basename(F6_FAULT_TARGET);
+  faultEnv.P05_F6_FAULT_COUNT = "1";
+  faultEnv.P05_STATE_DIR = F6_FAULT_STATE;
+  faultEnv.P05_APPROVAL_MODE_STATE_FILE = path.join(F6_FAULT_STATE, "approval-mode.json");
+  faultEnv.P05_APPROVAL_MODE = "standard";
+  faultEnv.NODE_OPTIONS =
+    "--import=" + pathToFileURL(path.join(here, "f6-stat-fault.js")).href;
+  const faultClient = new Client({
+    name: "p05-output-schema-f6-fault",
+    version: VERSION
+  });
+  const faultTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: [serverEntry],
+    env: faultEnv,
+    stderr: "pipe"
+  });
+  try {
+    await faultClient.connect(faultTransport);
+    const faultWrite = await faultClient.callTool({
+      name: "fs_write_many",
+      arguments: {
+        files: [{ path: path.basename(F6_FAULT_TARGET), content: "f6 fault payload" }]
+      }
+    });
+    const faultMessage = textOf(faultWrite);
+    check(
+      "F6 MCP: created-then-stat failure is an MCP error",
+      (faultWrite as { isError?: boolean }).isError === true,
+      JSON.stringify(faultWrite).slice(0, 400)
+    );
+    check(
+      "F6 MCP: error reports possible creation side effect",
+      faultMessage.includes("created") &&
+        faultMessage.includes("Inspect") &&
+        !faultMessage.includes("before any change was applied"),
+      faultMessage.slice(0, 500)
+    );
+    check(
+      "F6 MCP: created file remains for inspection",
+      (await fs.stat(F6_FAULT_TARGET)).size === 0
+    );
+  } finally {
+    await faultClient.close().catch(() => undefined);
+    await fs.rm(F6_FAULT_TARGET, { force: true });
+    await fs.rm(F6_FAULT_STATE, { recursive: true, force: true });
+  }
 
   const patchFixtureName = path.basename(PATCH_FIXTURE);
   const patchEdits = [{ old_text: "beta", new_text: "BETA" }];

@@ -719,7 +719,7 @@ async function commitBatchOperationsDetailed(
   type Opened = {
     operation: PreparedBatchOperation;
     handle: Awaited<ReturnType<typeof fs.open>>;
-    identity: { dev: bigint; ino: bigint };
+    identity?: { dev: bigint; ino: bigint };
   };
   const opened: Opened[] = [];
   const attempted: PreparedBatchOperation[] = [];
@@ -742,23 +742,27 @@ async function commitBatchOperationsDetailed(
         );
       }
 
-      let openedStat;
+      // Register the handle immediately. For "wx+" this open is already a created
+      // side effect; a later identity failure must not make it look like nothing
+      // happened. The unified finally block closes every registered handle.
+      const entry: Opened = { operation, handle };
+      opened.push(entry);
+
       try {
-        openedStat = await handle.stat({ bigint: true });
-      } catch (error) {
-        await handle.close().catch(() => undefined);
+        const openedStat = await handle.stat({ bigint: true });
+        entry.identity = { dev: openedStat.dev, ino: openedStat.ino };
+      } catch {
         throw new BatchOperationError(
           "WRITE_FAILED",
-          "Batch target " + operation.path + ": " +
-            safeBatchError(error, "Could not inspect the opened target file."),
+          operation.existed
+            ? "Batch target " + operation.path +
+              ": could not inspect the opened target file; no content was written."
+            : "Batch target " + operation.path +
+              ": the target was created but its identity could not be confirmed; " +
+              "the file may remain. Inspect it before retrying.",
           operation.path
         );
       }
-      opened.push({
-        operation,
-        handle,
-        identity: { dev: openedStat.dev, ino: openedStat.ino }
-      });
 
       if (operation.existed) {
         const current = await readHandleAtStart(handle);
@@ -876,6 +880,10 @@ async function commitBatchOperationsDetailed(
         unknown.push(operation.path);
         continue;
       }
+      if (!entry.identity) {
+        unknown.push(operation.path);
+        continue;
+      }
 
       try {
         await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
@@ -965,6 +973,12 @@ async function commitBatchOperationsDetailed(
       try {
         if (wasAttempted) {
           await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
+        }
+        if (!entry.identity) {
+          // "wx+" created the path, but identity could not be confirmed. Never
+          // delete it based on path existence or content alone.
+          unknown.push(operation.path);
+          continue;
         }
 
         const identityBefore = await inspectPathIdentity(
