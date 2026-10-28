@@ -4,7 +4,7 @@
 
 - Branch: `codex/v2-agent-workflow-pilot`
 - Tested HEAD: `5ef4e88` (F6)
-- Full code verification before deployment: `npm run verify` → 1,863 checks; benchmark last run
+- Full code verification before deployment: `npm run verify` → 1,900 checks; benchmark last run
   on the unaffected F5 path → 69 checks/40 runs. F6 and the large-file/search capacity change
   did not alter benchmark scenarios.
 - No feature work, no code re-review, no push/merge.
@@ -141,11 +141,23 @@ read-only probe. A 1 GiB scan is not free; narrow `path` remains preferable for 
 - `max_bytes` still only controls response payload (64 KiB default/256 KiB hard cap). A
   streamed large-file read may return a page with `nextOffset`; that is expected and
   independent of the file-size cap.
-- Production A/B were restarted on the new build; Runtime A PID 13492 (17:34:57) and Runtime B
-  PID 37496 (17:34:59), both `/readyz=ready`.
+- Production A/B were restarted on the new build; Runtime A PID 29400 (18:20:47) and Runtime B
+  PID 560 (18:20:50), both `/readyz=ready`.
 - If a scope contains only oversized files, search still reports `SEARCH_COMPLETE` because the
   directory scan completed, but `skippedByReason.oversized` is non-zero and `nextAction` now
   says those files were not searched and points to `fs_read_many` or the per-file search limit.
+
+### Read outcome triage
+
+| Code | Meaning | Action |
+| --- | --- | --- |
+| `READ_TOO_LARGE` | The whole file exceeds the configured streamed-range cap (production 256 MiB). No content was read. | Use a smaller file, raise `REMOTE_AGENT_MAX_RANGE_READ_BYTES` within the 256 MiB hard cap, or split the file. |
+| `LINE_TOO_LARGE` | One requested line is longer than the response `max_bytes`; the file/version hash and `totalLines` may still be returned. No `nextOffset` is emitted because a line cannot be split safely by line range. | Increase `max_bytes` up to 256 KiB, or use a byte-chunk reader. A smaller line range does not help for a single line. |
+| `READ_TRUNCATED` | The request succeeded but only part of the requested lines were returned. | Not an error; continue with `nextOffset` (or `pendingIndexes` for a batch). |
+
+A 3.64 MB single-line JSON file therefore correctly returns `LINE_TOO_LARGE`, not
+`READ_TOO_LARGE` and not `READ_TRUNCATED`. Multi-line large files return normal
+`READ_TRUNCATED` pages.
 
 ## Residual risks
 

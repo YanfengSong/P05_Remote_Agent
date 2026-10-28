@@ -64,7 +64,7 @@ with the repo-local Node v22.23.1:
 | Profile exposure | 266 |
 | HTTP Reviewer | 80 |
 | Foundation | 58 |
-| File contracts | 628 |
+| File contracts | 644 |
 | Git mutations / workspace audit | 27 |
 | Operator Console | 93 |
 | Output schemas | 328 |
@@ -72,7 +72,7 @@ with the repo-local Node v22.23.1:
 | Plugin API v1 | 4 |
 | State synchronization | 11 |
 | File I/O primitives | 19 |
-| **Total** | **1,863** |
+| **Total** | **1,900** |
 
 Downstream smoke passed as part of `npm run verify`. `npm run verify` ran
 `check`, `build`, `test:compiled` and `test:sync` to completion.
