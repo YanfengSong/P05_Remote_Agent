@@ -103,5 +103,17 @@ export const config = {
   defaultCwd: parseDefaultCwd(readOwnEnv("REMOTE_AGENT_DEFAULT_CWD"), allowedRoots),
   shellTimeoutMs: Number(readOwnEnv("REMOTE_AGENT_SHELL_TIMEOUT_MS") ?? "90000"),
   maxReadBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_READ_BYTES") ?? String(2 * 1024 * 1024)),
-  maxWriteBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_WRITE_BYTES") ?? String(2 * 1024 * 1024))
+  maxWriteBytes: Number(readOwnEnv("REMOTE_AGENT_MAX_WRITE_BYTES") ?? String(2 * 1024 * 1024)),
+  /** V2 range reads may stream files larger than the legacy snapshot limit. */
+  maxRangeReadBytes: Number(
+    readOwnEnv("REMOTE_AGENT_MAX_RANGE_READ_BYTES") ?? String(64 * 1024 * 1024)
+  ),
+  /** Total bytes a single V2 search may scan; response max_bytes does not change it. */
+  maxSearchBytes: Number(
+    readOwnEnv("REMOTE_AGENT_MAX_SEARCH_BYTES") ?? String(128 * 1024 * 1024)
+  ),
+  /** Largest individual text file search may read; larger files are skipped. */
+  maxSearchFileBytes: Number(
+    readOwnEnv("REMOTE_AGENT_MAX_SEARCH_FILE_BYTES") ?? String(8 * 1024 * 1024)
+  )
 };

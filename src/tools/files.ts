@@ -64,11 +64,18 @@ function fileWriteLimit(): number {
   }
 }
 
-export async function readTextFile(filePath: string, baseDir = config.defaultCwd): Promise<string> {
+export async function readTextFile(
+  filePath: string,
+  baseDir = config.defaultCwd,
+  limitOverride?: number
+): Promise<string> {
   const safePath = await assertAccessiblePath(filePath, "read", baseDir, baseDir);
   let limit: number;
   try {
-    limit = validatePositiveFileLimit(config.maxReadBytes, "maxReadBytes");
+    limit = validatePositiveFileLimit(
+      limitOverride ?? config.maxReadBytes,
+      "maxReadBytes"
+    );
   } catch {
     throw new Error("The server read limit is invalid; reading is disabled.");
   }
@@ -1709,7 +1716,8 @@ type SearchInputErrorCode =
   | "NOT_FOUND"
   | "NOT_DIRECTORY"
   | "ACCESS_DENIED"
-  | "INVALID_QUERY";
+  | "INVALID_QUERY"
+  | "READ_LIMIT_INVALID";
 
 class SearchInputError extends Error {
   readonly code: SearchInputErrorCode;
@@ -1726,8 +1734,43 @@ const SEARCH_IGNORED_DIRECTORIES = new Set([
 ]);
 const MAX_SEARCH_FILES = 5000;
 const MAX_SEARCH_ENTRIES = 10000;
-const MAX_SEARCH_BYTES = 32 * 1024 * 1024;
+const SEARCH_SCAN_LIMITS = {
+  minBytes: 1024 * 1024,
+  maxBytes: 1024 * 1024 * 1024
+} as const;
+const SEARCH_FILE_LIMITS = {
+  minBytes: 1,
+  maxBytes: 64 * 1024 * 1024
+} as const;
 const MAX_SEARCH_MATCHES_PER_FILE = 5;
+
+function resolveSearchScanLimit(configured: number = config.maxSearchBytes): number {
+  if (
+    !Number.isSafeInteger(configured) ||
+    configured < SEARCH_SCAN_LIMITS.minBytes ||
+    configured > SEARCH_SCAN_LIMITS.maxBytes
+  ) {
+    throw new SearchInputError(
+      "READ_LIMIT_INVALID",
+      "The search scan byte limit is invalid; searching is disabled."
+    );
+  }
+  return configured;
+}
+
+function resolveSearchFileLimit(configured: number = config.maxSearchFileBytes): number {
+  if (
+    !Number.isSafeInteger(configured) ||
+    configured < SEARCH_FILE_LIMITS.minBytes ||
+    configured > SEARCH_FILE_LIMITS.maxBytes
+  ) {
+    throw new SearchInputError(
+      "READ_LIMIT_INVALID",
+      "The search per-file byte limit is invalid; searching is disabled."
+    );
+  }
+  return configured;
+}
 
 async function runSearch(
   query: string,
@@ -1743,6 +1786,8 @@ async function runSearch(
   }
 
   const maxResults = Math.max(1, Math.min(Math.trunc(options.maxResults ?? 50), 100));
+  const maxSearchBytes = resolveSearchScanLimit();
+  const maxSearchFileBytes = resolveSearchFileLimit();
   let safeRoot: string;
   try {
     safeRoot = await assertAccessiblePath(rootPath, "read", baseDir, baseDir);
@@ -1862,11 +1907,11 @@ async function runSearch(
         hadIoError = true;
         continue;
       }
-      if (stat.size > config.maxReadBytes) {
+      if (stat.size > maxSearchFileBytes) {
         skip("oversized");
         continue;
       }
-      if (totalBytesScanned + stat.size > MAX_SEARCH_BYTES) {
+      if (totalBytesScanned + stat.size > maxSearchBytes) {
         limitStop = "byte_limit";
         break;
       }
@@ -1875,14 +1920,14 @@ async function runSearch(
       let text: string;
       try {
         await options.testHooks?.beforeRead?.(fullPath);
-        text = await readTextFile(relativePath, baseDir);
+        text = await readTextFile(relativePath, baseDir, maxSearchFileBytes);
       } catch {
         skip("read_error");
         hadIoError = true;
         continue;
       }
       const bytes = Buffer.byteLength(text, "utf8");
-      if (totalBytesScanned + bytes > MAX_SEARCH_BYTES) {
+      if (totalBytesScanned + bytes > maxSearchBytes) {
         limitStop = "byte_limit";
         break;
       }
@@ -1970,6 +2015,17 @@ export async function searchTextFiles(
   return (await runSearch(query, rootPath, baseDir, options)).textResult;
 }
 
+function searchTruncatedOutcome(coverage: SearchCoverage): Outcome {
+  const base = outcomeFor("SEARCH_TRUNCATED");
+  const nextAction =
+    coverage.stopReason === "byte_limit"
+      ? "Narrow the path/query scope; the search scan byte limit was reached. max_results and max_bytes do not increase scan coverage."
+      : coverage.stopReason === "file_limit"
+        ? "Narrow the path/query scope; the file or entry scan limit was reached."
+        : "Narrow the path/query scope or raise max_results; the result limit was reached.";
+  return { ...base, nextAction };
+}
+
 /**
  * V2 search keeps the legacy result fields and adds explicit coverage. A normal
  * limit stop is partial/safe; any io_error is an actual failure even when some
@@ -1992,7 +2048,7 @@ export async function searchTextFilesV2(
       ? outcomeFor("SEARCH_IO_ERROR")
       : coverage.complete
         ? outcomeFor("SEARCH_COMPLETE")
-        : outcomeFor("SEARCH_TRUNCATED");
+        : searchTruncatedOutcome(coverage);
 
     return {
       ...textResult,

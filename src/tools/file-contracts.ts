@@ -11,8 +11,10 @@ export const READ_LIMITS = {
   defaultMaxBytes: 64 * 1024,
   minMaxBytes: 4096,
   maxMaxBytes: 256 * 1024,
-  /** Server-side hard cap for one raw file snapshot, independent of max_bytes. */
-  maxFileBytes: 8 * 1024 * 1024
+  /** Server-side hard cap for one fully buffered snapshot, independent of max_bytes. */
+  maxFileBytes: 8 * 1024 * 1024,
+  /** Hard cap for the streaming V2 range reader used above the snapshot limit. */
+  maxRangeFileBytes: 256 * 1024 * 1024
 } as const;
 
 export const PATCH_LIMITS = {

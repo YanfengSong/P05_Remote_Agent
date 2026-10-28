@@ -93,7 +93,7 @@ Provider 只负责启动、事件转换和停止协议。任务状态、授权�
 ```
 `paths` 与 `requests` 不能同时出现。offset 为从 0 开始的行偏移，limit 为行数（1—2000），每次 1—20 个请求；路径最多 1024 字符，max_bytes 最小 4096；结果行号从 1 开始。返回每文件 sha256、totalLines、实际范围、text、complete、nextOffset，以及批次 pendingIndexes。后续范围可附 `expected_sha256`，变化则冲突，不拼接不一致版本。
 
-按原始字节计算 hash；UTF-8 严格解码，拒绝二进制和无效编码。CRLF 原样保留，空文件行数为 0，末尾换行不产生额外空行，UTF-8 BOM 只从展示移除，hash 仍包含 BOM。文件读取和元数据来自同一份受限缓冲区，单文件检查上限 8 MiB。无法容纳单行时返回 line-too-large 和文件版本，提示缩小查询/使用专门的大文件工具，不返回无进展游标。
+按原始字节计算 hash；UTF-8 严格解码，拒绝二进制和无效编码。CRLF 原样保留，空文件行数为 0，末尾换行不产生额外空行，UTF-8 BOM 只从展示移除，hash 仍包含 BOM。小文件读取和元数据来自同一份受限缓冲区；超过快照上限的文本文件走流式范围读取，只保留请求行，默认 64 MiB、可配置到 256 MiB。无法容纳单行时返回 line-too-large 和文件版本，提示缩小查询/使用专门的大文件工具，不返回无进展游标。
 
 默认 content.text 包含可读正文和范围说明，structuredContent 包含机器字段；预算统计两者，避免仅结构化输出导致某些客户端看不到文件。暂不引入自动内容去重或依赖客户端缓存的引用。
 
@@ -121,7 +121,7 @@ Provider 只负责启动、事件转换和停止协议。任务状态、授权�
 ### A3. 搜索范围和结果状态
 
 `fs_search` V2 保留文字查询，增加 `coverage`：
-`{complete, stopReason, scannedFiles, skippedByReason}`。区分达到结果数、文件数、扫描字节限制和不可读取文件；“没有命中”不能暗示扫描了受保护/排除的内容。首版不实现跨次搜索快照游标；超预算返回缩小 path/query 的 nextAction。既有 5000 文件、32 MiB 扫描上限继续生效。
+`{complete, stopReason, scannedFiles, skippedByReason}`。区分达到结果数、文件数、扫描字节限制和不可读取文件；“没有命中”不能暗示扫描了受保护/排除的内容。首版不实现跨次搜索快照游标；超预算返回缩小 path/query 的 nextAction。既有 5000 文件上限继续生效；扫描字节预算默认 128 MiB、可通过 REMOTE_AGENT_MAX_SEARCH_BYTES 配置到 1 GiB，单个搜索文本默认上限 8 MiB、可通过 REMOTE_AGENT_MAX_SEARCH_FILE_BYTES 配置。
 
 新契约统一增加：
 ```ts

@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { assertAccessiblePath } from "../security.js";
@@ -56,6 +58,20 @@ export function resolveReadLimit(configured: number = config.maxReadBytes): numb
 }
 
 /**
+ * The configured range cap may exceed the snapshot cap, but never the contract
+ * hard cap for streamed reads.
+ */
+export function resolveRangeLimit(configured: number = config.maxRangeReadBytes): number {
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    throw new ReadRangeError(
+      "READ_LIMIT_INVALID",
+      "The server range read limit is invalid; reading is disabled."
+    );
+  }
+  return Math.min(configured, READ_LIMITS.maxRangeFileBytes);
+}
+
+/**
  * Split on LF while preserving CRLF exactly. A trailing newline terminates the last
  * line and does not create an extra empty line; an empty file has no lines.
  */
@@ -104,14 +120,7 @@ function mapFileSystemError(error: unknown): ReadRangeError {
   }
 }
 
-async function readSnapshot(safePath: string, limit: number): Promise<Buffer> {
-  let handle: Awaited<ReturnType<typeof fs.open>>;
-  try {
-    handle = await fs.open(safePath, "r");
-  } catch (error) {
-    throw mapFileSystemError(error);
-  }
-
+async function readSnapshotFromHandle(handle: FileHandle, limit: number): Promise<Buffer> {
   try {
     return (await readBoundedSnapshot(handle, limit)).bytes;
   } catch (error) {
@@ -138,29 +147,10 @@ async function readSnapshot(safePath: string, limit: number): Promise<Buffer> {
       }
     }
     throw mapFileSystemError(error);
-  } finally {
-    await handle.close().catch(() => undefined);
   }
 }
 
-/**
- * Read one line range from a raw-byte snapshot. The hash, decoded text and line
- * count all come from the same bounded buffer; expected_sha256 is compared before
- * decoding so a changed binary file is still reported as a version conflict.
- */
-export async function readRange(root: string, request: ReadRequest): Promise<ReadSlice> {
-  const limit = resolveReadLimit();
-
-  let safePath: string;
-  try {
-    // Reuse the existing workspace/protected-path/link policy. Its documented
-    // hard-link and TOCTOU limitations are unchanged by this read contract.
-    safePath = await assertAccessiblePath(request.path, "read", root, root);
-  } catch {
-    throw new ReadRangeError("PATH_REFUSED", "Path is not allowed for reading.");
-  }
-
-  const buffer = await readSnapshot(safePath, limit);
+function sliceFromBuffer(buffer: Buffer, request: ReadRequest): ReadSlice {
   const digest = createHash("sha256").update(buffer).digest("hex");
   if (
     request.expected_sha256 !== undefined &&
@@ -200,6 +190,207 @@ export async function readRange(root: string, request: ReadRequest): Promise<Rea
     complete,
     ...(complete ? {} : { nextOffset: end })
   };
+}
+
+/**
+ * Stream a file larger than the in-memory snapshot limit. Only the requested
+ * line window is retained; the full raw stream is hashed and UTF-8 checked.
+ */
+async function readStreamedRange(
+  handle: FileHandle,
+  before: BigIntStats,
+  request: ReadRequest
+): Promise<ReadSlice> {
+  const size = Number(before.size);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new ReadRangeError("READ_TOO_LARGE", "File size is outside the supported range.");
+  }
+
+  const hash = createHash("sha256");
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+  let lineIndex = 0;
+  let sawBytes = false;
+  let lastByteWasLf = false;
+  let sampledBytes = 0;
+
+  while (position < size) {
+    let bytesRead: number;
+    try {
+      bytesRead = (await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, size - position),
+        position
+      )).bytesRead;
+    } catch (error) {
+      throw mapFileSystemError(error);
+    }
+    if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0) {
+      throw new ReadRangeError(
+        "READ_UNSTABLE",
+        "File changed while it was being read; retry."
+      );
+    }
+
+    const chunk = buffer.subarray(0, bytesRead);
+    if (chunk.includes(0)) {
+      throw new ReadRangeError("BINARY_FILE", "File appears to be binary.");
+    }
+    if (sampledBytes < 64 * 1024) {
+      const sample = chunk.subarray(0, Math.min(chunk.length, 64 * 1024 - sampledBytes));
+      if (appearsBinary(sample)) {
+        throw new ReadRangeError("BINARY_FILE", "File appears to be binary.");
+      }
+      sampledBytes += sample.length;
+    }
+
+    hash.update(chunk);
+    try {
+      decoder.decode(chunk, { stream: true });
+    } catch {
+      throw new ReadRangeError("INVALID_UTF8", "File is not valid UTF-8 text.");
+    }
+
+    let start = 0;
+    for (let index = 0; index < chunk.length; index += 1) {
+      if (chunk[index] !== 0x0a) continue;
+      if (
+        lineIndex >= request.offset &&
+        lineIndex < request.offset + request.limit
+      ) {
+        chunks.push(Buffer.from(chunk.subarray(start, index + 1)));
+      }
+      lineIndex += 1;
+      start = index + 1;
+    }
+    if (
+      start < chunk.length &&
+      lineIndex >= request.offset &&
+      lineIndex < request.offset + request.limit
+    ) {
+      chunks.push(Buffer.from(chunk.subarray(start)));
+    }
+
+    sawBytes = true;
+    lastByteWasLf = chunk[chunk.length - 1] === 0x0a;
+    position += bytesRead;
+  }
+
+  try {
+    decoder.decode();
+  } catch {
+    throw new ReadRangeError("INVALID_UTF8", "File is not valid UTF-8 text.");
+  }
+
+  const after = await handle.stat({ bigint: true });
+  const unstable =
+    after.size !== before.size ||
+    after.mtimeNs !== before.mtimeNs ||
+    after.ctimeNs !== before.ctimeNs ||
+    after.dev !== before.dev ||
+    after.ino !== before.ino;
+  if (unstable) {
+    throw new ReadRangeError(
+      "READ_UNSTABLE",
+      "File changed while it was being read; retry."
+    );
+  }
+
+  const digest = hash.digest("hex");
+  if (
+    request.expected_sha256 !== undefined &&
+    digest.toLowerCase() !== request.expected_sha256.toLowerCase()
+  ) {
+    throw new ReadRangeError(
+      "STALE_REVISION",
+      "File changed since review; re-read before retrying.",
+      { sha256: digest }
+    );
+  }
+
+  const totalLines = sawBytes ? lineIndex + (lastByteWasLf ? 0 : 1) : 0;
+  if (request.offset > totalLines) {
+    throw new ReadRangeError(
+      "OFFSET_OUT_OF_RANGE",
+      "offset is past the end of the file.",
+      { sha256: digest, totalLines }
+    );
+  }
+
+  const returnedLines = Math.min(
+    Math.max(0, totalLines - request.offset),
+    request.limit
+  );
+  const end = request.offset + returnedLines;
+  const complete = end >= totalLines;
+  let text = Buffer.concat(chunks).toString("utf8");
+  if (request.offset === 0 && text.startsWith("\uFEFF")) text = text.slice(1);
+
+  return {
+    path: request.path,
+    sha256: digest,
+    totalLines,
+    offset: request.offset,
+    returnedLines,
+    lineStart: request.offset + 1,
+    lineEnd: end,
+    text,
+    complete,
+    ...(complete ? {} : { nextOffset: end })
+  };
+}
+
+/**
+ * Read one line range. Files within the configured snapshot limit use the strict
+ * buffered path; larger files stream through a bounded buffer and retain only the
+ * requested lines.
+ */
+export async function readRange(root: string, request: ReadRequest): Promise<ReadSlice> {
+  const snapshotLimit = resolveReadLimit();
+  const rangeLimit = Math.max(snapshotLimit, resolveRangeLimit());
+
+  let safePath: string;
+  try {
+    // Reuse the existing workspace/protected-path/link policy. Its documented
+    // hard-link and TOCTOU limitations are unchanged by this read contract.
+    safePath = await assertAccessiblePath(request.path, "read", root, root);
+  } catch {
+    throw new ReadRangeError("PATH_REFUSED", "Path is not allowed for reading.");
+  }
+
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(safePath, "r");
+  } catch (error) {
+    throw mapFileSystemError(error);
+  }
+
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (before.isDirectory()) {
+      throw new ReadRangeError("IS_DIRECTORY", "Path is a directory, not a file.");
+    }
+    if (!before.isFile()) {
+      throw new ReadRangeError("NOT_FILE", "Path is not a regular file.");
+    }
+    if (before.size > BigInt(rangeLimit)) {
+      throw new ReadRangeError(
+        "READ_TOO_LARGE",
+        `File exceeds the range read limit of ${rangeLimit} bytes.`
+      );
+    }
+
+    if (before.size <= BigInt(snapshotLimit)) {
+      const buffer = await readSnapshotFromHandle(handle, snapshotLimit);
+      return sliceFromBuffer(buffer, request);
+    }
+    return await readStreamedRange(handle, before, request);
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 function successItem(index: number, request: ReadRequest, slice: ReadSlice): ReadItem {

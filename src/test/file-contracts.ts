@@ -164,6 +164,7 @@ const {
   ReadRangeError,
   readManyRanges,
   readRange,
+  resolveRangeLimit,
   resolveReadLimit,
   splitLines
 } = await import("../tools/read-ranges.js");
@@ -422,7 +423,14 @@ console.log("TEXT_LINES_STRESS_OK");
   await writeFixture("invalid.txt", Buffer.from([0x41, 0xff, 0x42]));
   await writeFixture("binary.txt", Buffer.from([0x41, 0x00, 0x42]));
   await writeFixture("single-line.txt", "x".repeat(8000));
-  await writeFixture("oversized.txt", Buffer.alloc(READ_LIMITS.maxFileBytes + 1, 0x61));
+  const oversizedPath = await writeFixture("oversized.txt", "");
+  await fs.truncate(oversizedPath, READ_LIMITS.maxRangeFileBytes + 1);
+  const largeRangeLines = Array.from(
+    { length: 60000 },
+    (_, index) => `large-${String(index + 1).padStart(5, "0")} ${"z".repeat(40)}\n`
+  );
+  const largeRangeText = largeRangeLines.join("");
+  await writeFixture("large-range.txt", largeRangeText);
 
   const manyLines = Array.from(
     { length: 2000 },
@@ -510,6 +518,51 @@ console.log("TEXT_LINES_STRESS_OK");
   const crlfAfter = await fs.readFile(path.join(FIXTURE, "crlf.txt"));
   checkEqual("patch compatibility: CRLF patch hash over raw bytes", crlfPatched.sha256, sha256(crlfAfter));
   check("patch compatibility: CRLF preserved after patch", crlfAfter.toString("utf8") === "A\r\nb\r\nc\r\n");
+
+  const savedSnapshotLimit = config.maxReadBytes;
+  const savedRangeLimit = config.maxRangeReadBytes;
+  config.maxReadBytes = 2 * 1024 * 1024;
+  config.maxRangeReadBytes = 64 * 1024 * 1024;
+  try {
+    checkEqual("large range: snapshot limit for streaming test", resolveReadLimit(), 2 * 1024 * 1024);
+    check(
+      "range limit: default allows streamed files beyond the snapshot cap",
+      resolveRangeLimit() > READ_LIMITS.maxFileBytes
+    );
+    const largeRangeTail = await readRange(FIXTURE, {
+      path: "large-range.txt",
+      offset: 59997,
+      limit: 2
+    });
+    checkEqual("large range: totalLines", largeRangeTail.totalLines, 60000);
+    checkEqual("large range: returnedLines", largeRangeTail.returnedLines, 2);
+    checkEqual(
+      "large range: selected text",
+      largeRangeTail.text,
+      largeRangeLines.slice(59997, 59999).join("")
+    );
+    checkEqual("large range: raw hash", largeRangeTail.sha256, sha256(Buffer.from(largeRangeText, "utf8")));
+    check("large range: not complete at tail request", largeRangeTail.complete === false && largeRangeTail.nextOffset === 59999);
+
+    const largeRangeHead = await readRange(FIXTURE, {
+      path: "large-range.txt",
+      offset: 0,
+      limit: 2
+    });
+    checkEqual("large range: head text", largeRangeHead.text, largeRangeLines.slice(0, 2).join(""));
+    checkEqual("large range: head is not complete", largeRangeHead.complete, false);
+    checkEqual("large range: head nextOffset", largeRangeHead.nextOffset, 2);
+
+    config.maxRangeReadBytes = 1024;
+    await expectReadError(
+      "large range: configured streaming cap is enforced",
+      () => readRange(FIXTURE, { path: "large-range.txt", offset: 0, limit: 1 }),
+      "READ_TOO_LARGE"
+    );
+  } finally {
+    config.maxReadBytes = savedSnapshotLimit;
+    config.maxRangeReadBytes = savedRangeLimit;
+  }
 
   await expectReadError(
     "read: invalid UTF-8 rejected",
@@ -2546,6 +2599,55 @@ console.log("TEXT_LINES_STRESS_OK");
   checkEqual("search lines: bounded snippet count", manyLine?.matches.length, 5);
   checkEqual("search lines: matchesTruncated", manyLine?.matchesTruncated, true);
   checkEqual("search lines: total observed matches", lineSearch.matchCount, 9);
+
+  // ---------------------------------------------------------------- large search files / configurable scan budget
+  const largeSearchText = "needle at the top\n" + ("x".repeat(60) + "\n").repeat(50000);
+  await writeFixture("search-large/one.txt", largeSearchText);
+  const largeSearch = await searchTextFilesV2("needle", "search-large", FIXTURE, {
+    maxResults: 5
+  });
+  checkEqual("search large: file above legacy 2 MiB is scanned", largeSearch.matchedFiles, 1);
+  checkEqual("search large: match found", largeSearch.matchCount, 1);
+  checkEqual("search large: no oversized skip", largeSearch.coverage.skippedByReason.oversized, undefined);
+  checkEqual("search large: complete", largeSearch.coverage.complete, true);
+
+  const savedSearchFileBytes = config.maxSearchFileBytes;
+  config.maxSearchFileBytes = 1024;
+  try {
+    const skippedLarge = await searchTextFilesV2("needle", "search-large", FIXTURE, {
+      maxResults: 5
+    });
+    checkEqual("search large: per-file limit still skips oversized", skippedLarge.coverage.skippedByReason.oversized, 1);
+    checkEqual("search large: skipped file yields no match", skippedLarge.matchCount, 0);
+  } finally {
+    config.maxSearchFileBytes = savedSearchFileBytes;
+  }
+
+  await writeFixture(
+    "search-budget/a.txt",
+    ("needle " + "a".repeat(200) + "\n").repeat(3000)
+  );
+  await writeFixture(
+    "search-budget/b.txt",
+    ("needle " + "b".repeat(200) + "\n").repeat(3000)
+  );
+  const savedSearchBytes = config.maxSearchBytes;
+  config.maxSearchBytes = 1024 * 1024;
+  try {
+    const budgetLimited = await searchTextFilesV2("needle", "search-budget", FIXTURE, {
+      maxResults: 10
+    });
+    checkEqual("search budget: byte limit is reported", budgetLimited.coverage.stopReason, "byte_limit");
+    checkEqual("search budget: coverage is incomplete", budgetLimited.coverage.complete, false);
+    check(
+      "search budget: nextAction explains the scan byte limit",
+      budgetLimited.outcome.nextAction.includes("scan byte limit") &&
+        budgetLimited.outcome.nextAction.includes("do not increase"),
+      budgetLimited.outcome.nextAction
+    );
+  } finally {
+    config.maxSearchBytes = savedSearchBytes;
+  }
 
   // ---------------------------------------------------------------- F3 search truncation semantics
   const searchBytes = (result: Awaited<ReturnType<typeof searchTextFilesV2>>): number =>
