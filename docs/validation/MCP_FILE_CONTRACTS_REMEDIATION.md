@@ -3,7 +3,7 @@
 Date: 2026-10-28
 Functional baseline: `7d491b9e433ee903a7b83ece0be55612d0cd6791`
 Remediation commits: M1 `1bef0b9`, M2 `05052c4`, M3 `2951b8b`, M4 `31d3aeb`, M5 `9084c67`, M6 `2ba72b1`, M7 `b4192c2`.
-Closure-review commits: F1 `91a9954`, F2 `47e7ebf`, F3 `780bc86`, F4 `3047511`, F5 `bf5d8fa`.
+Closure-review commits: F1 `91a9954`, F2 `47e7ebf`, F3 `780bc86`, F4 `3047511`, F5 `bf5d8fa`, F6 `f114432`.
 
 ## E1—E8 closure
 
@@ -43,6 +43,7 @@ Closure-review commits: F1 `91a9954`, F2 `47e7ebf`, F3 `780bc86`, F4 `3047511`, 
 | F3 search truncation | `780bc86` | Response trimming preserves `matchesTruncated` from the scan layer (`original || trimmed`). `coverage` continues to describe the scan, `responseTruncated` describes the response, and response-only trimming points to `max_bytes` while scan limits point to `max_results`; both are mentioned when both apply. Real I/O errors keep priority. |
 | F4 bounded search diagnostics | `3047511` | V2 `not_started` errors omit unbounded `query`/`root` and set `metadataOmitted`; the schema marks those fields optional. The finalizer removes request metadata before trimming matches, so a 5000-character path, long Unicode path, 500-character query or successful long-root search returns a schema-valid bounded result instead of throwing from the finalizer. |
 | F5 target-scoped retries | `bf5d8fa` | `retry-metrics.ts` keys stale hashes by canonical target + expected hash, invalidates reads that predate a conflict, and treats a read after the conflict as informed only when it returns the same hash. Per-file `errorCode` attributes multi-target conflicts; missing diagnostics produce a separate call-level count instead of copying the top-level conflict to every target. Unit of account: `callId` links events from one MCP call; `conflicts`/`unsafeRetries` count target events, while a conflict with no target diagnostics is reported separately as `unattributedConflicts`. |
+| F6 created side effect | `f114432` | The batch commit path registers an opened handle immediately after `fs.open`, before the first identity `stat`. A `wx+` success followed by an identity-query failure therefore keeps the target in the unified resource/effect path: the handle is closed by the common finally, the target is classified `unknown`, and the file is preserved because identity cannot justify deletion. Error text states that a file may have been created and must be inspected. An existing file whose first identity query fails remains a no-write `none` failure with unchanged bytes. A test-only Node preload injects the `stat` failure for the real stdio MCP regression; production schemas/handlers expose no fault-injection parameter. |
 
 Regression highlights:
 
@@ -51,6 +52,7 @@ Regression highlights:
 - F3: upstream 6-match file keeps `matchesTruncated=true` after response trimming at 65536 and 262144; scan-only, response-only, both, and I/O-failure cases are asserted; real MCP budget calls verify the marker and `max_bytes` guidance.
 - F4: real MCP 5000-ASCII path and combined 500-character query + 1500-character Unicode path return `isError=true`, `not_started`, `metadataOmitted=true`, ≤4096 bytes and no host path; schema parses the `isError` structuredContent.
 - F5: safe trace 1 conflict/0 unsafe, negative trace unsafe=1, real MCP multi-target trace 1 attributed conflict/0 unsafe/0 unattributed; A/B same hash, repeated stale hash, refreshed hash, re-read same hash and alias canonicalization are covered.
+- F6: single and persistent identity-query `EIO`, replacement during the failed query, existing-file query failure, multi-target mixed creation, normal create/rollback and F2 rename+replace; a real stdio MCP `fs_write_many` call is `isError=true`, reports possible creation and leaves the empty target for inspection while closing the handle.
 
 ## Verification
 
@@ -68,12 +70,12 @@ rtk proxy git diff --check
 
 Observed results:
 
-- `FILE_CONTRACTS_OK (585 checks)`
+- `FILE_CONTRACTS_OK (604 checks)`
 - `FILE_IO_OK (19 checks)`
-- `OUTPUT_SCHEMA_OK (325 checks)`
+- `OUTPUT_SCHEMA_OK (328 checks)`
 - `PROFILE_EXPOSURE_OK (266 checks)`, `FOUNDATION_OK (58 checks)`
-- Full verify: policy 335, profile 266, HTTP 80, foundation 58, file-contracts 585, file-io 19, git 27, operator 93, output 325, plugin 35, plugin API 4, sync 11; downstream smoke passed; total 1,838 checks.
-- Benchmark: `FILE_CONTRACTS_BENCHMARK_OK (69 checks, 40 runs)`.
+- Full verify: policy 335, profile 266, HTTP 80, foundation 58, file-contracts 604, file-io 19, git 27, operator 93, output 328, plugin 35, plugin API 4, sync 11; downstream smoke passed; total 1,860 checks.
+- Benchmark: `FILE_CONTRACTS_BENCHMARK_OK (69 checks, 40 runs)` from the F5 run; F6 does not touch the benchmark scenarios or assertions, so it was not rerun mechanically.
 - Retry trace: `{"safeConflicts":1,"safeUnsafeRetries":0,"negativeUnsafeRetries":1,"multiConflicts":1,"multiUnsafeRetries":0,"multiUnattributed":0}`.
 - A1 error budget: maximum 939 bytes under `max_bytes=4096`, including `isError`.
 
@@ -88,4 +90,5 @@ Observed results:
 - F2 still has a race window after the final path-identity check; a replacement between that check and a later operation is not eliminated without OS-level CAS.
 - F4 omits `query`/`root` from V2 responses when the budget requires it and marks `metadataOmitted`; omitted metadata must not be treated as an exact path. Legacy error text stays redacted but legacy success output remains unchanged.
 - F5 metrics are only as good as trace attribution: a call-level conflict without per-target diagnostics is counted separately and never guessed into an unsafe retry.
+- F6 intentionally leaves a possibly empty created file when identity cannot be confirmed; it reports `unknown` and requires inspection rather than deleting by path or empty content. No automatic retry or cleanup is added.
 - A4 benchmark is protocol-only; response-byte reductions are not claims about disk I/O, model latency or tokens.

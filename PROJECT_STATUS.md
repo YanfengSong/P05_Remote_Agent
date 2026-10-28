@@ -29,11 +29,12 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   V2 search/patch, structured/redacted V2 path failures, line-window scanning without
   full-file arrays, and observed retry/audit evidence. See
   `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`.
-- Closure review F1—F5: post-write effect envelopes always retain status/hash/effect within
+- Closure review F1—F6: post-write effect envelopes always retain status/hash/effect within
   budget, rollback verifies path identity before and after restoration, search response
   trimming preserves scan-level `matchesTruncated` and budget guidance, V2 search errors omit
-  unbounded metadata, and retry metrics are attributed by canonical target + version. See the
-  same remediation evidence document.
+  unbounded metadata, retry metrics are attributed by canonical target + version, and a
+  created file whose first identity query fails is preserved and reported as unknown rather
+  than as zero change. See the same remediation evidence document.
 - Batch file reading, bounded literal search, batch writes, batch patches and
   `git_workspace_audit` remain available; legacy calls keep their prior output shapes.
 - Mutation batches preflight paths and expected hashes, reject ambiguous targets, and attempt
@@ -55,15 +56,15 @@ with the repo-local Node v22.23.1:
 | Profile exposure | 266 |
 | HTTP Reviewer | 80 |
 | Foundation | 58 |
-| File contracts | 585 |
+| File contracts | 604 |
 | Git mutations / workspace audit | 27 |
 | Operator Console | 93 |
-| Output schemas | 325 |
+| Output schemas | 328 |
 | Plugin framework | 35 |
 | Plugin API v1 | 4 |
 | State synchronization | 11 |
 | File I/O primitives | 19 |
-| **Total** | **1,838** |
+| **Total** | **1,860** |
 
 Downstream smoke passed as part of `npm run verify`. `npm run verify` ran
 `check`, `build`, `test:compiled` and `test:sync` to completion.

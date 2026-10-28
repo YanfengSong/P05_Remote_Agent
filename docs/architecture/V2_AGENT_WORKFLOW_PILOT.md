@@ -21,7 +21,7 @@
 ## 2. 当前项目事实
 
 - 已有 `fs_read_many`、`fs_write_many`、`apply_patch_many`、`fs_search`、`git_workspace_audit`、`project_validate`。
-- `fs_read_many` 的 legacy 整文件路径输入保持兼容；A1 已加入显式 V2 范围读取，返回原始字节 SHA-256、totalLines、nextOffset、pendingIndexes 和有界 MCP 结果预算。A2 已加入同原文多编辑、dry_run、共享写锁和诚实的回滚效果报告。A3 已加入搜索 coverage、统一 outcome、MCP isError 与审计失败分类。A4 已加入四场景协议基准；不做模型效率结论。独立审查后的 M1—M7 与关闭复核 F1—F5 修复证据见 `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`。
+- `fs_read_many` 的 legacy 整文件路径输入保持兼容；A1 已加入显式 V2 范围读取，返回原始字节 SHA-256、totalLines、nextOffset、pendingIndexes 和有界 MCP 结果预算。A2 已加入同原文多编辑、dry_run、共享写锁和诚实的回滚效果报告。A3 已加入搜索 coverage、统一 outcome、MCP isError 与审计失败分类。A4 已加入四场景协议基准；不做模型效率结论。独立审查后的 M1—M7 与关闭复核 F1—F6 修复证据见 `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`。
 - `apply_patch_many` 当前每文件一处唯一文本替换；有预检和普通错误回滚，但不提供跨文件崩溃原子性。
 - `project_validate` 当前验证 P05 平台目录，不等同于验证任意当前业务工作区。
 - `ExecutionRuntime` / `AuditStore` 记录一次工具调用，不能代替异步任务的持久化生命周期。
