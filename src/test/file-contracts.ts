@@ -431,6 +431,7 @@ console.log("TEXT_LINES_STRESS_OK");
   );
   const largeRangeText = largeRangeLines.join("");
   await writeFixture("large-range.txt", largeRangeText);
+  await writeFixture("large-single-line.txt", "a".repeat(3 * 1024 * 1024 + 123));
 
   const manyLines = Array.from(
     { length: 2000 },
@@ -844,6 +845,66 @@ console.log("TEXT_LINES_STRESS_OK");
       lineTooLarge.contentText,
       isOutcomeFailure(lineTooLarge.result.outcome)
     ) <= READ_LIMITS.minMaxBytes
+  );
+
+  const largeLineTooLarge = await readManyRanges(
+    FIXTURE,
+    [{ path: "large-single-line.txt", offset: 0, limit: 1 }],
+    65536
+  );
+  const largeLineItem = largeLineTooLarge.result.files[0]!;
+  checkEqual("large line: explicit code", largeLineItem.errorCode, "LINE_TOO_LARGE");
+  check("large line: full-file hash is retained", Boolean(largeLineItem.sha256));
+  checkEqual("large line: totalLines", largeLineItem.totalLines, 1);
+  checkEqual("large line: no progress cursor", largeLineTooLarge.result.pendingIndexes, []);
+  checkEqual(
+    "large line: outcome is a failure",
+    isOutcomeFailure(largeLineTooLarge.result.outcome),
+    true
+  );
+  check(
+    "large line: guidance mentions max_bytes and byte chunking",
+    String(largeLineItem.error).includes("max_bytes") &&
+      String(largeLineItem.error).includes("byte-chunk"),
+    String(largeLineItem.error)
+  );
+  check(
+    "large line: bounded error result",
+    toolResultBytes(
+      largeLineTooLarge.result,
+      largeLineTooLarge.contentText,
+      isOutcomeFailure(largeLineTooLarge.result.outcome)
+    ) <= 65536
+  );
+
+  const largePage = await readManyRanges(
+    FIXTURE,
+    [{ path: "large-range.txt", offset: 0, limit: 20 }],
+    65536
+  );
+  const largePageItem = largePage.result.files[0]!;
+  checkEqual("large page: item succeeds", largePageItem.ok, true);
+  checkEqual("large page: returned lines", largePageItem.returnedLines, 20);
+  checkEqual("large page: complete flag", largePageItem.complete, false);
+  checkEqual("large page: next offset", largePageItem.nextOffset, 20);
+  checkEqual("large page: outcome is truncation", largePage.result.outcome.code, "READ_TRUNCATED");
+  checkEqual("large page: not an error", isOutcomeFailure(largePage.result.outcome), false);
+
+  const tooLargeFile = await readManyRanges(
+    FIXTURE,
+    [{ path: "oversized.txt", offset: 0, limit: 1 }],
+    65536
+  );
+  checkEqual(
+    "range cap: file-level code",
+    tooLargeFile.result.files[0]?.errorCode,
+    "READ_TOO_LARGE"
+  );
+  checkEqual("range cap: outcome code", tooLargeFile.result.outcome.code, "READ_TOO_LARGE");
+  checkEqual(
+    "range cap: outcome is a failure",
+    isOutcomeFailure(tooLargeFile.result.outcome),
+    true
   );
 
   const errorBudget = await readManyRanges(

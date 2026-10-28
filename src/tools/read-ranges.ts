@@ -443,7 +443,7 @@ function lineTooLargeItem(item: ReadItem): ReadItem {
     bytes: 0,
     errorCode: "LINE_TOO_LARGE",
     error:
-      "The requested line does not fit within max_bytes; request a smaller range or use a dedicated large-file tool."
+      "The requested line is longer than max_bytes. Increase max_bytes (up to 256 KiB) or use a byte-chunk reader; a smaller line range cannot split one line."
   };
 }
 

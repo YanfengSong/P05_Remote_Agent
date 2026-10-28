@@ -162,7 +162,7 @@ const FIXED_OUTCOMES: Readonly<Record<string, Outcome>> = {
   },
   LINE_TOO_LARGE: {
     status: "error", effectState: "none", retry: "safe", code: "LINE_TOO_LARGE",
-    nextAction: "Request a smaller range or use a dedicated large-file tool."
+    nextAction: "Increase max_bytes up to 256 KiB or use a byte-chunk reader; a single line cannot be split by line range."
   },
   RESULT_BUDGET_TOO_SMALL: {
     status: "rejected", effectState: "none", retry: "safe", code: "RESULT_BUDGET_TOO_SMALL",
