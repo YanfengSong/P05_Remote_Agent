@@ -2619,6 +2619,13 @@ console.log("TEXT_LINES_STRESS_OK");
     });
     checkEqual("search large: per-file limit still skips oversized", skippedLarge.coverage.skippedByReason.oversized, 1);
     checkEqual("search large: skipped file yields no match", skippedLarge.matchCount, 0);
+    checkEqual("search large: skipped-only scope still completes", skippedLarge.coverage.complete, true);
+    check(
+      "search large: skipped-only completion explains the oversized skip",
+      skippedLarge.outcome.nextAction.includes("exceeded the per-file search limit") &&
+        skippedLarge.outcome.nextAction.includes("fs_read_many"),
+      skippedLarge.outcome.nextAction
+    );
   } finally {
     config.maxSearchFileBytes = savedSearchFileBytes;
   }

@@ -2015,6 +2015,18 @@ export async function searchTextFiles(
   return (await runSearch(query, rootPath, baseDir, options)).textResult;
 }
 
+function searchCompleteOutcome(coverage: SearchCoverage): Outcome {
+  const base = outcomeFor("SEARCH_COMPLETE");
+  const oversized = coverage.skippedByReason.oversized ?? 0;
+  if (oversized === 0) return base;
+  return {
+    ...base,
+    nextAction:
+      `Scan completed, but ${oversized} file(s) exceeded the per-file search limit and were not searched. ` +
+      "Use fs_read_many for those files or raise REMOTE_AGENT_MAX_SEARCH_FILE_BYTES."
+  };
+}
+
 function searchTruncatedOutcome(coverage: SearchCoverage): Outcome {
   const base = outcomeFor("SEARCH_TRUNCATED");
   const nextAction =
@@ -2047,7 +2059,7 @@ export async function searchTextFilesV2(
     const outcome = hadIoError
       ? outcomeFor("SEARCH_IO_ERROR")
       : coverage.complete
-        ? outcomeFor("SEARCH_COMPLETE")
+        ? searchCompleteOutcome(coverage)
         : searchTruncatedOutcome(coverage);
 
     return {
