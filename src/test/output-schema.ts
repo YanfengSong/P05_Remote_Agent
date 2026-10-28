@@ -78,7 +78,7 @@ const searchBudgetLine = "needle" + "中".repeat(234);
 for (let index = 0; index < 100; index += 1) {
   await fs.writeFile(
     path.join(SEARCH_BUDGET_DIR, String(index) + ".txt"),
-    (searchBudgetLine + "\n").repeat(5),
+    (searchBudgetLine + "\n").repeat(6),
     "utf8"
   );
 }
@@ -482,6 +482,39 @@ try {
         (budgetedStructured?.outcome as { code?: unknown } | undefined)?.code === "SEARCH_TRUNCATED" &&
         (budgeted as { isError?: boolean }).isError !== true,
       JSON.stringify(budgetedStructured).slice(0, 400)
+    );
+    const budgetFiles = Array.isArray(budgetedStructured?.results)
+      ? budgetedStructured.results as Array<Record<string, unknown>>
+      : [];
+    check(
+      `search v2 budget ${maxBytes}: existing per-file truncation markers survive`,
+      budgetFiles.every((file) =>
+        !Array.isArray(file.matches) ||
+        file.matches.length < 5 ||
+        file.matchesTruncated === true
+      ),
+      JSON.stringify(budgetFiles.find((file) =>
+        Array.isArray(file.matches) &&
+        file.matches.length === 5 &&
+        file.matchesTruncated !== true
+      ) ?? {})
+    );
+    if (maxBytes >= 65536) {
+      check(
+        `search v2 budget ${maxBytes}: a full five-match file keeps its marker`,
+        budgetFiles.some((file) =>
+          Array.isArray(file.matches) &&
+          file.matches.length === 5 &&
+          file.matchesTruncated === true
+        ),
+        JSON.stringify(budgetFiles.slice(0, 2))
+      );
+    }
+    check(
+      `search v2 budget ${maxBytes}: response nextAction mentions max_bytes`,
+      ((budgetedStructured?.outcome as { nextAction?: unknown } | undefined)?.nextAction as string | undefined)
+        ?.includes("max_bytes") === true,
+      JSON.stringify(budgetedStructured?.outcome ?? {})
     );
   }
 

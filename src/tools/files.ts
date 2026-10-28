@@ -2053,6 +2053,21 @@ function searchResultFits(result: TextSearchV2Result, maxBytes: number): boolean
   ) <= maxBytes;
 }
 
+function responseTrimOutcome(result: TextSearchV2Result): Outcome {
+  if (isOutcomeFailure(result.outcome)) return result.outcome;
+  const scanNote = result.coverage.complete
+    ? ""
+    : " The scan also stopped before exhausting the scope (" +
+      result.coverage.stopReason +
+      "); adjust max_results or scope for full coverage.";
+  return {
+    ...outcomeFor("SEARCH_TRUNCATED"),
+    nextAction:
+      "Response was trimmed to max_bytes; increase max_bytes or narrow the path/query scope. Returned content is not proof that omitted matches are absent." +
+      scanNote
+  };
+}
+
 export function finalizeSearchResponse(
   result: TextSearchV2Result,
   maxBytes: number
@@ -2080,7 +2095,15 @@ export function finalizeSearchResponse(
     return { result: current, contentText };
   }
 
-  const results = result.results.map((file) => ({
+  const responseOutcome = responseTrimOutcome(result);
+  const base: TextSearchV2Result = {
+    ...result,
+    max_bytes: maxBytes,
+    responseTruncated: true,
+    outcome: responseOutcome
+  };
+
+  const results = base.results.map((file) => ({
     ...file,
     matches: [...file.matches]
   }));
@@ -2095,20 +2118,15 @@ export function finalizeSearchResponse(
       kept.push({
         ...file,
         matches: file.matches.slice(0, keep),
-        matchesTruncated: keep < file.matches.length
+        matchesTruncated: file.matchesTruncated === true || keep < file.matches.length
       });
       remaining -= keep;
     }
     return {
-      ...result,
-      max_bytes: maxBytes,
-      responseTruncated: true,
+      ...base,
       results: kept,
       returnedFiles: kept.length,
-      returnedMatches: count,
-      outcome: result.outcome.code === "SEARCH_COMPLETE"
-        ? outcomeFor("SEARCH_TRUNCATED")
-        : result.outcome
+      returnedMatches: count
     };
   };
 
@@ -2139,15 +2157,10 @@ export function finalizeSearchResponse(
   }
 
   current = {
-    ...result,
-    max_bytes: maxBytes,
-    responseTruncated: true,
+    ...base,
     results: [],
     returnedFiles: 0,
-    returnedMatches: 0,
-    outcome: result.outcome.code === "SEARCH_COMPLETE"
-      ? outcomeFor("SEARCH_TRUNCATED")
-      : result.outcome
+    returnedMatches: 0
   };
   contentText = renderSearchContent(current);
   if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {

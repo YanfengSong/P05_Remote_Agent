@@ -176,7 +176,9 @@ const {
   patchTextFile,
   patchTextFilesBatch,
   patchTextFilesBatchV2,
+  finalizeSearchResponse,
   renderPatchBatchContent,
+  renderSearchContent,
   searchTextFiles,
   searchTextFilesV2,
   writeTextFile,
@@ -2309,6 +2311,111 @@ console.log("TEXT_LINES_STRESS_OK");
   checkEqual("search lines: bounded snippet count", manyLine?.matches.length, 5);
   checkEqual("search lines: matchesTruncated", manyLine?.matchesTruncated, true);
   checkEqual("search lines: total observed matches", lineSearch.matchCount, 9);
+
+  // ---------------------------------------------------------------- F3 search truncation semantics
+  const searchBytes = (result: Awaited<ReturnType<typeof searchTextFilesV2>>): number =>
+    toolResultBytes(
+      result,
+      renderSearchContent(result),
+      isOutcomeFailure(result.outcome)
+    );
+  const longNeedleLine = "needle" + "中".repeat(400);
+  for (let index = 0; index < 60; index += 1) {
+    await writeFixture(
+      "search-f3/" + String(index).padStart(3, "0") + ".txt",
+      (longNeedleLine + "\n").repeat(6)
+    );
+  }
+  const f3Raw = await searchTextFilesV2("needle", "search-f3", FIXTURE, { maxResults: 100 });
+  checkEqual("F3: scan coverage is complete", f3Raw.coverage.complete, true);
+  checkEqual("F3: upstream per-file truncation is marked", f3Raw.results[0]?.matchesTruncated, true);
+  checkEqual("F3: upstream per-file match cap", f3Raw.results[0]?.matches.length, 5);
+
+  for (const budget of [65536, 262144]) {
+    const finalized = finalizeSearchResponse(f3Raw, budget);
+    check(
+      `F3 budget ${budget}: response is trimmed`,
+      finalized.result.responseTruncated === true,
+      JSON.stringify(finalized.result.returnedMatches)
+    );
+    const fullFile = finalized.result.results.find((file) => file.matches.length === 5);
+    check(
+      `F3 budget ${budget}: existing truncation marker survives response trimming`,
+      fullFile?.matchesTruncated === true,
+      JSON.stringify(fullFile)
+    );
+    check(
+      `F3 budget ${budget}: response fits`,
+      searchBytes(finalized.result) <= budget,
+      String(searchBytes(finalized.result))
+    );
+    check(
+      `F3 budget ${budget}: response-only nextAction mentions max_bytes`,
+      finalized.result.outcome.code === "SEARCH_TRUNCATED" &&
+        finalized.result.outcome.nextAction.includes("max_bytes") &&
+        !finalized.result.outcome.nextAction.includes("max_results"),
+      finalized.result.outcome.nextAction
+    );
+    check(
+      `F3 budget ${budget}: scan coverage is not falsified`,
+      finalized.result.coverage.complete === true
+    );
+  }
+
+  const scanOnly = finalizeSearchResponse(limitedSearch, 65536);
+  checkEqual("F3 scan-only: response is not trimmed", scanOnly.result.responseTruncated, false);
+  check(
+    "F3 scan-only: nextAction mentions the scan limit",
+    scanOnly.result.outcome.nextAction.includes("max_results"),
+    scanOnly.result.outcome.nextAction
+  );
+
+  const bothTruncations = await searchTextFilesV2(
+    "needle",
+    "search-f3",
+    FIXTURE,
+    { maxResults: 2 }
+  );
+  checkEqual("F3 both: scan is incomplete", bothTruncations.coverage.complete, false);
+  checkEqual("F3 both: scan stop reason", bothTruncations.coverage.stopReason, "result_limit");
+  const bothFinalized = finalizeSearchResponse(bothTruncations, 4096);
+  checkEqual("F3 both: response is trimmed", bothFinalized.result.responseTruncated, true);
+  check(
+    "F3 both: nextAction mentions max_bytes and max_results",
+    bothFinalized.result.outcome.nextAction.includes("max_bytes") &&
+      bothFinalized.result.outcome.nextAction.includes("max_results"),
+    bothFinalized.result.outcome.nextAction
+  );
+  check(
+    "F3 both: response fits",
+    searchBytes(bothFinalized.result) <= 4096,
+    String(searchBytes(bothFinalized.result))
+  );
+
+  for (let index = 0; index < 10; index += 1) {
+    await writeFixture(
+      "search-f3-io/" + String(index).padStart(3, "0") + ".txt",
+      (longNeedleLine + "\n").repeat(6)
+    );
+  }
+  const f3Io = await searchTextFilesV2("needle", "search-f3-io", FIXTURE, {
+    maxResults: 100,
+    testHooks: {
+      beforeRead: (fullPath: string) => {
+        if (fullPath.endsWith("000.txt")) throw new Error("synthetic read failure");
+      }
+    }
+  });
+  checkEqual("F3 io: failure outcome", f3Io.outcome.code, "SEARCH_IO_ERROR");
+  const f3IoFinalized = finalizeSearchResponse(f3Io, 4096);
+  checkEqual("F3 io: response is trimmed", f3IoFinalized.result.responseTruncated, true);
+  checkEqual("F3 io: failure keeps priority", f3IoFinalized.result.outcome.code, "SEARCH_IO_ERROR");
+  checkEqual("F3 io: failure remains an error", isOutcomeFailure(f3IoFinalized.result.outcome), true);
+  check(
+    "F3 io: response fits",
+    searchBytes(f3IoFinalized.result) <= 4096,
+    String(searchBytes(f3IoFinalized.result))
+  );
 
   check("search schema: legacy request accepted", fsSearchInputSchema.safeParse({
     query: "needle"
