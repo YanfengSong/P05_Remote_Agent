@@ -966,12 +966,41 @@ function patchOutcomeForCode(code: string): Outcome {
   return outcomeFor(code);
 }
 
-const PATCH_ERROR_MESSAGE_MAX = 512;
+const PATCH_ERROR_MESSAGE_JSON_BYTES = 512;
 
-function boundedPatchMessage(message: string): string {
-  return message.length <= PATCH_ERROR_MESSAGE_MAX
-    ? message
-    : message.slice(0, PATCH_ERROR_MESSAGE_MAX - 3) + "...";
+function jsonStringBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function boundedPatchMessage(
+  message: string,
+  maxJsonBytes = PATCH_ERROR_MESSAGE_JSON_BYTES
+): string {
+  if (maxJsonBytes <= 2) return "";
+  if (jsonStringBytes(message) <= maxJsonBytes) return message;
+
+  const suffix = "...";
+  let low = 0;
+  let high = message.length;
+  let best = suffix;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = message.slice(0, middle) + suffix;
+    if (jsonStringBytes(candidate) <= maxJsonBytes) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+function maxPatchErrorText(): string {
+  // The surrounding JSON quotes consume two bytes, so this text's serialized
+  // string is exactly PATCH_ERROR_MESSAGE_JSON_BYTES and is a true upper bound
+  // for boundedPatchMessage output (including escapes and multi-byte text).
+  return "E".repeat(PATCH_ERROR_MESSAGE_JSON_BYTES - 2);
 }
 
 function patchFailureFile(pathValue: string, code: string, message: string): PatchFileResult {
@@ -1275,63 +1304,41 @@ function patchBudgetSkeleton(
   dryRun: boolean,
   maxBytes: number
 ): { result: PatchBatchResult; contentText: string } {
+  const maxError = maxPatchErrorText();
+  // Every target is modeled as a failure: a failed file carries a bounded error
+  // body in both structuredContent and text content, which is larger than a
+  // committed file's hashes. This makes the skeleton an upper bound for mixed,
+  // rolled-back and unknown outcomes, not just the happy path.
   const files: PatchFileResult[] = prepared.map((operation) => ({
     path: operation.path,
-    ok: true,
-    bytes: operation.updatedBuffer.byteLength,
-    sha256: operation.sha256,
-    ...(operation.originalSha256 ? { original_sha256: operation.originalSha256 } : {}),
+    ok: false,
+    bytes: 0,
     created: false,
-    applied: !dryRun,
-    errorCode: "ROLLBACK_UNCONFIRMED",
-    error: "E".repeat(PATCH_ERROR_MESSAGE_MAX)
+    applied: false,
+    errorCode: "RESULT_BUDGET_TOO_SMALL",
+    error: maxError
   }));
   const result: PatchBatchResult = {
     contract_version: FILE_CONTRACT_VERSION,
     status: "rolled_back",
     outcome: {
-      status: "completed",
-      effectState: "rolled_back",
+      status: "unknown",
+      effectState: "unknown",
       retry: "never_automatic",
       code: "ROLLBACK_UNCONFIRMED",
-      nextAction: "Inspect the listed files before retrying; do not assume either version is current."
+      nextAction:
+        "Inspect the listed files before retrying; do not assume either version is current."
     },
     dry_run: dryRun,
     max_bytes: maxBytes,
     responseTruncated: true,
     files,
-    totalBytes: files.reduce((total, file) => total + file.bytes, 0),
-    successCount: files.length,
+    totalBytes: 0,
+    successCount: 0,
     failureCount: files.length,
-    error: "E".repeat(PATCH_ERROR_MESSAGE_MAX)
+    error: maxError
   };
-  const parts = [
-    "V2 apply_patch_many: rolled_back (ROLLBACK_UNCONFIRMED), dry_run=" +
-      dryRun +
-      ", files=" +
-      files.length +
-      ", max_bytes=" +
-      maxBytes +
-      ", responseTruncated=true."
-  ];
-  for (const file of files) {
-    parts.push(
-      "--- " +
-        file.path +
-        " | sha256=" +
-        file.sha256 +
-        " | bytes=" +
-        file.bytes +
-        " | ERROR ROLLBACK_UNCONFIRMED ---"
-    );
-    parts.push("E".repeat(PATCH_ERROR_MESSAGE_MAX));
-  }
-  parts.push("error: " + "E".repeat(PATCH_ERROR_MESSAGE_MAX));
-  parts.push(
-    "outcome: completed/rolled_back/never_automatic ROLLBACK_UNCONFIRMED. " +
-      result.outcome.nextAction
-  );
-  return { result, contentText: parts.join("\n") };
+  return { result, contentText: renderPatchBatchContent(result) };
 }
 
 function patchBudgetSkeletonFits(
@@ -1380,6 +1387,26 @@ export function finalizePatchResponse(
       ...current,
       responseTruncated: true,
       files: current.files.map(({ diff: _diff, ...file }) => file)
+    };
+    contentText = renderPatchBatchContent(current);
+    if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+      return { result: current, contentText };
+    }
+  }
+
+  // Error prose is optional display text. If a post-execution result is still
+  // larger than the preflighted worst-case envelope, shorten it step by step
+  // while preserving every target's status, hash and effect state.
+  for (const cap of [128, 64, 0]) {
+    current = {
+      ...current,
+      responseTruncated: true,
+      ...(current.error !== undefined
+        ? { error: boundedPatchMessage(current.error, cap) }
+        : {}),
+      files: current.files.map((file) => file.error === undefined
+        ? file
+        : { ...file, error: boundedPatchMessage(file.error, cap) })
     };
     contentText = renderPatchBatchContent(current);
     if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {

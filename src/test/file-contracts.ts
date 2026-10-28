@@ -176,6 +176,7 @@ const {
   patchTextFile,
   patchTextFilesBatch,
   patchTextFilesBatchV2,
+  renderPatchBatchContent,
   searchTextFiles,
   searchTextFilesV2,
   writeTextFile,
@@ -1611,6 +1612,158 @@ console.log("TEXT_LINES_STRESS_OK");
     "A1\n"
   );
   check("rollback: failed rollback reports unknown file", rollbackFailed.files[0]?.errorCode === "ROLLBACK_UNCONFIRMED");
+
+  // ---------------------------------------------------------------- F1 post-execution effect envelopes
+  const patchBytes = (result: Awaited<ReturnType<typeof patchTextFilesBatchV2>>): number =>
+    toolResultBytes(
+      result,
+      renderPatchBatchContent(result),
+      isOutcomeFailure(result.outcome)
+    );
+  const f1LongA = "f1-" + "中".repeat(100) + "-a.txt";
+  const f1LongB = "f1-" + "中".repeat(100) + "-b.txt";
+  const f1Entries = (aHash: string, bHash: string) => [
+    { path: f1LongA, expectedSha256: aHash, edits: [{ old_text: "A0", new_text: "A1" }] },
+    { path: f1LongB, expectedSha256: bHash, edits: [{ old_text: "B0", new_text: "B1" }] }
+  ];
+  const resetF1Long = async (): Promise<{ aHash: string; bHash: string }> => {
+    await writeFixture(f1LongA, "A0\n");
+    await writeFixture(f1LongB, "B0\n");
+    return {
+      aHash: sha256(Buffer.from("A0\n", "utf8")),
+      bHash: sha256(Buffer.from("B0\n", "utf8"))
+    };
+  };
+
+  let f1Hashes = await resetF1Long();
+  const f1Rejected = await patchTextFilesBatchV2(
+    f1Entries(f1Hashes.aHash, f1Hashes.bHash),
+    FIXTURE,
+    { maxBytes: 4096 }
+  );
+  checkEqual("F1 4096: preflight rejects before mutation", f1Rejected.status, "rejected");
+  checkEqual(
+    "F1 4096: rejection code",
+    f1Rejected.outcome.code,
+    "RESULT_BUDGET_TOO_SMALL"
+  );
+  checkEqual("F1 4096: rejection effect", f1Rejected.outcome.effectState, "none");
+  check("F1 4096: response fits", patchBytes(f1Rejected) <= 4096, String(patchBytes(f1Rejected)));
+  checkEqual("F1 4096: first file unchanged", await fs.readFile(path.join(FIXTURE, f1LongA), "utf8"), "A0\n");
+  checkEqual("F1 4096: second file unchanged", await fs.readFile(path.join(FIXTURE, f1LongB), "utf8"), "B0\n");
+
+  f1Hashes = await resetF1Long();
+  const f1RolledBack = await patchTextFilesBatchV2(
+    f1Entries(f1Hashes.aHash, f1Hashes.bHash),
+    FIXTURE,
+    {
+      maxBytes: 7168,
+      hooks: {
+        afterWrite: async (targetPath) => {
+          if (targetPath === f1LongA) {
+            await fs.writeFile(path.join(FIXTURE, f1LongB), "B-EXTERNAL\n", "utf8");
+          }
+        }
+      }
+    }
+  );
+  checkEqual("F1 7168: rolled_back status", f1RolledBack.status, "rolled_back");
+  checkEqual("F1 7168: rolled_back effect", f1RolledBack.outcome.effectState, "rolled_back");
+  check(
+    "F1 7168: effect envelope fits",
+    patchBytes(f1RolledBack) <= 7168,
+    String(patchBytes(f1RolledBack))
+  );
+  checkEqual(
+    "F1 7168: first file restored",
+    await fs.readFile(path.join(FIXTURE, f1LongA), "utf8"),
+    "A0\n"
+  );
+  checkEqual(
+    "F1 7168: external second file preserved",
+    await fs.readFile(path.join(FIXTURE, f1LongB), "utf8"),
+    "B-EXTERNAL\n"
+  );
+  checkEqual("F1 7168: restored file status", f1RolledBack.files[0]?.errorCode, "ROLLED_BACK");
+  checkEqual("F1 7168: stale file status", f1RolledBack.files[1]?.errorCode, "STALE_REVISION");
+
+  f1Hashes = await resetF1Long();
+  const f1Unknown = await patchTextFilesBatchV2(
+    f1Entries(f1Hashes.aHash, f1Hashes.bHash),
+    FIXTURE,
+    {
+      maxBytes: 8192,
+      hooks: {
+        afterWrite: async (targetPath) => {
+          if (targetPath !== f1LongA) return;
+          await fs.writeFile(path.join(FIXTURE, f1LongA), "F1 REPLACEMENT\n", "utf8");
+          throw new Error("injected publish failure");
+        }
+      }
+    }
+  );
+  checkEqual("F1 8192: unknown status", f1Unknown.status, "unknown");
+  checkEqual("F1 8192: unknown effect", f1Unknown.outcome.effectState, "unknown");
+  checkEqual("F1 8192: unknown retry", f1Unknown.outcome.retry, "never_automatic");
+  check(
+    "F1 8192: unknown envelope fits",
+    patchBytes(f1Unknown) <= 8192,
+    String(patchBytes(f1Unknown))
+  );
+  checkEqual(
+    "F1 8192: replacement preserved",
+    await fs.readFile(path.join(FIXTURE, f1LongA), "utf8"),
+    "F1 REPLACEMENT\n"
+  );
+
+  await writeFixture(f1LongA, "A0\n");
+  const f1Committed = await patchTextFilesBatchV2(
+    [{
+      path: f1LongA,
+      expectedSha256: sha256(Buffer.from("A0\n", "utf8")),
+      edits: [{ old_text: "A0", new_text: "A1" }]
+    }],
+    FIXTURE,
+    { maxBytes: 4096 }
+  );
+  checkEqual("F1 committed: status", f1Committed.status, "committed");
+  check(
+    "F1 committed: envelope fits",
+    patchBytes(f1Committed) <= 4096,
+    String(patchBytes(f1Committed))
+  );
+
+  await writeFixture("f1-emoji-a.txt", "A0\n");
+  await writeFixture("f1-emoji-b.txt", "B0\n");
+  const f1Escaped = await patchTextFilesBatchV2(
+    [{
+      path: "f1-emoji-a.txt",
+      expectedSha256: sha256(Buffer.from("A0\n", "utf8")),
+      edits: [{ old_text: "A0", new_text: "A1" }]
+    }],
+    FIXTURE,
+    {
+      maxBytes: 6144,
+      hooks: {
+        afterWrite: () => {
+          throw new Error(
+            "注入失败😀\"\\\u0001" + "错".repeat(300)
+          );
+        }
+      }
+    }
+  );
+  checkEqual("F1 escaped: rolled_back status", f1Escaped.status, "rolled_back");
+  check(
+    "F1 escaped: final JSON bytes fit at the boundary",
+    patchBytes(f1Escaped) <= 6144,
+    String(patchBytes(f1Escaped))
+  );
+  checkEqual(
+    "F1 escaped: first file restored",
+    await fs.readFile(path.join(FIXTURE, "f1-emoji-a.txt"), "utf8"),
+    "A0\n"
+  );
 
   // ---------------------------------------------------------------- M2 bounded I/O / complete writes
   type MutableFs = { open: (...args: any[]) => Promise<any> };
