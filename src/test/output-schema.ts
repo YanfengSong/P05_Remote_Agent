@@ -518,6 +518,61 @@ try {
     );
   }
 
+  const longSearchPath = "x".repeat(5000);
+  const longSearchError = await client.callTool({
+    name: "fs_search",
+    arguments: {
+      contract_version: 2,
+      query: "needle",
+      path: longSearchPath,
+      max_bytes: 4096
+    }
+  });
+  const longSearchStructured = structuredOf(longSearchError);
+  check(
+    "F4 MCP: 5000-char path returns a bounded structured error",
+    (longSearchError as { isError?: boolean }).isError === true &&
+      serializedBytes(longSearchError) <= 4096,
+    `${serializedBytes(longSearchError)} bytes`
+  );
+  check(
+    "F4 MCP: long path is not echoed",
+    longSearchStructured?.metadataOmitted === true &&
+      longSearchStructured?.root === undefined &&
+      longSearchStructured?.query === undefined &&
+      (longSearchStructured?.coverage as { stopReason?: unknown } | undefined)?.stopReason === "not_started",
+    JSON.stringify(longSearchStructured).slice(0, 400)
+  );
+  check(
+    "F4 MCP: long path error content does not leak the host root",
+    !JSON.stringify(longSearchError).includes(REPO),
+    JSON.stringify(longSearchError).slice(0, 400)
+  );
+  check(
+    "F4 MCP: long path structuredContent matches the schema",
+    Boolean(longSearchStructured) &&
+      fsSearchOutputSchema.safeParse(longSearchStructured).success,
+    JSON.stringify(fsSearchOutputSchema.safeParse(longSearchStructured).error?.issues ?? [])
+  );
+
+  const combinedSearchError = await client.callTool({
+    name: "fs_search",
+    arguments: {
+      contract_version: 2,
+      query: "q".repeat(499) + "\u0001",
+      path: "中".repeat(1500),
+      max_bytes: 4096
+    }
+  });
+  const combinedSearchStructured = structuredOf(combinedSearchError);
+  check(
+    "F4 MCP: longest query and unicode path stay bounded",
+    (combinedSearchError as { isError?: boolean }).isError === true &&
+      serializedBytes(combinedSearchError) <= 4096 &&
+      combinedSearchStructured?.metadataOmitted === true,
+    `${serializedBytes(combinedSearchError)} bytes`
+  );
+
   const patchFixtureName = path.basename(PATCH_FIXTURE);
   const patchEdits = [{ old_text: "beta", new_text: "BETA" }];
   const patchDryRun = await client.callTool({

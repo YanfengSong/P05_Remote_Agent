@@ -1653,12 +1653,15 @@ export type TextSearchResult = {
   results: TextSearchFileResult[];
 };
 
-export type TextSearchV2Result = TextSearchResult & {
+export type TextSearchV2Result = Omit<TextSearchResult, "query" | "root"> & {
+  query?: string;
+  root?: string;
   contract_version: 2;
   coverage: SearchCoverage;
   outcome: Outcome;
   max_bytes?: number;
   responseTruncated?: boolean;
+  metadataOmitted?: boolean;
   returnedFiles?: number;
   returnedMatches?: number;
 };
@@ -1986,8 +1989,6 @@ export async function searchTextFilesV2(
   } catch (error) {
     if (!(error instanceof SearchInputError)) throw error;
     return {
-      query,
-      root: rootPath,
       scannedFiles: 0,
       skippedFiles: 0,
       totalBytesScanned: 0,
@@ -2004,6 +2005,7 @@ export async function searchTextFilesV2(
       },
       outcome: outcomeFor(error.code),
       responseTruncated: false,
+      metadataOmitted: true,
       returnedFiles: 0,
       returnedMatches: 0
     };
@@ -2096,12 +2098,19 @@ export function finalizeSearchResponse(
   }
 
   const responseOutcome = responseTrimOutcome(result);
+  const { query: _query, root: _root, ...resultWithoutMetadata } = result;
   const base: TextSearchV2Result = {
-    ...result,
+    ...resultWithoutMetadata,
     max_bytes: maxBytes,
     responseTruncated: true,
+    metadataOmitted: true,
     outcome: responseOutcome
   };
+  current = base;
+  contentText = renderSearchContent(current);
+  if (toolResultBytes(current, contentText, isOutcomeFailure(current.outcome)) <= maxBytes) {
+    return { result: current, contentText };
+  }
 
   const results = base.results.map((file) => ({
     ...file,

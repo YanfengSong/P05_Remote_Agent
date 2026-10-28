@@ -2417,6 +2417,87 @@ console.log("TEXT_LINES_STRESS_OK");
     String(searchBytes(f3IoFinalized.result))
   );
 
+  // ---------------------------------------------------------------- F4 bounded search error envelopes
+  const asciiLongRoot = "x".repeat(5000);
+  const asciiLongError = await searchTextFilesV2("needle", asciiLongRoot, FIXTURE);
+  checkEqual("F4 ascii path: not started", asciiLongError.coverage.stopReason, "not_started");
+  checkEqual("F4 ascii path: outcome is a failure", isOutcomeFailure(asciiLongError.outcome), true);
+  checkEqual("F4 ascii path: metadata omitted", asciiLongError.metadataOmitted, true);
+  checkEqual("F4 ascii path: query omitted", asciiLongError.query, undefined);
+  checkEqual("F4 ascii path: root omitted", asciiLongError.root, undefined);
+  const asciiLongFinalized = finalizeSearchResponse(asciiLongError, 4096);
+  check(
+    "F4 ascii path: bounded error envelope",
+    searchBytes(asciiLongFinalized.result) <= 4096,
+    String(searchBytes(asciiLongFinalized.result))
+  );
+  check(
+    "F4 ascii path: output schema valid",
+    fsSearchOutputSchema.safeParse(asciiLongFinalized.result).success
+  );
+
+  const unicodeLongRoot = "中".repeat(1500);
+  const unicodeLongError = await searchTextFilesV2(
+    "needle",
+    unicodeLongRoot,
+    FIXTURE
+  );
+  checkEqual("F4 unicode path: not started", unicodeLongError.coverage.stopReason, "not_started");
+  checkEqual("F4 unicode path: metadata omitted", unicodeLongError.metadataOmitted, true);
+  const unicodeLongFinalized = finalizeSearchResponse(unicodeLongError, 4096);
+  check(
+    "F4 unicode path: bounded error envelope",
+    searchBytes(unicodeLongFinalized.result) <= 4096,
+    String(searchBytes(unicodeLongFinalized.result))
+  );
+
+  const longestQuery = "a".repeat(499) + "\u0001";
+  const combinedMetadata = await searchTextFilesV2(
+    longestQuery,
+    asciiLongRoot,
+    FIXTURE
+  );
+  checkEqual("F4 combined: not started", combinedMetadata.coverage.stopReason, "not_started");
+  checkEqual("F4 combined: metadata omitted", combinedMetadata.metadataOmitted, true);
+  const combinedFinalized = finalizeSearchResponse(combinedMetadata, 4096);
+  check(
+    "F4 combined: bounded error envelope",
+    searchBytes(combinedFinalized.result) <= 4096,
+    String(searchBytes(combinedFinalized.result))
+  );
+  check(
+    "F4 combined: output schema valid",
+    fsSearchOutputSchema.safeParse(combinedFinalized.result).success
+  );
+
+  const longRootName = "长".repeat(100);
+  for (let index = 0; index < 10; index += 1) {
+    await writeFixture(
+      "search-long-root/" + longRootName + "/" + String(index) + ".txt",
+      (longNeedleLine + "\n").repeat(6)
+    );
+  }
+  const successLongRoot = await searchTextFilesV2(
+    "needle",
+    "search-long-root/" + longRootName,
+    FIXTURE,
+    { maxResults: 100 }
+  );
+  const successLongFinalized = finalizeSearchResponse(successLongRoot, 4096);
+  checkEqual("F4 success: metadata omitted when needed", successLongFinalized.result.metadataOmitted, true);
+  checkEqual("F4 success: root omitted", successLongFinalized.result.root, undefined);
+  checkEqual("F4 success: query omitted", successLongFinalized.result.query, undefined);
+  checkEqual("F4 success: response truncated flag", successLongFinalized.result.responseTruncated, true);
+  check(
+    "F4 success: bounded success envelope",
+    searchBytes(successLongFinalized.result) <= 4096,
+    String(searchBytes(successLongFinalized.result))
+  );
+  check(
+    "F4 success: output schema valid",
+    fsSearchOutputSchema.safeParse(successLongFinalized.result).success
+  );
+
   check("search schema: legacy request accepted", fsSearchInputSchema.safeParse({
     query: "needle"
   }).success);

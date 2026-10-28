@@ -614,8 +614,8 @@ const searchFileResultSchema = z.object({
 
 /** Legacy fields stay unchanged; V2 adds coverage, outcome and the version marker. */
 export const fsSearchOutputSchema = z.object({
-  query: z.string(),
-  root: z.string(),
+  query: z.string().optional(),
+  root: z.string().optional(),
   scannedFiles: z.number().int().nonnegative(),
   skippedFiles: z.number().int().nonnegative(),
   totalBytesScanned: z.number().int().nonnegative(),
@@ -628,6 +628,7 @@ export const fsSearchOutputSchema = z.object({
   outcome: outcomeSchema.optional(),
   max_bytes: z.number().int().positive().optional(),
   responseTruncated: z.boolean().optional(),
+  metadataOmitted: z.boolean().optional(),
   returnedFiles: z.number().int().nonnegative().optional(),
   returnedMatches: z.number().int().nonnegative().optional()
 });
