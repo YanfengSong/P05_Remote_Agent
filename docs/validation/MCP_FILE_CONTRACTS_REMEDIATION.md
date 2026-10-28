@@ -1,8 +1,8 @@
 # MCP File Contracts Remediation Evidence
 
-Date: 2026-10-27
+Date: 2026-10-28
 Functional baseline: `7d491b9e433ee903a7b83ece0be55612d0cd6791`
-Remediation commits: M1 `1bef0b9`, M2 `05052c4`, M3 `2951b8b`, M4 `31d3aeb`, M5 `9084c67`, M6 `2ba72b1`; M7 below.
+Remediation commits: M1 `1bef0b9`, M2 `05052c4`, M3 `2951b8b`, M4 `31d3aeb`, M5 `9084c67`, M6 `2ba72b1`, M7 `b4192c2`.
 
 ## E1—E8 closure
 
@@ -35,15 +35,15 @@ Remediation commits: M1 `1bef0b9`, M2 `05052c4`, M3 `2951b8b`, M4 `31d3aeb`, M5 
 
 ## Verification
 
-Commands run from `D:\Project_Git\P05_V2_Deployment` with project-local Node v22.23.1:
+Commands run from `D:\Project_Git\P05_V2_Deployment`; each `cmd.exe /c` sets the project-local Node directory first on `PATH`, `REMOTE_AGENT_ALLOWED_ROOTS` and `REMOTE_AGENT_DEFAULT_CWD` to the repository, and `MATLAB_MCP_ENABLED=false`:
 
 ```powershell
 rtk proxy .p05/tools/node/node.exe node_modules/typescript/bin/tsc -p tsconfig.json
 rtk proxy .p05/tools/node/node.exe dist/test/file-contracts.js
 rtk proxy .p05/tools/node/node.exe dist/test/file-io.js
 rtk proxy .p05/tools/node/node.exe dist/test/output-schema.js
-rtk npm run verify
-rtk npm run test:benchmark
+cmd.exe /c "... .p05\tools\node\npm.cmd run verify"
+cmd.exe /c "... .p05\tools\node\npm.cmd run test:benchmark"
 rtk proxy git diff --check
 ```
 
