@@ -188,6 +188,7 @@ const { AuditStore } = await import("../audit/store.js");
 const { ExecutionRuntime } = await import("../runtime/execution.js");
 const { registerFsTools } = await import("../tools/register-fs.js");
 const { setPatchCommitHooksForTests } = await import("../tools/files.js");
+const { canonicalTraceTarget, metricsFor } = await import("./retry-metrics.js");
 
 try {
   // ---------------------------------------------------------------- pure helpers
@@ -2497,6 +2498,92 @@ console.log("TEXT_LINES_STRESS_OK");
     "F4 success: output schema valid",
     fsSearchOutputSchema.safeParse(successLongFinalized.result).success
   );
+
+  // ---------------------------------------------------------------- F5 target-scoped retry metrics
+  const traceHashA = "a".repeat(64);
+  const traceHashB = "b".repeat(64);
+  const tracePatch = (
+    target: string | undefined,
+    expectedSha256: string | undefined,
+    conflict = false,
+    observedCode?: string
+  ) => ({
+    callId: 1,
+    tool: "apply_patch_many",
+    ...(target ? { target } : {}),
+    ...(expectedSha256 ? { expectedSha256 } : {}),
+    ...(observedCode ? { observedCode } : {}),
+    ...(conflict ? { conflict: true } : {})
+  });
+  const traceRead = (target: string, refreshedSha256: string) => ({
+    callId: 2,
+    tool: "fs_read_many",
+    target,
+    refreshedSha256
+  });
+  const f5A = path.join(FIXTURE, "f5-a.txt");
+  const f5B = path.join(FIXTURE, "f5-b.txt");
+
+  const sameHashSibling = metricsFor([
+    tracePatch(f5A, traceHashA, true),
+    traceRead(f5B, traceHashA),
+    tracePatch(f5B, traceHashA)
+  ]);
+  checkEqual("F5 same-hash sibling: conflicts", sameHashSibling.conflicts, 1);
+  checkEqual("F5 same-hash sibling: no unsafe retry", sameHashSibling.unsafeRetries, 0);
+
+  const blindRetry = metricsFor([
+    tracePatch(f5A, traceHashA, true),
+    tracePatch(f5A, traceHashA, true)
+  ]);
+  checkEqual("F5 blind retry: conflicts", blindRetry.conflicts, 2);
+  checkEqual("F5 blind retry: unsafe counted", blindRetry.unsafeRetries, 1);
+
+  const refreshedRetry = metricsFor([
+    tracePatch(f5A, traceHashA, true),
+    traceRead(f5A, traceHashB),
+    tracePatch(f5A, traceHashB)
+  ]);
+  checkEqual("F5 refreshed retry: conflicts", refreshedRetry.conflicts, 1);
+  checkEqual("F5 refreshed retry: safe", refreshedRetry.unsafeRetries, 0);
+
+  const staleAfterRefresh = metricsFor([
+    tracePatch(f5A, traceHashA, true),
+    traceRead(f5A, traceHashB),
+    tracePatch(f5A, traceHashA, true)
+  ]);
+  checkEqual("F5 stale after refresh: unsafe counted", staleAfterRefresh.unsafeRetries, 1);
+
+  const rereadSameHash = metricsFor([
+    tracePatch(f5A, traceHashA, true),
+    traceRead(f5A, traceHashA),
+    tracePatch(f5A, traceHashA)
+  ]);
+  checkEqual("F5 re-read same hash: not blind", rereadSameHash.unsafeRetries, 0);
+
+  const unattributed = metricsFor([
+    tracePatch(undefined, traceHashA, true, "STALE_REVISION"),
+    traceRead(f5B, traceHashA),
+    tracePatch(f5B, traceHashA)
+  ]);
+  checkEqual("F5 unattributed: conflict is kept", unattributed.conflicts, 1);
+  checkEqual("F5 unattributed: is reported separately", unattributed.unattributedConflicts, 1);
+  checkEqual("F5 unattributed: no guessed unsafe retry", unattributed.unsafeRetries, 0);
+
+  const aliasKey = await canonicalTraceTarget(
+    FIXTURE,
+    "lock-alias/new/nested/file.txt"
+  );
+  const realKey = await canonicalTraceTarget(
+    FIXTURE,
+    "lock-real/new/nested/file.txt"
+  );
+  checkEqual("F5 alias: canonical trace targets match", aliasKey, realKey);
+  const aliasRetry = metricsFor([
+    tracePatch(aliasKey, traceHashA, true),
+    tracePatch(realKey, traceHashA, true)
+  ]);
+  checkEqual("F5 alias: retry through another path is unsafe", aliasRetry.unsafeRetries, 1);
 
   check("search schema: legacy request accepted", fsSearchInputSchema.safeParse({
     query: "needle"

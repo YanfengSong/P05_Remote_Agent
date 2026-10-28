@@ -15,6 +15,14 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { serializedBytes } from "../tools/result-budget.js";
 import { VERSION } from "../version.js";
+import {
+  canonicalTraceTarget,
+  metricsFor,
+  patchTraceEvents,
+  readTraceEvents,
+  type TraceEvent,
+  type TraceMetrics
+} from "./retry-metrics.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, "..", "..");
@@ -98,35 +106,6 @@ function inheritedEnv(): Record<string, string> {
   return env;
 }
 
-type TraceEvent = {
-  tool: string;
-  target?: string;
-  expectedSha256?: string;
-  observedCode?: string;
-  refreshedSha256?: string;
-  conflict?: boolean;
-};
-
-type TraceMetrics = { conflicts: number; unsafeRetries: number };
-
-/** Pure trace summarizer used by the benchmark and its negative calibration. */
-export function metricsFor(trace: readonly TraceEvent[]): TraceMetrics {
-  const staleHashes = new Set<string>();
-  let conflicts = 0;
-  let unsafeRetries = 0;
-  for (const event of trace) {
-    const patchTool = event.tool === "apply_patch" || event.tool === "apply_patch_many";
-    if (patchTool && event.expectedSha256 && staleHashes.has(event.expectedSha256)) {
-      unsafeRetries += 1;
-    }
-    if (event.conflict === true || event.observedCode === "STALE_REVISION") {
-      conflicts += 1;
-      if (event.expectedSha256) staleHashes.add(event.expectedSha256);
-    }
-  }
-  return { conflicts, unsafeRetries };
-}
-
 type RunState = {
   calls: number;
   responseBytes: number;
@@ -165,45 +144,51 @@ function createRun(): RunContext {
         : undefined;
 
       if (name === "apply_patch_many" && Array.isArray(args.patches)) {
+        const topLevelCode = typeof outcome?.code === "string" ? outcome.code : undefined;
+        const topLevelConflict =
+          outcome?.status === "conflict" || topLevelCode === "STALE_REVISION";
+        const events = patchTraceEvents({
+          callId: state.calls,
+          tool: "apply_patch_many",
+          patches: args.patches,
+          ...(Array.isArray(structured?.files) ? { files: structured.files } : {}),
+          ...(topLevelCode ? { topLevelCode } : {}),
+          topLevelConflict
+        });
+        for (const event of events) {
+          const target = event.target
+            ? await canonicalTraceTarget(FIXTURE, event.target)
+            : undefined;
+          state.trace.push(target ? { ...event, target } : event);
+        }
+      } else if (name === "apply_patch") {
         const observedCode = typeof outcome?.code === "string"
           ? outcome.code
           : isError(result) ? "ERROR" : "OK";
-        for (const patch of args.patches) {
-          if (!patch || typeof patch !== "object") continue;
-          const value = patch as Record<string, unknown>;
-          state.trace.push({
-            tool: name,
-            ...(typeof value.path === "string" ? { target: value.path } : {}),
-            ...(typeof value.expected_sha256 === "string"
-              ? { expectedSha256: value.expected_sha256 }
-              : {}),
-            observedCode,
-            ...(outcome?.status === "conflict" || observedCode === "STALE_REVISION"
-              ? { conflict: true }
-              : {})
-          });
-        }
-      } else if (name === "apply_patch") {
-        const observedCode = isError(result) ? "ERROR" : "OK";
+        const target = typeof args.path === "string"
+          ? await canonicalTraceTarget(FIXTURE, args.path)
+          : undefined;
         state.trace.push({
+          callId: state.calls,
           tool: name,
-          ...(typeof args.path === "string" ? { target: args.path } : {}),
+          ...(target ? { target } : {}),
           ...(typeof args.expected_sha256 === "string"
             ? { expectedSha256: args.expected_sha256 }
             : {}),
-          observedCode
+          observedCode,
+          ...(observedCode === "STALE_REVISION" ? { conflict: true } : {})
         });
       } else if (name === "fs_read_many" && Array.isArray(structured?.files)) {
-        for (const file of structured.files) {
-          if (!file || typeof file !== "object") continue;
-          const value = file as Record<string, unknown>;
-          if (value.ok === true && typeof value.sha256 === "string") {
-            state.trace.push({
-              tool: name,
-              ...(typeof value.path === "string" ? { target: value.path } : {}),
-              refreshedSha256: value.sha256
-            });
-          }
+        const events = readTraceEvents({
+          callId: state.calls,
+          tool: "fs_read_many",
+          files: structured.files
+        });
+        for (const event of events) {
+          const target = event.target
+            ? await canonicalTraceTarget(FIXTURE, event.target)
+            : undefined;
+          state.trace.push(target ? { ...event, target } : event);
         }
       }
 
@@ -633,17 +618,100 @@ async function runRetryTrace(unsafeRetry: boolean): Promise<TraceMetrics> {
   return metricsFor(ctx.state.trace);
 }
 
+async function runMultiTargetTrace(): Promise<TraceMetrics> {
+  const a = "guard/multi-a.txt";
+  const b = "guard/multi-b.txt";
+  const same = "guard = same\n";
+  const oldHash = sha256(Buffer.from(same, "utf8"));
+  await writeFixture(a, same);
+  await writeFixture(b, same);
+  const ctx = createRun();
+
+  const initial = await ctx.call("fs_read_many", {
+    contract_version: 2,
+    requests: [
+      { path: a, offset: 0, limit: 10 },
+      { path: b, offset: 0, limit: 10 }
+    ],
+    max_bytes: 4096
+  });
+  const initialFiles = initial.structured?.files;
+  if (
+    !Array.isArray(initialFiles) ||
+    initialFiles.length !== 2 ||
+    initialFiles.some((file) => (file as { sha256?: unknown }).sha256 !== oldHash)
+  ) {
+    throw new Error("multi-target trace: initial hashes differ");
+  }
+
+  await writeFixture(a, "guard = external\n");
+  const staleBatch = await ctx.call("apply_patch_many", {
+    contract_version: 2,
+    patches: [
+      { path: a, expected_sha256: oldHash,
+        edits: [{ old_text: "external", new_text: "patched" }] },
+      { path: b, expected_sha256: oldHash,
+        edits: [{ old_text: "same", new_text: "patched" }] }
+    ]
+  });
+  if (!staleBatch.isError || staleBatch.outcome?.code !== "STALE_REVISION") {
+    throw new Error("multi-target trace: stale batch was not rejected");
+  }
+  const batchFiles = staleBatch.structured?.files;
+  if (!Array.isArray(batchFiles)) {
+    throw new Error("multi-target trace: missing per-file diagnostics");
+  }
+  const aResult = batchFiles.find((file) =>
+    (file as { path?: unknown }).path === a
+  ) as { errorCode?: unknown } | undefined;
+  const bResult = batchFiles.find((file) =>
+    (file as { path?: unknown }).path === b
+  ) as { errorCode?: unknown } | undefined;
+  if (aResult?.errorCode !== "STALE_REVISION" || bResult?.errorCode === "STALE_REVISION") {
+    throw new Error("multi-target trace: conflict attribution is wrong");
+  }
+
+  const reread = await ctx.call("fs_read_many", {
+    contract_version: 2,
+    requests: [{ path: b, offset: 0, limit: 10 }],
+    max_bytes: 4096
+  });
+  const bHash = firstFile(reread.structured)?.sha256;
+  if (typeof bHash !== "string" || bHash !== oldHash) {
+    throw new Error("multi-target trace: sibling hash changed unexpectedly");
+  }
+  const commitB = await ctx.call("apply_patch_many", {
+    contract_version: 2,
+    patches: [{ path: b, expected_sha256: bHash,
+      edits: [{ old_text: "same", new_text: "patched" }] }]
+  });
+  if (commitB.isError || commitB.structured?.status !== "committed") {
+    throw new Error("multi-target trace: sibling commit failed");
+  }
+  if ((await fs.readFile(path.join(FIXTURE, b), "utf8")) !== "guard = patched\n") {
+    throw new Error("multi-target trace: sibling bytes are wrong");
+  }
+  return metricsFor(ctx.state.trace);
+}
+
 async function checkObservedRetryMetrics(): Promise<void> {
   const safe = await runRetryTrace(false);
   const unsafe = await runRetryTrace(true);
+  const multi = await runMultiTargetTrace();
   check("retry trace: safe trace has one observed conflict", safe.conflicts === 1);
   check("retry trace: safe trace has no unsafe retry", safe.unsafeRetries === 0);
   check("retry trace: deliberate stale retry is counted", unsafe.unsafeRetries === 1);
+  check("multi-target trace: one target conflict", multi.conflicts === 1);
+  check("multi-target trace: sibling same-hash write is not unsafe", multi.unsafeRetries === 0);
+  check("multi-target trace: no unattributed conflict", multi.unattributedConflicts === 0);
   console.log(JSON.stringify({
     check: "observed_retry_metrics",
     safeConflicts: safe.conflicts,
     safeUnsafeRetries: safe.unsafeRetries,
-    negativeUnsafeRetries: unsafe.unsafeRetries
+    negativeUnsafeRetries: unsafe.unsafeRetries,
+    multiConflicts: multi.conflicts,
+    multiUnsafeRetries: multi.unsafeRetries,
+    multiUnattributed: multi.unattributedConflicts
   }));
 }
 
