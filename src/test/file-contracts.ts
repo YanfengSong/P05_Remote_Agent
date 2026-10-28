@@ -1765,6 +1765,171 @@ console.log("TEXT_LINES_STRESS_OK");
     "A0\n"
   );
 
+  // ---------------------------------------------------------------- F2 rollback path identity
+  const rollA = path.join(FIXTURE, "roll-a.txt");
+  const rollAMoved = path.join(FIXTURE, "roll-a-moved.txt");
+
+  rollbackHashes = await resetRollback();
+  await fs.rm(rollAMoved, { force: true });
+  const replacedPath = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: async (targetPath) => {
+          if (targetPath !== "roll-a.txt") return;
+          await fs.rename(rollA, rollAMoved);
+          await fs.writeFile(rollA, "EXTERNAL REPLACEMENT\n", "utf8");
+          throw new Error("injected publish failure");
+        }
+      }
+    }
+  );
+  checkEqual("F2 rename+replace: status", replacedPath.status, "unknown");
+  checkEqual("F2 rename+replace: effect", replacedPath.outcome.effectState, "unknown");
+  checkEqual("F2 rename+replace: retry", replacedPath.outcome.retry, "never_automatic");
+  checkEqual("F2 rename+replace: code", replacedPath.outcome.code, "ROLLBACK_UNCONFIRMED");
+  checkEqual(
+    "F2 rename+replace: replacement path is preserved",
+    await fs.readFile(rollA, "utf8"),
+    "EXTERNAL REPLACEMENT\n"
+  );
+  checkEqual(
+    "F2 rename+replace: moved inode is not restored through the old handle",
+    await fs.readFile(rollAMoved, "utf8"),
+    "A1\n"
+  );
+  checkEqual(
+    "F2 rename+replace: reports unknown file",
+    replacedPath.files[0]?.errorCode,
+    "ROLLBACK_UNCONFIRMED"
+  );
+  check(
+    "F2 rename+replace: output schema valid",
+    applyPatchManyOutputSchema.safeParse(replacedPath).success
+  );
+
+  rollbackHashes = await resetRollback();
+  await fs.rm(rollAMoved, { force: true });
+  const missingPath = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: async (targetPath) => {
+          if (targetPath !== "roll-a.txt") return;
+          await fs.rename(rollA, rollAMoved);
+          throw new Error("injected publish failure");
+        }
+      }
+    }
+  );
+  checkEqual("F2 rename to missing: status", missingPath.status, "unknown");
+  checkEqual("F2 rename to missing: effect", missingPath.outcome.effectState, "unknown");
+  let rollAMissing = false;
+  try {
+    await fs.stat(rollA);
+  } catch {
+    rollAMissing = true;
+  }
+  check("F2 rename to missing: original path stays missing", rollAMissing);
+  checkEqual(
+    "F2 rename to missing: moved inode is preserved",
+    await fs.readFile(rollAMoved, "utf8"),
+    "A1\n"
+  );
+  checkEqual(
+    "F2 rename to missing: reports unknown file",
+    missingPath.files[0]?.errorCode,
+    "ROLLBACK_UNCONFIRMED"
+  );
+
+  rollbackHashes = await resetRollback();
+  await fs.rm(rollAMoved, { force: true });
+  const sameContentReplacement = await patchTextFilesBatchV2(
+    rollbackEntries(rollbackHashes.aHash, rollbackHashes.bHash),
+    FIXTURE,
+    {
+      hooks: {
+        afterWrite: async (targetPath) => {
+          if (targetPath !== "roll-a.txt") return;
+          await fs.rename(rollA, rollAMoved);
+          await fs.writeFile(rollA, "A1\n", "utf8");
+          throw new Error("injected publish failure");
+        }
+      }
+    }
+  );
+  checkEqual("F2 same-content replacement: status", sameContentReplacement.status, "unknown");
+  checkEqual(
+    "F2 same-content replacement: effect",
+    sameContentReplacement.outcome.effectState,
+    "unknown"
+  );
+  checkEqual(
+    "F2 same-content replacement: replacement is preserved",
+    await fs.readFile(rollA, "utf8"),
+    "A1\n"
+  );
+  checkEqual(
+    "F2 same-content replacement: moved inode is not rewritten",
+    await fs.readFile(rollAMoved, "utf8"),
+    "A1\n"
+  );
+
+  await fs.rm(path.join(FIXTURE, "roll-new.txt"), { force: true });
+  await fs.rm(path.join(FIXTURE, "roll-new-moved.txt"), { force: true });
+  await writeFixture("roll-b.txt", "B0\n");
+  let newFileRollbackError = "";
+  setPatchCommitHooksForTests({
+    afterWrite: async (targetPath) => {
+      if (targetPath !== "roll-new.txt") return;
+      await fs.rename(
+        path.join(FIXTURE, "roll-new.txt"),
+        path.join(FIXTURE, "roll-new-moved.txt")
+      );
+      await fs.writeFile(path.join(FIXTURE, "roll-new.txt"), "NEW1\n", "utf8");
+      throw new Error("injected publish failure");
+    }
+  });
+  try {
+    await writeTextFilesBatch(
+      [
+        { path: "roll-new.txt", content: "NEW1\n" },
+        {
+          path: "roll-b.txt",
+          content: "B1\n",
+          expectedSha256: sha256(Buffer.from("B0\n", "utf8"))
+        }
+      ],
+      FIXTURE
+    );
+  } catch (error) {
+    newFileRollbackError = error instanceof Error ? error.message : String(error);
+  } finally {
+    setPatchCommitHooksForTests(undefined);
+  }
+  check(
+    "F2 new-file cleanup: reports incomplete rollback",
+    newFileRollbackError.includes("rollback was incomplete"),
+    newFileRollbackError
+  );
+  checkEqual(
+    "F2 new-file cleanup: same-content replacement is preserved",
+    await fs.readFile(path.join(FIXTURE, "roll-new.txt"), "utf8"),
+    "NEW1\n"
+  );
+  checkEqual(
+    "F2 new-file cleanup: moved new file is preserved",
+    await fs.readFile(path.join(FIXTURE, "roll-new-moved.txt"), "utf8"),
+    "NEW1\n"
+  );
+  checkEqual(
+    "F2 new-file cleanup: unrelated target is untouched",
+    await fs.readFile(path.join(FIXTURE, "roll-b.txt"), "utf8"),
+    "B0\n"
+  );
+
   // ---------------------------------------------------------------- M2 bounded I/O / complete writes
   type MutableFs = { open: (...args: any[]) => Promise<any> };
   const mutableFs = fs as unknown as MutableFs;
@@ -2443,6 +2608,7 @@ console.log("TEXT_LINES_STRESS_OK");
   checkEqual("audit: bare MCP error recovery", bareRecord.recoveryHint, "inspect");
   checkEqual("audit: bare MCP error has no invented outcome", bareRecord.resultStatus, undefined);
 
+  await fs.rm(path.join(FIXTURE, "m7-unknown-moved.txt"), { force: true });
   await writeFixture("m7-unknown.txt", "value = 0;\n");
   const unknownHash = sha256(Buffer.from("value = 0;\n", "utf8"));
   const handlers = new Map<string, (input: any) => Promise<any>>();
@@ -2460,6 +2626,10 @@ console.log("TEXT_LINES_STRESS_OK");
   setPatchCommitHooksForTests({
     afterWrite: async (targetPath) => {
       if (targetPath === "m7-unknown.txt") {
+        await fs.rename(
+          path.join(FIXTURE, "m7-unknown.txt"),
+          path.join(FIXTURE, "m7-unknown-moved.txt")
+        );
         await fs.writeFile(path.join(FIXTURE, targetPath), "EXTERNAL\n", "utf8");
         throw new Error("synthetic external change");
       }
@@ -2496,6 +2666,11 @@ console.log("TEXT_LINES_STRESS_OK");
       "M7: unknown write preserves external bytes",
       await fs.readFile(path.join(FIXTURE, "m7-unknown.txt"), "utf8"),
       "EXTERNAL\n"
+    );
+    checkEqual(
+      "M7: unknown write preserves the moved inode",
+      await fs.readFile(path.join(FIXTURE, "m7-unknown-moved.txt"), "utf8"),
+      "value = 1;\n"
     );
     check(
       "M7: unknown structuredContent matches schema",

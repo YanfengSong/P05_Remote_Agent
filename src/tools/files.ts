@@ -238,13 +238,13 @@ export type PatchBatchV2Options = {
   hooks?: BatchCommitHooks;
 };
 
-let testPatchCommitHooks: BatchCommitHooks | undefined;
+let testBatchCommitHooks: BatchCommitHooks | undefined;
 
 /** Test-only injection; never populated by MCP handlers or input schemas. */
 export function setPatchCommitHooksForTests(
   hooks: BatchCommitHooks | undefined
 ): void {
-  testPatchCommitHooks = hooks;
+  testBatchCommitHooks = hooks;
 }
 
 class BatchOperationError extends Error {
@@ -692,6 +692,26 @@ async function withBatchLocks<T>(
   });
 }
 
+type PathIdentityState = "match" | "missing" | "mismatch";
+
+async function inspectPathIdentity(
+  safePath: string,
+  expected: { dev: bigint; ino: bigint }
+): Promise<PathIdentityState> {
+  let stat;
+  try {
+    stat = await fs.lstat(safePath, { bigint: true });
+  } catch (error) {
+    const code = (error as { code?: string })?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+    throw error;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) return "mismatch";
+  return stat.dev === expected.dev && stat.ino === expected.ino
+    ? "match"
+    : "mismatch";
+}
+
 async function commitBatchOperationsDetailed(
   prepared: PreparedBatchOperation[],
   hooks?: BatchCommitHooks
@@ -699,6 +719,7 @@ async function commitBatchOperationsDetailed(
   type Opened = {
     operation: PreparedBatchOperation;
     handle: Awaited<ReturnType<typeof fs.open>>;
+    identity: { dev: bigint; ino: bigint };
   };
   const opened: Opened[] = [];
   const attempted: PreparedBatchOperation[] = [];
@@ -720,7 +741,24 @@ async function commitBatchOperationsDetailed(
           operation.path
         );
       }
-      opened.push({ operation, handle });
+
+      let openedStat;
+      try {
+        openedStat = await handle.stat({ bigint: true });
+      } catch (error) {
+        await handle.close().catch(() => undefined);
+        throw new BatchOperationError(
+          "WRITE_FAILED",
+          "Batch target " + operation.path + ": " +
+            safeBatchError(error, "Could not inspect the opened target file."),
+          operation.path
+        );
+      }
+      opened.push({
+        operation,
+        handle,
+        identity: { dev: openedStat.dev, ino: openedStat.ino }
+      });
 
       if (operation.existed) {
         const current = await readHandleAtStart(handle);
@@ -773,8 +811,11 @@ async function commitBatchOperationsDetailed(
           operation.path
         );
       }
-      const pathStat = await fs.stat(operation.safePath, { bigint: true });
-      if (pathStat.dev !== observed.stat.dev || pathStat.ino !== observed.stat.ino) {
+      const pathIdentity = await inspectPathIdentity(operation.safePath, {
+        dev: observed.stat.dev,
+        ino: observed.stat.ino
+      });
+      if (pathIdentity !== "match") {
         throw new BatchOperationError(
           "WRITE_FAILED",
           "Batch target " + operation.path + ": path identity changed during write.",
@@ -798,8 +839,11 @@ async function commitBatchOperationsDetailed(
           operation.path
         );
       }
-      const pathStat = await fs.stat(operation.safePath, { bigint: true });
-      if (pathStat.dev !== observed.stat.dev || pathStat.ino !== observed.stat.ino) {
+      const pathIdentity = await inspectPathIdentity(operation.safePath, {
+        dev: observed.stat.dev,
+        ino: observed.stat.ino
+      });
+      if (pathIdentity !== "match") {
         throw new BatchOperationError(
           "WRITE_FAILED",
           "Batch target " + operation.path + ": final path identity changed.",
@@ -835,14 +879,42 @@ async function commitBatchOperationsDetailed(
 
       try {
         await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
+        // A rename/replace leaves the old handle pointing at the moved inode. Never
+        // write that handle when the visible path no longer identifies it.
+        const identityBefore = await inspectPathIdentity(
+          operation.safePath,
+          entry.identity
+        );
+        if (identityBefore !== "match") {
+          unknown.push(operation.path);
+          continue;
+        }
+
         const current = await readHandleAtStart(entry.handle);
         const currentSha = sha256Buffer(current);
 
         if (currentSha === operation.originalSha256) {
+          const identityAfter = await inspectPathIdentity(
+            operation.safePath,
+            entry.identity
+          );
+          if (identityAfter !== "match") {
+            unknown.push(operation.path);
+            continue;
+          }
           rolledBack.push(operation.path);
           continue;
         }
         if (currentSha !== operation.sha256) {
+          unknown.push(operation.path);
+          continue;
+        }
+
+        const identityBeforeRestore = await inspectPathIdentity(
+          operation.safePath,
+          entry.identity
+        );
+        if (identityBeforeRestore !== "match") {
           unknown.push(operation.path);
           continue;
         }
@@ -856,6 +928,14 @@ async function commitBatchOperationsDetailed(
 
         const restored = await readHandleAtStart(entry.handle);
         if (sha256Buffer(restored) !== operation.originalSha256) {
+          unknown.push(operation.path);
+          continue;
+        }
+        const identityAfter = await inspectPathIdentity(
+          operation.safePath,
+          entry.identity
+        );
+        if (identityAfter !== "match") {
           unknown.push(operation.path);
           continue;
         }
@@ -873,8 +953,10 @@ async function commitBatchOperationsDetailed(
       }
     }
 
-    // Newly created targets are removed only when they still contain either the
-    // bytes this batch wrote or the empty file created by "wx".
+    // Newly created targets are removed only when the visible path still identifies
+    // the opened inode and it contains either the bytes this batch wrote or the
+    // empty file created by "wx". Identical content on a replacement inode is not
+    // enough to delete it.
     const emptySha = sha256Buffer(Buffer.alloc(0));
     for (const entry of opened) {
       const operation = entry.operation;
@@ -885,11 +967,32 @@ async function commitBatchOperationsDetailed(
           await hooks?.beforeRollback?.(operation.path, prepared.indexOf(operation));
         }
 
+        const identityBefore = await inspectPathIdentity(
+          operation.safePath,
+          entry.identity
+        );
+        if (identityBefore === "missing") {
+          rolledBack.push(operation.path);
+          continue;
+        }
+        if (identityBefore !== "match") {
+          unknown.push(operation.path);
+          continue;
+        }
+
         let current: Buffer;
         try {
           const readHandle = await fs.open(operation.safePath, "r");
           try {
-            current = (await readBoundedSnapshot(readHandle, batchSnapshotLimit())).bytes;
+            const snapshot = await readBoundedSnapshot(readHandle, batchSnapshotLimit());
+            if (
+              snapshot.stat.dev !== entry.identity.dev ||
+              snapshot.stat.ino !== entry.identity.ino
+            ) {
+              unknown.push(operation.path);
+              continue;
+            }
+            current = snapshot.bytes;
           } finally {
             await readHandle.close().catch(() => undefined);
           }
@@ -902,12 +1005,20 @@ async function commitBatchOperationsDetailed(
         }
 
         const currentSha = sha256Buffer(current);
-        if (currentSha === emptySha || currentSha === operation.sha256) {
-          await fs.rm(operation.safePath, { force: true });
-          rolledBack.push(operation.path);
-        } else {
+        if (currentSha !== emptySha && currentSha !== operation.sha256) {
           unknown.push(operation.path);
+          continue;
         }
+        const identityBeforeDelete = await inspectPathIdentity(
+          operation.safePath,
+          entry.identity
+        );
+        if (identityBeforeDelete !== "match") {
+          unknown.push(operation.path);
+          continue;
+        }
+        await fs.rm(operation.safePath, { force: true });
+        rolledBack.push(operation.path);
       } catch {
         unknown.push(operation.path);
       }
@@ -955,9 +1066,10 @@ async function commitBatchOperationsDetailed(
 }
 
 async function commitBatchOrThrowHeld(
-  prepared: PreparedBatchOperation[]
+  prepared: PreparedBatchOperation[],
+  hooks?: BatchCommitHooks
 ): Promise<BatchTextChangeResult[]> {
-  const outcome = await commitBatchOperationsDetailed(prepared);
+  const outcome = await commitBatchOperationsDetailed(prepared, hooks);
   if (outcome.ok) return outcome.results;
   throw new Error(outcome.failure.message);
 }
@@ -1433,7 +1545,7 @@ export async function writeTextFilesBatch(
   return withBatchLocks(
     operations,
     baseDir,
-    (prepared) => commitBatchOrThrowHeld(prepared)
+    (prepared) => commitBatchOrThrowHeld(prepared, testBatchCommitHooks)
   );
 }
 
@@ -1450,7 +1562,7 @@ export async function patchTextFilesBatch(
   return withBatchLocks(
     operations,
     baseDir,
-    (prepared) => commitBatchOrThrowHeld(prepared)
+    (prepared) => commitBatchOrThrowHeld(prepared, testBatchCommitHooks)
   );
 }
 
@@ -1501,7 +1613,7 @@ export async function patchTextFilesBatchV2(
       }
       const outcome = await commitBatchOperationsDetailed(
         prepared,
-        options.hooks ?? testPatchCommitHooks
+        options.hooks ?? testBatchCommitHooks
       );
       const result = outcome.ok
         ? patchCommitSuccessResult(outcome.results, prepared, maxBytes)
