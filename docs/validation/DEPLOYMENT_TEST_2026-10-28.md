@@ -4,8 +4,9 @@
 
 - Branch: `codex/v2-agent-workflow-pilot`
 - Tested HEAD: `5ef4e88` (F6)
-- Full code verification before deployment: `npm run verify` → 1,860 checks; benchmark last run
-  on the unaffected F5 path → 69 checks/40 runs. F6 did not change benchmark scenarios.
+- Full code verification before deployment: `npm run verify` → 1,861 checks; benchmark last run
+  on the unaffected F5 path → 69 checks/40 runs. F6 and the large-file/search capacity change
+  did not alter benchmark scenarios.
 - No feature work, no code re-review, no push/merge.
 
 ## Production baseline (before replacement)
@@ -67,11 +68,11 @@ response bytes are protocol payloads, not disk I/O or model/token savings.
 
 ## Production replacement
 
-- Runtime A restarted as PID **51980** at 2026-10-28 16:21:53; Runtime B as PID **5784** at
-  2026-10-28 16:22:49.
+- Runtime A restarted as PID **10140** at 2026-10-28 17:27:57; Runtime B as PID **37936** at
+  2026-10-28 17:28:00.
 - Both tunnel `/readyz` checks returned `200 ready`.
-- `dist/index.js` SHA-256 remained
-  `94450D503A60DF035A64C03C0DF78A5B5E1ED5C82E58BA2D0364EAA587CE5082` (the tested F6 build).
+- `dist/index.js` was rebuilt from the reviewed large-file/search-capacity build; the
+  production `.env` now sets the range/search limits above.
 - Existing tunnel profiles, `.env`, workspace bindings, profiles and approval mode were not
   changed. Agent version remains `0.3.1`.
 - The local operator bridge is created when an MCP session initializes; no ChatGPT connector
@@ -95,10 +96,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\run-runti
 preferred. Restore `.env`/state from the same backup directory only while the affected slot is
 stopped.
 
-## Production search coverage note (2026-10-28)
+## Production search coverage note (historical 32 MiB run)
 
-The ChatGPT connector's root searches on both production workspaces stopped at the fixed
-32 MiB scan limit. This is expected partial coverage, not an `SEARCH_COMPLETE` regression:
+The first ChatGPT connector root searches stopped at the old fixed 32 MiB scan limit. This
+was expected partial coverage, not an `SEARCH_COMPLETE` regression:
 
 | Slot | Path | Scanned files | Scanned bytes | Stop reason | Outcome |
 | --- | --- | ---: | ---: | --- | --- |
@@ -113,10 +114,35 @@ changes the 32 MiB scan budget. To verify `SEARCH_COMPLETE`, use a scope that fi
 | A | `docs` | 22 | 318,247 | `exhausted` | `SEARCH_COMPLETE` |
 | B | `slprj` | 271 | 3,672,074 | `exhausted` | `SEARCH_COMPLETE` |
 
-The current `nextAction` says "raise max_results" for every scan-limit stop. For `byte_limit`
-that wording is imprecise; narrowing `path`/`query` is the available workaround. A
-root-wide complete search over a workspace larger than 32 MiB would require a new scan-budget
-or pagination contract, which is outside F6 and was not added.
+The old `nextAction` also said "raise max_results" for every scan-limit stop. For `byte_limit`
+that was imprecise; narrowing `path`/`query` was the available workaround.
+
+## Large-file and search-capacity improvement (2026-10-28)
+
+The reviewed build now supports both requested cases:
+
+- `fs_read_many` V2 streams files above the 2 MiB snapshot limit instead of failing. Only the
+  requested line window is retained; the full stream is hashed and UTF-8 checked. Default
+  streamed-file cap is 64 MiB, configurable to 256 MiB via
+  `REMOTE_AGENT_MAX_RANGE_READ_BYTES`.
+- Search scan budget is configurable via `REMOTE_AGENT_MAX_SEARCH_BYTES` (default 128 MiB,
+  hard cap 1 GiB). Search can read individual text files up to 8 MiB via
+  `REMOTE_AGENT_MAX_SEARCH_FILE_BYTES`; larger files are still reported as `oversized`.
+- The production `.env` sets a 256 MiB range cap and a 1 GiB search scan budget. With this
+  budget, both production roots now report `SEARCH_COMPLETE`:
+
+| Slot | Path | Scanned files | Scanned bytes | Stop reason | Outcome |
+| --- | --- | ---: | ---: | --- | --- |
+| A | `.` | 3,759 | 590,566,721 | `exhausted` | `SEARCH_COMPLETE` |
+| B | `.` | 3,466 | 824,745,209 | `exhausted` | `SEARCH_COMPLETE` |
+
+The cost is latency: the two complete root scans took about 37 seconds together in the local
+read-only probe. A 1 GiB scan is not free; narrow `path` remains preferable for routine work.
+- `max_bytes` still only controls response payload (64 KiB default/256 KiB hard cap). A
+  streamed large-file read may return a page with `nextOffset`; that is expected and
+  independent of the file-size cap.
+- Production A/B were restarted on the new build; Runtime A PID 10140 (17:27:57) and Runtime B
+  PID 37936 (17:28:00), both `/readyz=ready`.
 
 ## Residual risks
 
@@ -127,4 +153,8 @@ or pagination contract, which is outside F6 and was not added.
   rollback is by known git revision, not by a saved old binary.
 - No OS-level CAS, crash atomicity, cross-process lock or hardlink/TOCTOU guarantees; see the
   remediation evidence for the standing limitations.
+- Large-file streaming still reads and hashes the whole file for each range request; very
+  large files have I/O cost even when only a few lines are returned.
+- A root-wide search at 1 GiB can take tens of seconds and still stops at the hard cap; narrow
+  scopes remain preferable. Search pagination/cursor is still not implemented.
 - Benchmark figures remain protocol-only and were not rerun solely for this deployment.
