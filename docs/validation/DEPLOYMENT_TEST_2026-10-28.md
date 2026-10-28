@@ -1,13 +1,24 @@
-# P05 F6 Deployment Acceptance — 2026-10-28
+# P05 Deployment Acceptance — 2026-10-28
 
-## Scope
+## Scope and version matrix
 
 - Branch: `codex/v2-agent-workflow-pilot`
-- Tested HEAD: `5ef4e88` (F6)
-- Full code verification before deployment: `npm run verify` → 1,900 checks; benchmark last run
-  on the unaffected F5 path → 69 checks/40 runs. F6 and the large-file/search capacity change
-  did not alter benchmark scenarios.
-- No feature work, no code re-review, no push/merge.
+- Branch pushed to `origin/codex/v2-agent-workflow-pilot`; not merged.
+
+| Stage | Code commit | Evidence/docs | Verification |
+| --- | --- | --- | --- |
+| F1—F6 reviewed baseline | `5ef4e88` | `5ef4e88` | 604 file-contract + 328 output; 1,860 total |
+| Large-file streaming + configurable search | `d945f0b` | `d55b172` | intermediate build; superseded below |
+| Oversized-search message | `da7c8e0` | `bcc1c28` | intermediate build |
+| Read-limit triage + current deployment | `691c493` | `de558c8` | 644 file-contract + 328 output; 1,900 total |
+| Current evidence consolidation | this commit | this document | benchmark 69 checks/40 runs |
+
+- The current deployed code is `691c493`; `de558c8` records the evidence at that code revision.
+- The independent review coverage ends at `5ef4e88` (F6). The large-file streaming and
+  configurable-search code was implemented and tested after that review, but has not received
+  the same independent code-review depth.
+- Full `npm run verify` at the current code: 1,900 checks. Benchmark: 69 checks/40 runs.
+- No merge and no stage-B work.
 
 ## Production baseline (before replacement)
 
@@ -79,22 +90,55 @@ response bytes are protocol payloads, not disk I/O or model/token savings.
   session was initiated from this environment. The user-side connector should perform one
   read-only smoke (`device_info` / `fs_search` / `fs_read_many`) to confirm the connector path.
 
+## ChatGPT connector verification (user-run)
+
+The following was executed by the user through the actual ChatGPT connector, not by the local
+Streamable HTTP acceptance client. It confirms the connector/tunnel path in addition to the
+local protocol test.
+
+- Both slots: `agentVersion=0.3.1`, online; A `p02_vmodel` (`P02_Vmodel`), B
+  `p04_vehicle_dynamic` (`P04_Vehicle_Dynamic`).
+- Root searches with the 1 GiB budget: A scanned 3,759 files / 590,566,721 bytes; B scanned
+  3,466 files / 824,745,209 bytes; both `coverage.complete=true`,
+  `stopReason=exhausted`, `outcome.code=SEARCH_COMPLETE`, zero matches.
+- Large-file range reads:
+  - A: 2,688,221-byte file, 91,518 lines, first 20 lines, SHA-256
+    `ef76106b6db5277ba7a9f870c3bd0cea88629da0a8fbb2864504a9486f1c363b`; lines 21–25 read
+    successfully.
+  - B: 8,524,456-byte file, 399,002 lines, first 20 lines, SHA-256
+    `b4fc9c4e77f876bb57678ad14d11f36b8bfa60434567bec60fc00bc7edac90f2`; lines 21–25 read
+    successfully.
+  - Both hashes matched independent PowerShell `Get-FileHash`; `max_bytes=65536`;
+    no `READ_TOO_LARGE`; `READ_TRUNCATED` reflects the requested partial page.
+- A 3.64 MB single-line JSON returned `LINE_TOO_LARGE`; this is the expected single-line
+  boundary, distinct from `READ_TOO_LARGE` and normal `READ_TRUNCATED`.
+- Stale-hash submission returned `STALE_REVISION` and did not change the file; `../outside.txt`
+  returned `PATH_REFUSED` without host-path leakage.
+- Legacy `fs_search` (no `contract_version`), `fs_read_many(paths=...)`, `fs_read`,
+  `fs_write_many`, and legacy `apply_patch_many` all succeeded.
+- `activity_recent` showed the committed patch as `succeeded`/`PATCH_APPLIED` and the stale
+  hash as `failed`/`STALE_REVISION`; the explicit cleanup `shell_run` audit contained the
+  host path, but the `PATH_REFUSED` response itself did not.
+- The large-file round was read-only; smoke files created in the earlier round were removed.
+
 ## Rollback
 
-See `.p05/backups/deployment-20261028/ROLLBACK.md`. Summary:
+See `.p05/backups/deployment-20261028/ROLLBACK.md`. Prefer the reviewed F6 baseline when
+rolling back only the large-file/search feature:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\stop-runtime-slot.ps1 -Slot A
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\stop-runtime-slot.ps1 -Slot B
-git switch --detach 0a1ddf8
+git switch --detach 5ef4e88
 & .\.p05\tools\node\npm.cmd run build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\run-runtime-slot.ps1 -Slot A
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\deployment\run-runtime-slot.ps1 -Slot B
 ```
 
-`0a1ddf8` is the conservative pre-remediation candidate; use `7d491b9` if the A4 baseline is
-preferred. Restore `.env`/state from the same backup directory only while the affected slot is
-stopped.
+`5ef4e88` keeps all F1—F6 safety fixes while dropping the newer streaming/search changes.
+`0a1ddf8`/`7d491b9` are full pre-remediation candidates and also remove F1—F6 fixes; use them
+only for an intentional full rollback. Restore `.env`/state from the same backup directory only
+while the affected slot is stopped.
 
 ## Production search coverage note (historical 32 MiB run)
 
@@ -161,9 +205,9 @@ A 3.64 MB single-line JSON file therefore correctly returns `LINE_TOO_LARGE`, no
 
 ## Residual risks
 
-- The independent acceptance client is a real Streamable HTTP MCP client, but not the user's
-  ChatGPT connector. Connector-level authentication/tunnel behavior still needs the user-side
-  smoke above.
+- Independent code-review coverage ends at `5ef4e88` (F6). Large-file streaming, configurable
+  search and read-limit triage are covered by tests and deployment smoke, but have not received
+  a separate full independent review.
 - Production processes were replaced while their old in-memory revision was not stamped;
   rollback is by known git revision, not by a saved old binary.
 - No OS-level CAS, crash atomicity, cross-process lock or hardlink/TOCTOU guarantees; see the
@@ -172,4 +216,11 @@ A 3.64 MB single-line JSON file therefore correctly returns `LINE_TOO_LARGE`, no
   large files have I/O cost even when only a few lines are returned.
 - A root-wide search at 1 GiB can take tens of seconds and still stops at the hard cap; narrow
   scopes remain preferable. Search pagination/cursor is still not implemented.
+- Files above the 8 MiB per-file search cap are skipped as `oversized`; a zero-match result
+  requires inspecting `skippedByReason`. Files above 64 MiB cannot be searched even after
+  raising that setting.
+- A single line above the 256 KiB response cap cannot be returned by line range; no byte-chunk
+  reader exists yet.
+- Legacy `fs_read` / `fs_read_many(paths=...)` retain the 2 MiB `maxReadBytes` behavior; use
+  the V2 range contract for large files.
 - Benchmark figures remain protocol-only and were not rerun solely for this deployment.

@@ -45,9 +45,12 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   path-refusal and legacy-call checks (65 assertions, 19 MCP calls). Production Runtime A/B
   were then restarted on the tested build and both `/readyz` checks returned ready. The same
   deployment now streams large V2 range reads (64 MiB default/256 MiB cap) and configures a
-  1 GiB search scan budget; both production roots report `SEARCH_COMPLETE`. See
+  1 GiB search scan budget; both production roots report `SEARCH_COMPLETE`. The actual ChatGPT
+  connector path was confirmed by the user: root searches, multi-line large-file paging,
+  stale-hash refusal, path refusal, legacy calls and audit all passed. Current deployed code is
+  `691c493`; independent review coverage ends at F6 `5ef4e88`. See
   `docs/validation/DEPLOYMENT_TEST_2026-10-28.md`; rollback baseline and commands are under
-  `.p05/backups/deployment-20261028/`.
+  `.p05/backups/deployment-20261028/`. The branch is pushed to origin and not merged.
 - Legacy `fs_read` is hidden by default; `P05_EXPOSE_LEGACY_FS_READ=1` enables compatibility.
 - Capability metadata, live activity summaries, profile exposure, HTTP Reviewer and output
   schema regressions cover the current tool surface.
