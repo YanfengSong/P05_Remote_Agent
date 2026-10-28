@@ -40,6 +40,12 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
 - Mutation batches preflight paths and expected hashes, reject ambiguous targets, and attempt
   rollback on ordinary write failures. They do not claim crash-atomic filesystem transactions.
 - `project_validate` groups fixed allowlisted validation actions under the normal approval gate.
+- 2026-10-28 deployment acceptance: an isolated Streamable HTTP instance passed the full
+  search → range read → multi-edit dry_run/commit → audit flow plus stale-hash, truncation,
+  path-refusal and legacy-call checks (65 assertions, 19 MCP calls). Production Runtime A/B
+  were then restarted on the tested F6 build and both `/readyz` checks returned ready. See
+  `docs/validation/DEPLOYMENT_TEST_2026-10-28.md`; rollback baseline and commands are under
+  `.p05/backups/deployment-20261028/`.
 - Legacy `fs_read` is hidden by default; `P05_EXPOSE_LEGACY_FS_READ=1` enables compatibility.
 - Capability metadata, live activity summaries, profile exposure, HTTP Reviewer and output
   schema regressions cover the current tool surface.
