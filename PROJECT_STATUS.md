@@ -48,7 +48,9 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   1 GiB search scan budget; both production roots report `SEARCH_COMPLETE`. The actual ChatGPT
   connector path was confirmed by the user: root searches, multi-line large-file paging,
   stale-hash refusal, path refusal, legacy calls and audit all passed. Current deployed code is
-  `691c493`; independent review coverage ends at F6 `5ef4e88`. See
+  `f5b6a88`; independent review coverage ends at F6 `5ef4e88`. V2 search now accepts one
+  file path, path-type errors point to the correct tool, and V2 read audit summaries record
+  bounded path/offset/limit windows. See
   `docs/validation/DEPLOYMENT_TEST_2026-10-28.md`; rollback baseline and commands are under
   `.p05/backups/deployment-20261028/`. The branch is pushed to origin and not merged.
 - Legacy `fs_read` is hidden by default; `P05_EXPOSE_LEGACY_FS_READ=1` enables compatibility.
@@ -67,15 +69,15 @@ with the repo-local Node v22.23.1:
 | Profile exposure | 266 |
 | HTTP Reviewer | 80 |
 | Foundation | 58 |
-| File contracts | 644 |
+| File contracts | 649 |
 | Git mutations / workspace audit | 27 |
-| Operator Console | 93 |
-| Output schemas | 328 |
+| Operator Console | 96 |
+| Output schemas | 330 |
 | Plugin framework | 35 |
 | Plugin API v1 | 4 |
 | State synchronization | 11 |
 | File I/O primitives | 19 |
-| **Total** | **1,900** |
+| **Total** | **1,910** |
 
 Downstream smoke passed as part of `npm run verify`. `npm run verify` ran
 `check`, `build`, `test:compiled` and `test:sync` to completion.

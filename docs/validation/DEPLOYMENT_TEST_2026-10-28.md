@@ -10,14 +10,15 @@
 | F1—F6 reviewed baseline | `5ef4e88` | `5ef4e88` | 604 file-contract + 328 output; 1,860 total |
 | Large-file streaming + configurable search | `d945f0b` | `d55b172` | intermediate build; superseded below |
 | Oversized-search message | `da7c8e0` | `bcc1c28` | intermediate build |
-| Read-limit triage + current deployment | `691c493` | `de558c8` | 644 file-contract + 328 output; 1,900 total |
-| Current evidence consolidation | this commit | this document | benchmark 69 checks/40 runs |
+| Read-limit triage | `691c493` | `de558c8` | 644 file-contract + 328 output; 1,900 total |
+| Single-file V2 search + read audit | `f5b6a88` | this document | 649 + 330 + 96 operator; **1,910 total** |
+| Current evidence consolidation | `f5b6a88` | this document | benchmark 69 checks/40 runs |
 
-- The current deployed code is `691c493`; `de558c8` records the evidence at that code revision.
+- The current deployed code is `f5b6a88`; this document records the evidence at that revision.
 - The independent review coverage ends at `5ef4e88` (F6). The large-file streaming and
   configurable-search code was implemented and tested after that review, but has not received
   the same independent code-review depth.
-- Full `npm run verify` at the current code: 1,900 checks. Benchmark: 69 checks/40 runs.
+- Full `npm run verify` at the current code: **1,910 checks**. Benchmark: 69 checks/40 runs.
 - No merge and no stage-B work.
 
 ## Production baseline (before replacement)
@@ -190,6 +191,20 @@ read-only probe. A 1 GiB scan is not free; narrow `path` remains preferable for 
 - If a scope contains only oversized files, search still reports `SEARCH_COMPLETE` because the
   directory scan completed, but `skippedByReason.oversized` is non-zero and `nextAction` now
   says those files were not searched and points to `fs_read_many` or the per-file search limit.
+
+### Path usability and read audit summary (2026-10-28 evening)
+
+- V2 `fs_search` now accepts either a directory or one regular file. A file path searches only
+  that file and returns normal `coverage`/`outcome`; legacy search remains directory-only.
+- `fs_list` now rejects a file with a message pointing to `fs_read_many`; `fs_read_many` rejects
+  a directory with a message pointing to `fs_list`; `NOT_DIRECTORY`/`IS_DIRECTORY` next actions
+  distinguish “search the parent directory” from “read the file”.
+- V2 read audit summaries now record a bounded window:
+  `v2 · requests=N · max_bytes=... · path[offset+limit]`, showing at most five windows and capped
+  at 500 characters. File content and hashes are not included; `resultTruncated` remains the
+  audit result field, so repeated windows versus normal continuation can be distinguished.
+- Tests: `FILE_CONTRACTS 649`, `OUTPUT_SCHEMA 330`, `OPERATOR_CONSOLE 96`; full verify total
+  **1,910**.
 
 ### Read outcome triage
 
