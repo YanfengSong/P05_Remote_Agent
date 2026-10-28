@@ -29,6 +29,11 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   V2 search/patch, structured/redacted V2 path failures, line-window scanning without
   full-file arrays, and observed retry/audit evidence. See
   `docs/validation/MCP_FILE_CONTRACTS_REMEDIATION.md`.
+- Closure review F1—F5: post-write effect envelopes always retain status/hash/effect within
+  budget, rollback verifies path identity before and after restoration, search response
+  trimming preserves scan-level `matchesTruncated` and budget guidance, V2 search errors omit
+  unbounded metadata, and retry metrics are attributed by canonical target + version. See the
+  same remediation evidence document.
 - Batch file reading, bounded literal search, batch writes, batch patches and
   `git_workspace_audit` remain available; legacy calls keep their prior output shapes.
 - Mutation batches preflight paths and expected hashes, reject ambiguous targets, and attempt
@@ -50,24 +55,25 @@ with the repo-local Node v22.23.1:
 | Profile exposure | 266 |
 | HTTP Reviewer | 80 |
 | Foundation | 58 |
-| File contracts | 482 |
+| File contracts | 585 |
 | Git mutations / workspace audit | 27 |
 | Operator Console | 93 |
-| Output schemas | 312 |
+| Output schemas | 325 |
 | Plugin framework | 35 |
 | Plugin API v1 | 4 |
 | State synchronization | 11 |
 | File I/O primitives | 19 |
-| **Total** | **1,722** |
+| **Total** | **1,838** |
 
 Downstream smoke passed as part of `npm run verify`. `npm run verify` ran
 `check`, `build`, `test:compiled` and `test:sync` to completion.
 
 The A4 benchmark is a separate evidence command (`npm run test:benchmark`), not part of the
 per-commit correctness gate. It reported 40 measured runs, `FILE_CONTRACTS_BENCHMARK_OK
-(66 checks, 40 runs)`, 5/5 correctness in every scenario/variant, zero unsafe retries in the
+(69 checks, 40 runs)`, 5/5 correctness in every scenario/variant, zero unsafe retries in the
 normal workflows, a safe retry trace with one observed conflict and a deliberately stale
-negative trace with one unsafe retry, and an A1 error response maximum of 939 bytes under
+negative trace with one unsafe retry, a real multi-target trace with one attributed conflict
+and no unsafe sibling retry, and an A1 error response maximum of 939 bytes under
 `max_bytes=4096` including `isError`.
 
 ### Open operational follow-up

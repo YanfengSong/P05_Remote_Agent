@@ -123,22 +123,22 @@ rtk proxy git diff --check
 - “验证失败后的修复”使用本地确定性 fixture 校验，不代表 `project_validate`、业务工程验证器或 CI 的行为。
 - 除 A1 `isError` 预算计量修正外，A4 未改变工具语义、Runtime 生命周期或阶段 B 的默认禁用状态；本验证未重启 Runtime、未推送、未合并。
 
-## 2026-10-28 final remediation rerun (M7)
+## 2026-10-28 closure rerun (F1—F5)
 
-The A4 table above is the pre-remediation record. After M1—M7, the benchmark was regenerated from actual MCP calls at commit `b4192c2` (40 runs, 5 per scenario/variant):
+The A4 table above is the pre-remediation record. After M1—M7 and the F1—F5 closure fixes, the benchmark was regenerated from actual MCP calls at commit `bf5d8fa` (40 runs, 5 per scenario/variant):
 
 | Scenario | Variant | Calls | Response bytes | Median ms |
 | --- | --- | ---: | ---: | ---: |
-| Large-file location | legacy | 1 | 104,273 | 7.292 |
-| Large-file location | V2 | 2 | 2,342 | 21.704 |
-| Same-file multi-edit | legacy | 4 | 1,097 | 42.648 |
-| Same-file multi-edit | V2 | 2 | 2,064 | 20.310 |
-| 500-file config search | legacy | 1 | 484 | 355.158 |
-| 500-file config search | V2 | 1 | 1,176 | 354.987 |
-| Validation failure repair | legacy | 3 | 791 | 29.664 |
-| Validation failure repair | V2 | 3 | 2,953 | 27.412 |
+| Large-file location | legacy | 1 | 104,273 | 9.294 |
+| Large-file location | V2 | 2 | 2,342 | 19.100 |
+| Same-file multi-edit | legacy | 4 | 1,097 | 35.080 |
+| Same-file multi-edit | V2 | 2 | 2,064 | 21.289 |
+| 500-file config search | legacy | 1 | 484 | 577.604 |
+| 500-file config search | V2 | 1 | 1,176 | 526.663 |
+| Validation failure repair | legacy | 3 | 791 | 30.139 |
+| Validation failure repair | V2 | 3 | 2,953 | 30.503 |
 
-- Final marker: `FILE_CONTRACTS_BENCHMARK_OK (66 checks, 40 runs)`.
-- Observed retry trace: `{"safeConflicts":1,"safeUnsafeRetries":0,"negativeUnsafeRetries":1}`. The negative trace deliberately reuses the already rejected hash and is counted; the safe trace does not.
-- A4 changed only the `isError` budget accounting in addition to documentation/tests; response bytes are not disk-I/O, model-latency or token measurements.
+- Final marker: `FILE_CONTRACTS_BENCHMARK_OK (69 checks, 40 runs)`.
+- Observed retry trace: `{"safeConflicts":1,"safeUnsafeRetries":0,"negativeUnsafeRetries":1,"multiConflicts":1,"multiUnsafeRetries":0,"multiUnattributed":0}`. The negative trace deliberately reuses the already rejected hash; the multi-target trace attributes the conflict only to the stale target.
+- The four happy-path scenarios were not changed by F1—F5; only failure envelopes, search truncation metadata and retry attribution were corrected. Response bytes are not disk-I/O, model-latency or token measurements.
 - `test:benchmark` remains a separate evidence command, intentionally not part of every `test:compiled`.
