@@ -53,6 +53,11 @@ Version remains **0.3.1**, with **V2** as the cloud synchronization target; this
   bounded path/offset/limit windows. See
   `docs/validation/DEPLOYMENT_TEST_2026-10-28.md`; rollback baseline and commands are under
   `.p05/backups/deployment-20261028/`. The branch is pushed to origin and not merged.
+- 2026-10-29 A/B audit review: A had 88 work calls/5 failures; B had 181 work calls/13
+  failures. B's server time was dominated by wide/root searches (23 calls, 99.4 s; one root
+  search 46.0 s), not batch reads. The report proposes path preflight, NOT_FOUND guidance,
+  search-scope hints and MISSING_EDIT diagnostics. See
+  `docs/validation/AB_USAGE_ANALYSIS_2026-10-29.md`.
 - Legacy `fs_read` is hidden by default; `P05_EXPOSE_LEGACY_FS_READ=1` enables compatibility.
 - Capability metadata, live activity summaries, profile exposure, HTTP Reviewer and output
   schema regressions cover the current tool surface.
