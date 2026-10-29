@@ -482,6 +482,50 @@ for (const scenario of scenarios) {
   console.log("ok  runtime-scoped reference roots are read-only");
 }
 
+// ---------------------------------------- Full: Reference Roots stay read-only
+{
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "full",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  try {
+    const refs = textOf(await session.client.callTool({
+      name: "reference_list",
+      arguments: {}
+    }));
+    check("full reference: authorized logical identity is visible",
+      refs.includes("ref-test") && refs.includes("Test Reference"), refs.slice(0, 240));
+    check("full reference: host root is not disclosed",
+      !refs.includes(REFERENCE_ROOT), refs.slice(0, 240));
+
+    const content = textOf(await session.client.callTool({
+      name: "reference_read",
+      arguments: { reference_id: "ref-test", path: "reference.txt" }
+    }));
+    check("full reference: authorized file remains readable",
+      content.includes("reference-ok"), content.slice(0, 240));
+
+    const ordinaryRead = await outcome(() => session.client.callTool({
+      name: "fs_read",
+      arguments: { path: path.join(REFERENCE_ROOT, "reference.txt") }
+    }));
+    check("full reference: ordinary fs_read cannot cross into Reference Root",
+      ordinaryRead.failed && ordinaryRead.message.includes("outside the active workspace"),
+      ordinaryRead.message.slice(0, 240));
+
+    const planted = path.join(REFERENCE_ROOT, "full-planted.txt");
+    const writeAttempt = await outcome(() => callToolWithApproval(session, "fs_write", {
+      path: planted,
+      content: "must-not-land"
+    }));
+    check("full reference: fs_write cannot modify Reference Root",
+      writeAttempt.failed && !(await pathExists(planted)), writeAttempt.message.slice(0, 240));
+  } finally {
+    await fs.rm(path.join(REFERENCE_ROOT, "full-planted.txt"), { force: true }).catch(() => undefined);
+    await closeSession(session);
+  }
+  console.log("ok  full profile cannot promote Reference Roots beyond read-only");
+}
 // ---------------------------------------------------------------- write + real filesystem guards
 {
   const session = await openSession(childEnv({ P05_TOOL_PROFILE: "developer", P05_RUNTIME_SLOT: "B", P05_EXPOSE_LEGACY_FS_READ: "1" }));
@@ -922,6 +966,62 @@ for (const scenario of scenarios) {
   console.log("ok  developer write + path guards");
 }
 
+// ----------------------------------------- Full: real filesystem path guards
+{
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "full",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  const outsideTarget = path.join(OUTSIDE_FIXTURES, "_p05_full_junction_target");
+  const outlink = path.join(ROOT, "_p05_full_junction_probe");
+  const planted = path.join(outlink, "planted.txt");
+  const plantedTarget = path.join(outsideTarget, "planted.txt");
+  const protectedHook = path.join(PROBE_DIR, ".git", "hooks", "pre-commit");
+  const unlink = () => {
+    try {
+      execFileSync("cmd", ["/c", "rmdir", outlink], { stdio: "pipe" });
+    } catch {
+      // not present
+    }
+  };
+
+  try {
+    unlink();
+    await fs.rm(outsideTarget, { recursive: true, force: true });
+    await fs.mkdir(outsideTarget, { recursive: true });
+    await fs.mkdir(PROBE_DIR, { recursive: true });
+    await fs.writeFile(path.join(outsideTarget, "outside.txt"), "outside-root", "utf8");
+    execFileSync("cmd", ["/c", "mklink", "/J", outlink, outsideTarget], { stdio: "pipe" });
+
+    const readOut = await outcome(() => session.client.callTool({
+      name: "fs_read",
+      arguments: { path: path.join(outlink, "outside.txt") }
+    }));
+    check("full path: read through a Junction leaving Workspace is refused",
+      readOut.failed && readOut.message.includes("outside the active workspace"),
+      readOut.message.slice(0, 240));
+
+    const writeOut = await outcome(() => callToolWithApproval(session, "fs_write", {
+      path: planted,
+      content: "must-not-land"
+    }));
+    check("full path: write outside Workspace through Junction is refused",
+      writeOut.failed && !(await pathExists(plantedTarget)), writeOut.message.slice(0, 240));
+
+    const gitWrite = await outcome(() => callToolWithApproval(session, "fs_write", {
+      path: protectedHook,
+      content: "must-not-land"
+    }));
+    check("full path: write into protected .git/hooks is refused",
+      gitWrite.failed && !(await pathExists(protectedHook)), gitWrite.message.slice(0, 240));
+  } finally {
+    unlink();
+    await fs.rm(outsideTarget, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rm(PROBE_DIR, { recursive: true, force: true }).catch(() => undefined);
+    await closeSession(session);
+  }
+  console.log("ok  full profile retains filesystem path and protected-path guards");
+}
 // ------------------------------------ downstream configuration and errors stay local
 {
   const session = await openSession(childEnv({
@@ -1117,6 +1217,48 @@ for (const scenario of scenarios) {
   console.log("ok  platform-source remains fixed while business workspace is active");
 }
 
+// ----------------------------------------------- Full: Shell cwd boundaries
+{
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "full",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  const escapeLink = path.join(ROOT, "_p05_full_shell_junction");
+  const escapeTarget = path.join(OUTSIDE_FIXTURES, "_p05_full_shell_target");
+  const unlink = () => {
+    try {
+      execFileSync("cmd", ["/c", "rmdir", escapeLink], { stdio: "pipe" });
+    } catch {
+      // not present
+    }
+  };
+
+  try {
+    unlink();
+    await fs.rm(escapeTarget, { recursive: true, force: true });
+    await fs.mkdir(escapeTarget, { recursive: true });
+    execFileSync("cmd", ["/c", "mklink", "/J", escapeLink, escapeTarget], { stdio: "pipe" });
+
+    const escapedCwd = await outcome(() => session.client.callTool({
+      name: "shell_run",
+      arguments: { command: "Write-Output must-not-run", cwd: escapeLink }
+    }));
+    check("full shell: Junction cwd escaping Workspace is refused",
+      escapedCwd.failed, escapedCwd.message.slice(0, 240));
+
+    const outsideCwd = await outcome(() => session.client.callTool({
+      name: "shell_run",
+      arguments: { command: "Write-Output must-not-run", cwd: OUTSIDE_FIXTURES }
+    }));
+    check("full shell: direct cwd outside active Workspace is refused",
+      outsideCwd.failed, outsideCwd.message.slice(0, 240));
+  } finally {
+    unlink();
+    await fs.rm(escapeTarget, { recursive: true, force: true }).catch(() => undefined);
+    await closeSession(session);
+  }
+  console.log("ok  full profile retains Shell working-directory boundary");
+}
 // ----------------------------------------- shell through common Tool Permission Broker
 {
   const session = await openSession(childEnv({
@@ -1374,6 +1516,52 @@ for (const scenario of scenarios) {
   }
 }
 
+// ----------------------------------------- Full: cross-Workspace isolation
+{
+  const crossProbe = path.join(REPO, "_p05_full_cross_workspace_probe.txt");
+  await fs.rm(crossProbe, { force: true }).catch(() => undefined);
+  const session = await openSession(childEnv({
+    P05_TOOL_PROFILE: "full",
+    REMOTE_AGENT_ALLOWED_ROOTS: REPO,
+    REMOTE_AGENT_DEFAULT_CWD: REPO,
+    P05_WORKSPACES_JSON: JSON.stringify([
+      { id: "p05", root: REPO, kind: "platform-source", label: "P05" },
+      { id: "business", root: ROOT, kind: "git-project", label: "Business" }
+    ]),
+    P05_ACTIVE_WORKSPACE_ID: "business",
+    P05_RUNTIME_SLOT: "B"
+  }));
+  try {
+    const current = textOf(await session.client.callTool({
+      name: "workspace_current",
+      arguments: {}
+    }));
+    check("full workspace: business Workspace is active",
+      current.includes('"id": "business"'), current.slice(0, 240));
+
+    const crossRead = await outcome(() => session.client.callTool({
+      name: "fs_read",
+      arguments: { path: path.join(REPO, "README.md") }
+    }));
+    check("full workspace: read of platform Workspace by absolute path is refused",
+      crossRead.failed && crossRead.message.includes("outside the active workspace"),
+      crossRead.message.slice(0, 240));
+
+    const crossWrite = await outcome(() => callToolWithApproval(session, "fs_write", {
+      path: crossProbe,
+      content: "must-not-land"
+    }));
+    check("full workspace: write to platform Workspace by absolute path is refused",
+      crossWrite.failed && crossWrite.message.includes("outside the active workspace"),
+      crossWrite.message.slice(0, 240));
+    check("full workspace: refused cross-Workspace write has no side effect",
+      !(await pathExists(crossProbe)));
+  } finally {
+    await fs.rm(crossProbe, { force: true }).catch(() => undefined);
+    await closeSession(session);
+  }
+  console.log("ok  full profile retains cross-Workspace read/write isolation");
+}
 // ------------------------------------------ the documented install path does start
 {
   // `.env.example` ships REMOTE_AGENT_DEFAULT_CWD blank, so filling in only the allowed
